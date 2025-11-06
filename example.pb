@@ -33,22 +33,20 @@ Module Execute
       DPI_Scale = 1.0
     EndIf
     
-    
     OsTheme::InitOsTheme()
     
     WindowManager::InitWindowManager()
-        *Window1 = JSWindow::CreateJSWindow(800, 100, 600, 400, "WebView List Example", 
+    
+    *Window1 = JSWindow::CreateJSWindow(800, 100, 600, 400, "PBJS Example", 
                                         #PB_Window_SystemMenu | #PB_Window_SizeGadget | 
                                         #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindow)
     JSWindow::OpenJSWindow(*Window1)
-        *Window2 = JSWindow::CreateJSWindow(100, 50, 700, 600, "WebView List Example", 
-                                       #PB_Window_SystemMenu | #PB_Window_SizeGadget | 
-                                       #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindow)
     
-  JSWindow::OpenJSWindow(*Window2 )
-    
-    
-
+    *Window2 = JSWindow::CreateJSWindow(100, 50, 700, 600, "PBJS Example", 
+                                        #PB_Window_SystemMenu | #PB_Window_SizeGadget | 
+                                        #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindow)
+    JSWindow::OpenJSWindow(*Window2 )
+   
     
     WindowManager::RunEventLoop(@HandleMainEvent()) 
     
@@ -66,16 +64,15 @@ mainWindow.s = PeekS(?MainWindow,?EndMainWindow-?MainWindow, #PB_UTF8   )
 Execute::StartApp(mainWindow.s)
 WindowManager::CleanupManagedWindows()
 
-Debug "End"
 End 
 DataSection
-    MainWindow:
-    IncludeBinary "react/main-window/dist/index.html"
-    EndMainWindow:
-  EndDataSection
+  MainWindow:
+  IncludeBinary "react/main-window/dist/index.html"
+  EndMainWindow:
+EndDataSection
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 38
-; FirstLine = 34
+; CursorPosition = 66
+; FirstLine = 36
 ; Folding = -
 ; EnableXP
 ; DPIAware

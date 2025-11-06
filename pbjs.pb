@@ -227,7 +227,6 @@ Module OsTheme
         bg = RGB(255, 255, 255)
         fg = RGB(0, 0, 0)
       EndIf 
-      Debug "DARK MODE: "+Str(isDarkModeActiveCached)
       SetDarkTitleBar(hWnd, isDarkModeActiveCached)
       If isDarkModeActiveCached
         SetWindowThemeDynamic(hWnd, "DarkMode_Explorer")
@@ -364,11 +363,36 @@ Module WindowManager
   
   
   Procedure CleanupManagedWindows()
+    NewList Windows()
     ForEach ManagedWindows()
+      If ManagedWindows()\Open 
+        AddElement(Windows())
+        Windows() = ManagedWindows()\Window
+        If ManagedWindows()\CloseProc
+          CallFunctionFast(ManagedWindows()\CloseProc, ManagedWindows()\Window)
+        EndIf 
+      EndIf
       If  ManagedWindows()\Window And ManagedWindows()\CleanupProc
         CallFunctionFast( ManagedWindows()\CleanupProc)
       EndIf
     Next
+    
+    endTime = ElapsedMilliseconds()
+    Repeat
+      Delay(10)
+      windowExists = #False 
+      ForEach Windows() 
+        If IsWindow(Windows())
+          HideWindow(Windows(),#True )
+          CloseWindow(Windows())
+          windowExists = #True
+        EndIf 
+      Next
+      If windowExists
+        WindowEvent()
+      EndIf 
+    Until Not windowExists Or ElapsedMilliseconds()-endTime > 250
+    
   EndProcedure
   
   Procedure RunEventLoop(*HandleMainEvent.HandleMainEvent)
@@ -378,7 +402,6 @@ Module WindowManager
     Protected KeepRunning.i = #True
     Protected KeepWindow.i
     Protected OpenedWindowExists.i
-    
     
     While KeepRunning
       Event = WaitWindowEvent()
@@ -570,10 +593,6 @@ Module JSWindow
     
     window = Parameters(0)
     
-    Debug "INJECTED"
-    Debug window
-    Debug JSWindows(Str(window))\Injected
-    
     JSWindows(Str(window))\Injected = #True
     
     ProcedureReturn UTF8(~"")
@@ -646,8 +665,8 @@ Module JSWindow
   
   
   ; Add this section after your Windows-specific code in the JSWindow module
-
- CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+  
+  CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
     
     Structure MacOSResizeState
       *Window.AppWindow
@@ -656,6 +675,7 @@ Module JSWindow
       Active.b
       NSWindow.i
       ObserverObject.i
+      isFulscreen.i
     EndStructure
     
     Global NewMap MacOSResizeStates.MacOSResizeState()
@@ -679,19 +699,55 @@ Module JSWindow
       ProcedureReturn 0
     EndProcedure
     
+    
+    Procedure ShowGadgetThread(gadget)
+      Delay(300)
+      HideGadget(gadget,#False)
+    EndProcedure 
+    
+    
     ; Callback - called from Objective-C observer
     ProcedureC MacOSFrameDidChange(*self, sel, notification)
       ; Get our context from the notification's object
       Protected nsWindow = CocoaMessage(0, notification, "object")
-      Debug "MacOSFrameDidChange"
       ; Find our state by matching the window
       LockMutex(MacOSResizeMonitorMutex)
       ForEach MacOSResizeStates()
         If MacOSResizeStates()\NSWindow = nsWindow And MacOSResizeStates()\Active
           Protected *State.MacOSResizeState = @MacOSResizeStates()
           
+          
+          ; Define the constant for the FullScreen bit in the styleMask
+          ; Note: PureBasic uses different naming for these constants, but the value is the key.
+          ; The value for NSWindowStyleMaskFullScreen is 1 << 14, or 16384 (0x4000)
+          #NSWindowStyleMaskFullScreen = 16384 
+          
+          ; ... inside your ProcedureC MacOSFrameDidChange ...
+          
+          Protected styleMask.i = CocoaMessage(0, nsWindow, "styleMask") 
+          
+          ; Check if the FullScreen bit is set
+          Protected isFullScreen.b = Bool((styleMask & #NSWindowStyleMaskFullScreen) <> 0)
+          
+          If isFullScreen
+            
+            MacOSResizeStates()\isFulscreen = #True
+            HideGadget(MacOSResizeStates()\Window\WebviewGadget,#True)
+            CocoaMessage(0, WindowID(MacOSResizeStates()\Window\Window), "display")
+            
+            CreateThread(@ShowGadgetThread(),MacOSResizeStates()\Window\WebviewGadget)
+          ElseIf MacOSResizeStates()\isFulscreen 
+            MacOSResizeStates()\isFulscreen = #False
+            
+            HideGadget(MacOSResizeStates()\Window\WebviewGadget,#True)
+            CocoaMessage(0, WindowID(MacOSResizeStates()\Window\Window), "display")
+            
+            CreateThread(@ShowGadgetThread(),MacOSResizeStates()\Window\WebviewGadget)
+          EndIf 
+          
           Protected currentW.i = WindowWidth(*State\Window\Window)
           Protected currentH.i = WindowHeight(*State\Window\Window)
+          
           
           If currentW <> *State\LastWidth Or currentH <> *State\LastHeight
             *State\LastWidth = currentW
@@ -750,11 +806,11 @@ Module JSWindow
       LockMutex(MacOSResizeMonitorMutex)
       
       Protected key.s = Str(*Window\Window)
-      
       If FindMapElement(MacOSResizeStates(), key)
         MacOSResizeStates(key)\Active = #False
         
         If MacOSResizeStates(key)\ObserverObject
+          
           Protected notificationCenter = CocoaMessage(0, 0, "NSNotificationCenter defaultCenter")
           CocoaMessage(0, notificationCenter, "removeObserver:", MacOSResizeStates(key)\ObserverObject)
           CocoaMessage(0, MacOSResizeStates(key)\ObserverObject, "release")
@@ -766,7 +822,7 @@ Module JSWindow
       UnlockMutex(MacOSResizeMonitorMutex)
     EndProcedure
     
-CompilerEndIf
+  CompilerEndIf
   
   ; Modify your CreateJSWindow procedure to register notifications:
   
@@ -791,8 +847,12 @@ CompilerEndIf
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         SetWindowCallback(@WindowCallback(),window,#PB_Window_NoChildEvents)
       CompilerEndIf
+      CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+        webViewGadget = WebViewGadget(#PB_Any, -1, -1, MaxDesktopWidth+2, MaxDesktopHeight+2,#PB_WebView_Debug)
+      CompilerElse
+        webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight,#PB_WebView_Debug)
+      CompilerEndIf
       
-      webViewGadget = WebViewGadget(#PB_Any, -1, -1, MaxDesktopWidth, MaxDesktopHeight,#PB_WebView_Debug)
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         HideGadget(webViewGadget,#True)
       CompilerEndIf
@@ -825,6 +885,7 @@ CompilerEndIf
     CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
       MacOSUnregisterResizeNotifications(*Window)
     CompilerEndIf
+    HideWindow(*Window\Window,#True )
     CloseWindow(*Window\Window)
   EndProcedure
   
@@ -906,10 +967,9 @@ CompilerEndIf
   
 EndModule
 
-
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 685
-; FirstLine = 675
+; CursorPosition = 943
+; FirstLine = 932
 ; Folding = -----------
 ; EnableXP
 ; DPIAware
