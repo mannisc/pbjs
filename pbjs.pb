@@ -5,7 +5,10 @@
 ;=====================================================================
 DeclareModule OsTheme
   Declare IsDarkModeActive()
-  Declare ApplyThemeToWinHandle(hWnd)
+  ; For Windows
+  CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+    Declare ApplyThemeToWinHandle(hWnd)
+  CompilerEndIf 
   Declare InitOsTheme()
   Global isDarkModeActiveCached
   
@@ -226,7 +229,7 @@ Module OsTheme
       EndIf 
       Debug "DARK MODE: "+Str(isDarkModeActiveCached)
       SetDarkTitleBar(hWnd, isDarkModeActiveCached)
-       If isDarkModeActiveCached
+      If isDarkModeActiveCached
         SetWindowThemeDynamic(hWnd, "DarkMode_Explorer")
       Else
         SetWindowThemeDynamic(hWnd, "Explorer")
@@ -265,11 +268,12 @@ DeclareModule WindowManager
     *CleanupProc.ProtoCleanupWindow
     UserData.i
     Open.b
+    InjectTimer.i
   EndStructure
   
   Declare InitWindowManager()
   Declare.i AddManagedWindow(Title.s, *Gadgets, *CreateProc, *HandleProc, *RemoveProc, *CleanupProc = 0)
-  Declare  OpenManagedWindow(*Window.AppWindow)
+  Declare  OpenManagedWindow(*Window.AppWindow, showWindow=#True)
   Declare CloseManagedWindow(*Window.AppWindow)
   Declare RunEventLoop(*HandleMainEvent.HandleMainEvent)
   Declare CleanupManagedWindows()
@@ -336,10 +340,12 @@ Module WindowManager
     ProcedureReturn @ManagedWindows()
   EndProcedure
   
-  Procedure OpenManagedWindow(*Window.AppWindow)
+  Procedure OpenManagedWindow(*Window.AppWindow, showWindow=#True)
     If Not *Window\Open
       If *Window\Window <> -1
-        ShowWindowFadeIn(*Window\Window)
+        If showWindow 
+          ShowWindowFadeIn(*Window\Window)
+        EndIf 
         *Window\Open = #True
         ProcedureReturn 1
       EndIf 
@@ -475,31 +481,35 @@ Module JSWindow
   
   Declare RegisterWebViewScale(gadget)
   Declare UpdateWebViewScale(gadget, width, height)
-  Declare WindowCallback(hWnd, uMsg, WParam, LParam)
+  
   
   Declare HandleEvent(*Window,Event.i, Gadget.i, Type.i)
   Declare RemoveWindow(*Window)
   
   Declare RegisterSync(webViewGadget)
   
+  ; For Windows
+  CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+    Declare WindowCallback(hWnd, uMsg, WParam, LParam)
+  CompilerEndIf
+  
   Structure JSWindowState
-    Loaded.b
+    Visible.b
+    Injected.b
+    Ready.b
   EndStructure 
   
   Global NewMap JSWindows.JSWindowState()
   
   
-  
   Procedure ShowWebViewGadgetThread(gadgetID)
     CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-      ; Animate fade in
       duration = 150
       Protected hWnd = GadgetID(gadgetID)
       If hWnd = 0 : ProcedureReturn : EndIf
-      ; Enable layered window
       Protected style = GetWindowLong_(hWnd, #GWL_EXSTYLE)
       SetWindowLong_(hWnd, #GWL_EXSTYLE, style | #WS_EX_LAYERED)
-      HideGadget(gadgetId, #False)
+      HideGadget(gadgetID, #False)
       SetLayeredWindowAttributes_(hWnd, 0, 0, #LWA_ALPHA)
       Protected startTime = ElapsedMilliseconds()
       Protected endTime = startTime + duration
@@ -511,162 +521,61 @@ Module JSWindow
         Delay(10)
       Until now >= endTime
       SetLayeredWindowAttributes_(hWnd, 0, 255, #LWA_ALPHA)
+      
     CompilerElse   
       HideGadget(gadgetID, #False)
     CompilerEndIf
   EndProcedure
   
   Procedure ShowWebView(window,gadgetID)
-    If JSWindows(Str(window))\Loaded = #False
-      JSWindows(Str(window))\Loaded = #True
-      Debug "SHOW"
-      Debug window
+    If JSWindows(Str(window))\Visible = #False
+      JSWindows(Str(window))\Visible = #True
       CreateThread(@ShowWebViewGadgetThread(),gadgetID)
     EndIf 
   EndProcedure
   
-  
-  Procedure CallbackReadyState(JsonParameters$)
+  Procedure CallbackReadyState(JsonParameters.s)
     Dim Parameters(0)
-    ParseJSON(0, JsonParameters$)
+    ParseJSON(0, JsonParameters)
     ExtractJSONArray(JSONValue(0), Parameters())
     window = Parameters(0)
-    
-    
-    
-    webViewGadget =  Parameters(1)
-    
-    ;HideWindow(Parameters(0),#False)
-    ;HideGadget(webViewGadget,#False)
-    Delay(200)
-    ShowWebView(window,webViewGadget)
-    
+    JSWindows(Str(window))\Ready = #True
+    CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+      If *Window\Open
+        HideWindow(window,#False)
+      EndIf 
+    CompilerElse 
+      If *Window\Open
+        webViewGadget =  Parameters(1)
+        ShowWebView(window,webViewGadget) ; Fade In -> on windows open window first, then load content
+      Else
+        HideGadget(webViewGadget,#False)
+      EndIf 
+    CompilerEndIf
     
     ProcedureReturn UTF8(~"")
   EndProcedure
   
-  Procedure.i CreateJSWindow(x,y,w,h,title.s,flags,html.s="",js.s="")
-    
-    window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags|#PB_Window_Invisible)
-    If window
-      Protected hWnd = WindowID(window)
-      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-        SetWindowLongPtr_(WindowID(window), #GWL_STYLE, GetWindowLongPtr_(WindowID(window), #GWL_STYLE) | #WS_CLIPCHILDREN)
-        ApplyThemeToWinHandle(hWnd)
-        UpdateWindow_(hWnd)
-        RedrawWindow_(hWnd, #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN | #RDW_FRAME) 
-      CompilerEndIf
-      SetWindowColor(window,RGB(36,36,36))
-      
-      
-      
-      
-      
-      
-      JSWindows(Str(window))\Loaded = #False
-      
-      SetWindowCallback(@WindowCallback(),window,#PB_Window_NoChildEvents)
-      
-      webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight,#PB_WebView_Debug)
-      HideGadget(webViewGadget,#True)
-      
-      BindWebViewCallback(webViewGadget, "callbackReadyState", @CallbackReadyState())
-      SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
-      
-      
-      
-      
-      
-      
-      
-      startupJS.s = "" + 
-                    "(function(){" + 
-                    "if(!window.__pbjsStyleAdded){" + 
-                    "" + 
-                    "console.log('!!!!!!!INSERT');" + 
-                    "const style=document.createElement('style');" + 
-                    "style.id='pbjs-dynamic-style';" + 
-                    "" + 
-                    "style.textContent='body, html {" + 
-                    "width: var(--container-width);" + 
-                    "height: var(--container-height);" + 
-                    "min-width: 0!important;" + 
-                    "min-height: 0!important;" + 
-                    "}';" + 
-                    "" + 
-                    "document.head.appendChild(style);" + 
-                    "window.__pbjsStyleAdded=true;" + 
-                    "}" + 
-                    "})();" + 
-                    "" + 
-                    "document.addEventListener('DOMContentLoaded',function(){" + 
-                    "callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" + 
-                    "});" + 
-                    "" + 
-                    "setTimeout(function(){" + 
-                    "callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" + 
-                    "},0);"
-      
-      
-      WebViewExecuteScript(webViewGadget, startupJS)
-      
-      
-      
-      RegisterSync(webViewGadget)
-      
-      
-      
-      WebViewExecuteScript(webViewGadget, js)
-      
-      
-      
-      RegisterWebViewScale(webViewGadget)
-      
-      
-      
-      ; Set initial scale
-      UpdateWebViewScale(webViewGadget, WindowWidth(window), WindowHeight(window))
-      
-      *Window = AddManagedWindow(title, window,webViewGadget, @HandleEvent(), @RemoveWindow())
-      
-      
-      Repeat : Delay(1) : Until WindowEvent() = 0
-      
-      
-      ProcedureReturn *Window
-    EndIf 
-    ProcedureReturn -1
-  EndProcedure 
   
-  Procedure RegisterSync(webViewGadget)
+  Procedure CallbackInjected(JsonParameters.s)
+    ;MessageRequester("INJECTED","YES")
     
+    Dim Parameters(0)
+    ParseJSON(0, JsonParameters)
+    ExtractJSONArray(JSONValue(0), Parameters())
     
-    WebViewExecuteScript(webViewGadget, "")
+    window = Parameters(0)
+    
+    Debug "INJECTED"
+    Debug window
+    Debug JSWindows(Str(window))\Injected
+    
+    JSWindows(Str(window))\Injected = #True
+    
+    ProcedureReturn UTF8(~"")
   EndProcedure
   
-  
-  
-  Procedure WindowCallback(hWnd, uMsg, WParam, LParam) 
-    Protected w, h
-    
-    
-    *Window.AppWindow =  GetManagedWindowFromWindowHandle(hWnd)
-    
-    If *Window = 0
-      ProcedureReturn #PB_ProcessPureBasicEvents 
-    EndIf 
-    
-    Select uMsg 
-      Case #WM_SIZE , #WM_SIZING
-        w = WindowWidth(*Window\Window)
-        h = WindowHeight(*Window\Window)
-        UpdateWebViewScale(*Window\WebViewGadget, w, h)  
-        ProcedureReturn #True
-        
-    EndSelect
-    
-    ProcedureReturn #PB_ProcessPureBasicEvents 
-  EndProcedure 
   ; Fast resize procedure - sets width and height directly
   Procedure RegisterWebViewScale(gadget)
     Protected script.s = ""+
@@ -685,10 +594,151 @@ Module JSWindow
   
   
   
+  Procedure InjectStartJS(*Window.AppWindow)
+    
+    *Window\InjectTimer = ElapsedMilliseconds()
+    
+    window.i = *Window\Window
+    webViewGadget.i = *Window\WebViewGadget
+    
+    
+    RegisterWebViewScale(webViewGadget)
+    UpdateWebViewScale(webViewGadget, WindowWidth(window), WindowHeight(window))
+    
+    startupJS.s = "" + 
+                  "(function(){" + 
+                  "if(!window.__pbjsStyleAdded){" + 
+                  "" + 
+                  "console.log('!!!!!!!INSERT');" + 
+                  "const style=document.createElement('style');" + 
+                  "style.id='pbjs-dynamic-style';" + 
+                  "" + 
+                  "style.textContent='body, html {" + 
+                  "width: var(--container-width);" + 
+                  "height: var(--container-height);" + 
+                  "min-width: 0!important;" + 
+                  "min-height: 0!important;" + 
+                  "}';" + 
+                  "" + 
+                  "document.head.appendChild(style);" + 
+                  "window.__pbjsStyleAdded=true;" + 
+                  "}" + 
+                  "})();" + 
+                  "" + 
+                  "document.addEventListener('DOMContentLoaded',function(){" + 
+                  "callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" + 
+                  "});" + 
+                  "" + 
+                  "setTimeout(function(){" + 
+                  "callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" + 
+                  "},0);"+
+                  "callbackInjected(" + Str(window) + ");"
+    
+    
+    WebViewExecuteScript(webViewGadget, startupJS)
+    
+  EndProcedure 
+  
+  
+  
+  
+  Procedure.i CreateJSWindow(x,y,w,h,title.s,flags,html.s="",js.s="")
+    
+    window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
+    If window
+      Protected hWnd = WindowID(window)
+      
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        SetWindowLongPtr_(WindowID(window), #GWL_STYLE, GetWindowLongPtr_(WindowID(window), #GWL_STYLE) | #WS_CLIPCHILDREN)
+        ApplyThemeToWinHandle(hWnd)
+        UpdateWindow_(hWnd)
+        RedrawWindow_(hWnd, #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN | #RDW_FRAME) 
+      CompilerEndIf
+      SetWindowColor(window,RGB(36,36,36))
+      
+      JSWindows(Str(window))\Visible = #False
+      JSWindows(Str(window))\Injected = #False
+      
+      ; For Windows
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        SetWindowCallback(@WindowCallback(),window,#PB_Window_NoChildEvents)
+      CompilerEndIf
+      
+      webViewGadget = WebViewGadget(#PB_Any, -1, -1, MaxDesktopWidth, MaxDesktopHeight,#PB_WebView_Debug)
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        HideGadget(webViewGadget,#True)
+      CompilerEndIf
+      
+      BindWebViewCallback(webViewGadget, "callbackReadyState", @CallbackReadyState())
+      BindWebViewCallback(webViewGadget, "callbackInjected", @CallbackInjected())
+      
+      SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
+      
+      RegisterSync(webViewGadget)
+      WebViewExecuteScript(webViewGadget, js)
+      RegisterWebViewScale(webViewGadget)
+      
+      ; Set initial scale 
+      UpdateWebViewScale(webViewGadget, WindowWidth(window), WindowHeight(window))
+      *Window = AddManagedWindow(title, window,webViewGadget, @HandleEvent(), @RemoveWindow())
+      
+      
+      Repeat : Delay(1) : Until WindowEvent() = 0
+      
+      
+      
+      
+      
+      ProcedureReturn *Window
+    EndIf 
+    ProcedureReturn -1
+  EndProcedure 
+  
+  
+  
+  Procedure RegisterSync(webViewGadget)
+    WebViewExecuteScript(webViewGadget, "")
+    
+  EndProcedure
+  
+  
+  ; For Windows
+  CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+    
+    Procedure WindowCallback(hWnd, uMsg, WParam, LParam) 
+      Protected w, h
+      
+      *Window.AppWindow =  GetManagedWindowFromWindowHandle(hWnd)
+      
+      If *Window = 0
+        ProcedureReturn #PB_ProcessPureBasicEvents 
+      EndIf 
+      
+      Select uMsg 
+        Case #WM_SIZE , #WM_SIZING
+          w = WindowWidth(*Window\Window)
+          h = WindowHeight(*Window\Window)
+          UpdateWebViewScale(*Window\WebViewGadget, w, h)  
+          ProcedureReturn #True
+          
+      EndSelect
+      
+      ProcedureReturn #PB_ProcessPureBasicEvents 
+    EndProcedure 
+    
+  CompilerEndIf
+  
+  
+  
   
   Procedure.i HandleEvent(*Window.AppWindow,Event.i, Gadget.i, Type.i)
     
     Protected closeWindow = #False
+    
+    If Not JSWindows(Str(*Window\Window))\Injected And ElapsedMilliseconds()-*Window\InjectTimer > 16
+      InjectStartJS(*Window)
+    EndIf 
+    
     
     Select Event
       Case #PB_Event_CloseWindow
@@ -696,6 +746,10 @@ Module JSWindow
       Case #PB_Event_Gadget
         Select Gadget
         EndSelect
+      Case #PB_Event_SizeWindow
+       w = WindowWidth(*Window\Window)
+       h = WindowHeight(*Window\Window)
+       UpdateWebViewScale(*Window\WebViewGadget, w, h)  
     EndSelect
     
     If closeWindow
@@ -708,19 +762,27 @@ Module JSWindow
     CloseWindow(*Window\Window)
   EndProcedure
   
-  Procedure OpenJSWindow(*Window.AppWindow )    
-    OpenManagedWindow(*Window)
+  Procedure OpenJSWindow(*Window.AppWindow )  
+    
+    
+    showWindow = #True 
+    CompilerIf #PB_Compiler_OS <> #PB_OS_Windows
+      If  FindMapElement(JSWindows(),Str(*Window\Window)) And  JSWindows(Str(*Window\Window))\Ready = #False
+        showWindow = #False 
+      EndIf 
+    CompilerEndIf
+    OpenManagedWindow(*Window,showWindow)
+    
   EndProcedure
   
   
 EndModule
 
 
-
-; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 231
-; FirstLine = 217
-; Folding = --------
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 749
+; FirstLine = 733
+; Folding = ----------
 ; EnableXP
 ; DPIAware
-; Executable = ..\main.exe
+; Executable = ../main.exe

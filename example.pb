@@ -66,15 +66,16 @@ mainWindow.s = PeekS(?MainWindow,?EndMainWindow-?MainWindow, #PB_UTF8   )
 Execute::StartApp(mainWindow.s)
 WindowManager::CleanupManagedWindows()
 
+Debug "End"
+End 
 DataSection
     MainWindow:
     IncludeBinary "react/main-window/dist/index.html"
     EndMainWindow:
   EndDataSection
-
-; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 39
-; FirstLine = 33
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 68
+; FirstLine = 26
 ; Folding = -
 ; EnableXP
 ; DPIAware
