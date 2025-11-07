@@ -691,18 +691,10 @@ Module JSWindow
     If Not JSWindows(Str(window))\Ready
       JSWindows(Str(window))\Ready = #True
       JSWindows(Str(window))\Injected = #True
-
       *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
       webViewGadget =  Parameters(1)
-      
-      Protected script.s = ""
-      
-      WebViewExecuteScript(webViewGadget, script)
       HideGadget(webViewGadget,#False)
-
     EndIf 
-    
-    
     ProcedureReturn UTF8(~"")
   EndProcedure
   
@@ -1118,7 +1110,7 @@ Module JSWindow
   
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 700
+; CursorPosition = 697
 ; FirstLine = 685
 ; Folding = ----------
 ; EnableXP
