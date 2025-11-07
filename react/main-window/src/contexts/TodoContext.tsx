@@ -17,7 +17,11 @@ interface TodoContextType {
 const TodoContext = createContext<TodoContextType | undefined>(undefined);
 
 export function TodoProvider({ children }: { children: ReactNode }) {
-  const [todos, setTodos] = useState<Todo[]>([]);
+  const [todos, setTodos] = useState<Todo[]>([
+    { id: 1, text: "Sample Todo", completed: false },
+    { id: 2, text: "Another Todo", completed: true },
+    { id: 3, text: "Third Todo", completed: false },
+  ]);
 
   const addTodo = (text: string) => {
     setTodos([...todos, { id: Date.now(), text, completed: false }]);
