@@ -249,7 +249,7 @@ Module OsTheme
       
       ProcedureReturn CallWindowProc_(oldProc, hwnd, msg, wParam, lParam) ; sometimes stackoveflow, fix wip
     EndProcedure
-
+    
     
     ; Change the callback to use proper calling convention
     ProcedureC ApplyThemeToWindowChildren(hWnd, lParam)  ; Added CDLL
@@ -459,7 +459,7 @@ Module WindowManager
   EndProcedure
   
   
-
+  
   
   Procedure CleanupManagedWindows()
     NewList Windows()
@@ -603,11 +603,15 @@ DeclareModule JSWindow
   Declare CreateJSWindow(x,y,w,h,title.s,flags,*htmlStart,*htmlStop,*WindowReadyCallback=0)
   Declare OpenJSWindow(*Window.AppWindow )    
   Structure JSWindow
-    OpenTime.i
-    Visible.b
     WebViewGadget.i
+    ;Stages
+    OpenTime.i
     LoadedCode.b
+    Injected.b
     Ready.b
+    Open.b
+    Visible.b
+    
     Html.s
     *HtmlStart
     *HtmlEnd
@@ -615,8 +619,7 @@ DeclareModule JSWindow
   EndStructure 
   Enumeration #PB_Event_FirstCustomValue
     #EventLoadedHtml
-    #EventRenderedHtml
-    #EventDocumentReady
+    #EventContentReady
   EndEnumeration
 EndDeclareModule
 
@@ -646,10 +649,10 @@ Module JSWindow
     ExtractJSONArray(JSONValue(0), Parameters())
     window = Parameters(0)
     *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-    
-    PostEvent(#CustomWindowEvent, window, 0,#EventDocumentReady)
-
-
+    If Not JSWindows(Str(window))\Ready
+      JSWindows(Str(window))\Ready = #True
+      PostEvent(#CustomWindowEvent, window, 0,#EventContentReady)
+    EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
   
@@ -660,19 +663,37 @@ Module JSWindow
     ExtractJSONArray(JSONValue(0), Parameters())
     window = Parameters(0)
     If IsWindow(window)
-      If Not JSWindows(Str(window))\Ready
-        JSWindows(Str(window))\Ready = #True
-        *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-        webViewGadget =  Parameters(1)
-        PostEvent(#CustomWindowEvent, window, 0,#EventRenderedHtml)
+      If Not JSWindows(Str(window))\Injected
+        JSWindows(Str(window))\Injected = #True
       EndIf 
     EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
   
+  
+  Procedure SetBodyFadeIn(*JSWindow.JSWindow)
+    If *JSWindow\Visible
+      fadeInTime = 150
+    Else
+      fadeInTime = 0
+    EndIf 
+    
+    bodyFadeIn.s =  "const style=document.createElement('style');" +
+                    "style.id='pbjs-dynamic-style-pbjs-document-ready';" +
+                    "style.textContent='body.pbjs-document-ready{" +
+                    "transition:opacity " + fadeInTime + "ms ease-out!important;" +
+                    "}';" +
+                    "document.head.appendChild(style);";
+   
+    WebViewExecuteScript(*JSWindow\WebViewGadget, bodyFadeIn)
+    
+  EndProcedure 
+  
+  
+  
   Procedure InjectJS(*Window.AppWindow)
     
-
+    
     window.i = *Window\Window
     *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
     webViewGadget.i = *JSWindow\WebViewGadget
@@ -681,81 +702,75 @@ Module JSWindow
     height = WindowHeight(window)
     
     If *JSWindow\Visible
-      fadeInTime = 150
-      fadeInY = 9
-      
+      fadeInTime = 150      
     Else
       fadeInTime = 0
-      fadeInY = 0
     EndIf 
     
     startupJS.s = "" + 
-                  "function pbjsUpdateScale(width, height) {" +
-                  "  console.log('resize',width,height);"+
-                  "  document.documentElement.style.setProperty('--container-width', width + 'px');" +
-                  "  document.documentElement.style.setProperty('--container-height', height + 'px')" +
-                  "}"+
-                  "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"+
+                  "if(!window.__pbjsAdded){" +
+                  " callbackInjected(" + Str(window) + "," + Str(webViewGadget) + ");"+
+                  "" + 
+                  " function pbjsUpdateScale(width, height) {" +
+                  "   console.log('resize',width,height);"+
+                  "   document.documentElement.style.setProperty('--container-width', width + 'px');" +
+                  "   document.documentElement.style.setProperty('--container-height', height + 'px')" +
+                  " }"+         
                   ""+
-                  "(function(){" + 
-                  "if(!window.__pbjsAdded){" + 
+                  " function pbjsDocumentReady() {" +
+                  "   document.body.classList.add('pbjs-document-ready');" +
+                  "   callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" +
+                  " }"+
+                  ""+
+                  " pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"+
+                  ""+
+                  " const style=document.createElement('style');" + 
+                  " style.id='pbjs-dynamic-style';" + 
                   "" + 
-                  "console.log('!!!!!!!INSERT');" + 
-                  "const style=document.createElement('style');" + 
-                  "style.id='pbjs-dynamic-style';" + 
+                  " style.textContent='html, body {" + 
+                  "   width: var(--container-width);" + 
+                  "   height: var(--container-height);" + 
+                  "   min-width: 0!important;" + 
+                  "   min-height: 0!important;" + 
+                  " }" + 
                   "" + 
-                  "style.textContent='html, body {" + 
-                  "width: var(--container-width);" + 
-                  "height: var(--container-height);" + 
-                  "min-width: 0!important;" + 
-                  "min-height: 0!important;" + 
-                  "}" + 
+                  " body {" + 
+                  "   opacity: 0;" + 
+                  " }" + 
                   "" + 
-                  "body {" + 
-                  "opacity: 0.0001;" + 
-                  "transform: translateY("+fadeInY+"px)"+
-                  "}" + 
+                  " body.pbjs-document-ready {" + 
+                  "   opacity: 1;" + 
+                  "   transition: opacity "+fadeInTime+"ms ease-out" + 
+                  " }';" + 
                   "" + 
-                  "body.injected-startup-code {" + 
-                  "opacity: 1;" + 
-                  "transform: translateY(0);"+
-                  "transition: opacity "+fadeInTime+"ms ease-out, transform "+fadeInTime+"ms ease-out;" + 
-                  "}';" + 
-                  "" + 
-                  "document.head.appendChild(style);" + 
+                  " document.head.appendChild(style);" + 
                   "" +
-                  "if (document.readyState === 'loading') {" +
-                  "  document.addEventListener('DOMContentLoaded', function() {" +
-                  "    callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" +
-                  "  });" +
-                  "} else {" +
-                  "  callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" +
-                  "}" +
-                  ""+  
-                  "setTimeout(() => {" +
-                  "document.body.classList.add('injected-startup-code');" +
-                  "setTimeout(() => {" +
-                  "callbackInjected(" + Str(window) + "," + Str(webViewGadget) + ");"+
-                  "},0);" +
-                  "},10);" +
+                  " setTimeout(() => {" +
+                  "  if (document.readyState === 'loading') {" +
+                  "    document.addEventListener('DOMContentLoaded', function() {" +
+                  "      pbjsDocumentReady();"+
+                  "    });" +
+                  "  } else {" +
+                  "    pbjsDocumentReady();"+
+                  "  }" +
+                  " },0);" +
                   ""+
-                  "window.__pbjsAdded=true;" + 
-                  "}" + 
-                  "" + 
-                  "})();" 
-    
-    
+                  ""+
+                  " window.__pbjsAdded=true;" + 
+                  "}" 
+
+
     WebViewExecuteScript(webViewGadget, startupJS)
     
   EndProcedure 
   
-    
+  
   Procedure UpdateWebViewScale(gadget, width, height)
     Protected script$ = "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
     WebViewExecuteScript(gadget, script$)
   EndProcedure
   
-
+  
   ;#######MACOS RESIZE
   
   
@@ -922,7 +937,7 @@ Module JSWindow
   
   ; Modify your CreateJSWindow procedure to register notifications:
   
-
+  
   
   
   Procedure LoadHtml(window)
@@ -948,7 +963,7 @@ Module JSWindow
       JSWindows(Str(window))\HtmlStart = *htmlStart
       JSWindows(Str(window))\HtmlEnd = *htmlStop
       JSWindows(Str(window))\WindowReadyProc = *WindowReadyCallback
-
+      
       
       
       Protected hWnd = WindowID(window)
@@ -1042,11 +1057,11 @@ Module JSWindow
     *JSWIndow.JSWindow = JSWindows(Str(*Window\Window))
     
     Protected closeWindow = #False
-    If Not *JSWIndow\Ready And *JSWIndow\LoadedCode 
+    If Not *JSWIndow\Injected And *JSWIndow\LoadedCode 
       InjectJS(*Window)
     EndIf
     
-
+    
     Select Event
       Case #PB_Event_CloseWindow
         closeWindow = #True
@@ -1065,29 +1080,35 @@ Module JSWindow
             *JSWIndow\LoadedCode = #True 
             InjectJS(*Window)
             RegisterSync(webViewGadget)
-          Case #EventRenderedHtml
+          Case #EventContentReady
             If *Window\Open And Not *JSWIndow\Visible
               HideWindow(*Window\Window, #False)
               HideGadget(*JSWIndow\WebViewGadget,#False)
               *JSWIndow\Visible = #True 
+              SetBodyFadeIn(*JSWIndow)
             EndIf 
-          Case #EventDocumentReady
-            If *JSWIndow\WindowReadyProc
-              CallFunctionFast(*JSWIndow\WindowReadyProc, *Window , *JSWIndow)
+            
+            If *JSWIndow\Ready
+              If *JSWIndow\WindowReadyProc
+                CallFunctionFast(*JSWIndow\WindowReadyProc, *Window , *JSWIndow)
+              EndIf 
             EndIf 
+            
         EndSelect 
     EndSelect
     
     If closeWindow
       CloseManagedWindow(*Window)
     EndIf    
+    
     ProcedureReturn #True
   EndProcedure
   
   
   Procedure ForceWindowVisible(*Window.AppWindow )
-     Delay(600)
-     PostEvent(#CustomWindowEvent, *Window\Window, 0,#EventRenderedHtml) 
+    Delay(600)
+    
+    PostEvent(#CustomWindowEvent, *Window\Window, 0,#EventContentReady) 
   EndProcedure
   
   
@@ -1105,7 +1126,7 @@ Module JSWindow
         *JSWIndow\Visible = #True 
       CompilerEndIf 
     EndIf 
-   
+    *JSWIndow\Open = #True 
     *JSWIndow\Visible = Bool(Not manualOpen)
     *JSWIndow\OpenTime = ElapsedMilliseconds()
     OpenManagedWindow(*Window,manualOpen)
@@ -1117,8 +1138,8 @@ Module JSWindow
   
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 928
-; FirstLine = 927
+; CursorPosition = 755
+; FirstLine = 729
 ; Folding = ----------
 ; EnableXP
 ; DPIAware
