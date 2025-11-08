@@ -1105,10 +1105,11 @@ Module JSWindow
   EndProcedure
   
   
-  Procedure ForceWindowVisible(*Window.AppWindow )
+  Procedure ForceWindowVisible(window)
     Delay(600)
-    
-    PostEvent(#CustomWindowEvent, *Window\Window, 0,#EventContentReady) 
+    If Not JSWindows(Str(window))\Ready
+      PostEvent(#CustomWindowEvent, window, 0,#EventContentReady) 
+    EndIf 
   EndProcedure
   
   
@@ -1131,15 +1132,15 @@ Module JSWindow
     *JSWIndow\OpenTime = ElapsedMilliseconds()
     OpenManagedWindow(*Window,manualOpen)
     
-    CreateThread(@ForceWindowVisible(),*Window)
+    CreateThread(@ForceWindowVisible(),*Window\Window)
     
   EndProcedure
   
   
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 755
-; FirstLine = 729
+; CursorPosition = 1109
+; FirstLine = 1104
 ; Folding = ----------
 ; EnableXP
 ; DPIAware
