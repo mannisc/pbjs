@@ -14,15 +14,36 @@ DeclareModule Execute
 EndDeclareModule
 Module Execute
   
-     UseModule WindowManager
-     UseModule JSWindow
-
-  Procedure.i HandleMainEvent( Event.i, Window.i, Gadget.i)
-    Select Event
-      Case #PB_Event_SysTray
-      Case #PB_Event_Menu
-      Case #PB_Event_Timer
-    EndSelect
+  UseModule WindowManager
+  UseModule JSWindow
+  
+  Global canClose = #False 
+  
+  Global *Window1, *Window2 
+  
+  Procedure.i HandleMainEvent( Event.i, EventWindow.i, EventGadget.i,EventType.i)
+    
+    If Event <> 0
+      
+      EventWindow = EventWindow()
+      EventGadget = EventGadget()
+      EventType = EventType()
+      If EventWindow = 1 
+        If Event = #PB_Event_Gadget And EventType = #PB_EventType_LeftClick   
+           If EventGadget = 1
+             JSWindow::OpenJSWindow(*Window2)
+           ElseIf EventGadget = 2
+             JSWindow::ResizeJSWindow(*Window2,650,20,250,500)
+           EndIf 
+          
+        ElseIf event = #PB_Event_CloseWindow
+          CloseWindow(1)
+          canClose = #True 
+        EndIf 
+      EndIf 
+    EndIf 
+    
+    
   EndProcedure 
   
   
@@ -31,6 +52,9 @@ Module Execute
     ; Debug *JSWindow\Html
   EndProcedure 
   
+  Procedure KeepRunning()
+    ProcedureReturn Bool(Not canClose)
+  EndProcedure
   
   Procedure StartApp(mainWindowHtmlStart,mainWindowHtmlStop)
     UseModule OsTheme
@@ -45,20 +69,27 @@ Module Execute
     
     WindowManager::InitWindowManager()
     
-    *Window1 = JSWindow::CreateJSWindow(600, 100, 600, 400, "PBJS Example",   #PB_Window_SystemMenu | #PB_Window_SizeGadget |  #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget,  mainWindowHtmlStart,mainWindowHtmlStop )
+    *Window1 = JSWindow::CreateJSWindow(600, 100, 600, 400, "PBJS JS Example",   #PB_Window_SystemMenu | #PB_Window_SizeGadget |  #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget,  mainWindowHtmlStart, mainWindowHtmlStop ,#JSWindow_Behaviour_HideWindow)
     
     
-    *Window2 = JSWindow::CreateJSWindow(100, 50, 700, 600, "PBJS Example", 
+    *Window2 = JSWindow::CreateJSWindow(500, 50, 700, 600, "PBJS JS Example", 
                                         #PB_Window_SystemMenu | #PB_Window_SizeGadget | 
-                                        #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindowHtmlStart,mainWindowHtmlStop,@WindowLoaded())
+                                        #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindowHtmlStart, mainWindowHtmlStop, #JSWindow_Behaviour_HideWindow, @WindowLoaded())
    
-   ;JSWindow::OpenJSWindow(*Window1)
     
-    JSWindow::OpenJSWindow(*Window2)
+   
+   
+   OpenWindow(1,100,300,300,300,"PBJS Native", #PB_Window_SystemMenu)
+   ButtonGadget(1,75,130,150,30,"Open PBJS Window")
+   ButtonGadget(2,75,170,150,30,"Resize PBJS Window")
 
-    WindowManager::RunEventLoop(@HandleMainEvent()) 
-    
-  EndProcedure
+   JSWindow::OpenJSWindow(*Window1)
+
+
+    WindowManager::RunEventLoop(@HandleMainEvent(),@KeepRunning()) 
+   
+   
+ EndProcedure
 EndModule
 
 
@@ -78,9 +109,9 @@ DataSection
   IncludeBinary "react/main-window/dist/index.html"
   EndMainWindow:
 EndDataSection
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 54
-; FirstLine = 31
-; Folding = -
+; IDE Options = PureBasic 6.21 (Windows - x64)
+; CursorPosition = 35
+; FirstLine = 28
+; Folding = --
 ; EnableXP
 ; DPIAware
