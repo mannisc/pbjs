@@ -27,8 +27,8 @@ Module Execute
   
   
   Procedure WindowLoaded(*Window.AppWindow,*JSWindow.JSWindow)
-    Debug *Window\Title
-    Debug *JSWindow\Html
+    ; Debug *Window\Title
+    ; Debug *JSWindow\Html
   EndProcedure 
   
   
@@ -53,7 +53,7 @@ Module Execute
                                         #PB_Window_SystemMenu | #PB_Window_SizeGadget | 
                                         #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindowHtmlStart,mainWindowHtmlStop,@WindowLoaded())
    
-    JSWindow::OpenJSWindow(*Window1)
+   JSWindow::OpenJSWindow(*Window1)
     
     JSWindow::OpenJSWindow(*Window2)
 
@@ -79,9 +79,9 @@ DataSection
   IncludeBinary "react/main-window/dist/index.html"
   EndMainWindow:
 EndDataSection
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 29
-; FirstLine = 13
+; IDE Options = PureBasic 6.21 (Windows - x64)
+; CursorPosition = 55
+; FirstLine = 31
 ; Folding = -
 ; EnableXP
 ; DPIAware

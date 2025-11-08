@@ -12,7 +12,7 @@ DeclareModule OsTheme
   Declare InitOsTheme()
   
   Global IsDarkModeActiveCached = #False
-  Global darkThemeBackgroundColor = RGB(30,30,30)
+  Global darkThemeBackgroundColor = RGB(36,36,36)
   Global darkThemeForegroundColor = RGB(255, 255, 255)
   Global lightThemeBackgroundColor = RGB(250,250,250)
   Global lightThemeForegroundColor = RGB(0,0,0)
@@ -29,7 +29,7 @@ Module OsTheme
   Global NewMap StaticControlThemeProcs()
   
   Procedure InitOsTheme()
-    isDarkModeActiveCached = IsDarkModeActive()
+    IsDarkModeActive()
   EndProcedure 
   
   Procedure IsDarkModeActive()
@@ -113,6 +113,7 @@ Module OsTheme
       result = #False
       
     CompilerEndIf
+    
     If result
       themeBackgroundColor = darkThemeBackgroundColor
       themeForegroundColor = darkThemeForegroundColor
@@ -120,6 +121,7 @@ Module OsTheme
       themeBackgroundColor = lightThemeBackgroundColor
       themeForegroundColor = lightThemeForegroundColor
     EndIf 
+    IsDarkModeActiveCached = result
     ProcedureReturn result
   EndProcedure
   
@@ -247,9 +249,7 @@ Module OsTheme
       
       ProcedureReturn CallWindowProc_(oldProc, hwnd, msg, wParam, lParam) ; sometimes stackoveflow, fix wip
     EndProcedure
-    
-    Global themeBackgroundColor.l
-    Global themeForegroundColor.l
+
     
     ; Change the callback to use proper calling convention
     ProcedureC ApplyThemeToWindowChildren(hWnd, lParam)  ; Added CDLL
@@ -336,7 +336,7 @@ EndModule
 
 DeclareModule WindowManager
   
-  Prototype.i HandleMainEvent(Event.i, Window.i, Gadget.i)
+  Prototype.i HandleMainEvent(Event.i, Window.i, Gadget.i, Type.i)
   Prototype.i MaxSizeChangedEvent(*Window, widht, height)
   Prototype.i ProtoOpenWindow(*Window)
   Prototype.i ProtoHandleEvent(Event.i, Window.i, Gadget.i, Type.i)
@@ -363,6 +363,7 @@ DeclareModule WindowManager
   Declare GetManagedWindowFromWindowHandle(hWnd)
   Declare WindowMaxSizeChanged()
   Declare UpdateMaxDesktopSize()
+  Declare HandleWindowEvent(Event, EventWindow, EventGadget,EventType)
   
   Global DesktopCount = ExamineDesktops()
   Global DPI_Scale
@@ -494,40 +495,44 @@ Module WindowManager
     
   EndProcedure
   
+  Procedure HandleWindowEvent(Event, EventWindow, EventGadget,EventType)
+    If Event <> 0
+      If Event = #PB_Event_Timer And EventTimer() = #Timer_CheckDesktop
+        If UpdateMaxDesktopSize()
+          WindowMaxSizeChanged()
+        EndIf
+      EndIf
+      ForEach ManagedWindows()
+        If ManagedWindows()\HandleProc
+          If Event = #CustomWindowEvent Or ManagedWindows()\Open     
+            If EventWindow = ManagedWindows()\Window And 
+               KeepWindow = CallFunctionFast(ManagedWindows()\HandleProc, @ManagedWindows(), Event,EventGadget,EventType)
+              If Not KeepWindow
+                DeleteElement(ManagedWindows())
+                Break
+              EndIf
+            EndIf
+          EndIf 
+        EndIf
+      Next
+    EndIf 
+  EndProcedure
+  
   Procedure RunEventLoop(*HandleMainEvent.HandleMainEvent)
     Protected Event.i
     Protected EventWindow.i
     Protected EventGadget.i
     Protected KeepRunning.i = #True
     Protected KeepWindow.i
-    Protected OpenedWindowExists.i
-    
+    Protected OpenedWindowExists.i 
     While KeepRunning
       Event = WaitWindowEvent(16)
-      
       If Event <> 0
-        
-        If Event = #PB_Event_Timer And EventTimer() = #Timer_CheckDesktop
-          If UpdateMaxDesktopSize()
-            WindowMaxSizeChanged()
-          EndIf
-        EndIf
-        
         EventWindow = EventWindow()
-        If *HandleMainEvent( Event, EventWindow, EventGadget) = 0
-          ForEach ManagedWindows()
-            If ManagedWindows()\HandleProc
-              If Event = #CustomWindowEvent Or ManagedWindows()\Open     
-                If EventWindow = ManagedWindows()\Window And 
-                   KeepWindow = CallFunctionFast(ManagedWindows()\HandleProc, @ManagedWindows(), Event,EventGadget(),EventType())
-                  If Not KeepWindow
-                    DeleteElement(ManagedWindows())
-                    Break
-                  EndIf
-                EndIf
-              EndIf 
-            EndIf
-          Next
+        EventGadget = EventGadget()
+        EventType = EventType()
+        If *HandleMainEvent = 0 Or *HandleMainEvent( Event, EventWindow, EventGadget, EventType) = 0
+          HandleWindowEvent(Event, EventWindow, EventGadget,EventType)   
         EndIf 
       EndIf 
       OpenedWindowExists = #False
@@ -536,8 +541,7 @@ Module WindowManager
           OpenedWindowExists = #True
           Break
         EndIf
-      Next
-      
+      Next 
       If Not OpenedWindowExists Or ListSize(ManagedWindows()) = 0
         KeepRunning = #False
       EndIf
@@ -601,14 +605,17 @@ DeclareModule JSWindow
     WebViewGadget.i
     Visible.b
     LoadedCode.b
-    Injected.b
     Ready.b
     Html.s
-    InjectTimer.i
     *HtmlStart
     *HtmlEnd
     *WindowReadyProc.ProtoWindowReady
   EndStructure 
+  Enumeration #PB_Event_FirstCustomValue
+    #EventLoadedHtml
+    #EventRenderedHtml
+    #EventDocumentReady
+  EndEnumeration
 EndDeclareModule
 
 
@@ -617,7 +624,7 @@ Module JSWindow
   
   Declare UpdateWebViewScale(gadget, width, height)
   
-  Declare HandleEvent(*Window,Event.i, Gadget.i, Type.i)
+  Declare HandleEvent(*Window.AppWindow, Event.i, Gadget.i, Type.i)
   Declare RemoveWindow(*Window)
   
   Declare RegisterSync(webViewGadget)
@@ -676,9 +683,9 @@ Module JSWindow
     window = Parameters(0)
     *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
     
-    If JSWindows(Str(window))\WindowReadyProc
-          CallFunctionFast(JSWindows(Str(window))\WindowReadyProc, *Window , JSWindows(Str(window)))
-    EndIf 
+    PostEvent(#CustomWindowEvent, window, 0,#EventDocumentReady)
+
+
     ProcedureReturn UTF8(~"")
   EndProcedure
   
@@ -688,38 +695,29 @@ Module JSWindow
     ParseJSON(0, JsonParameters)
     ExtractJSONArray(JSONValue(0), Parameters())
     window = Parameters(0)
-    If Not JSWindows(Str(window))\Ready
-      JSWindows(Str(window))\Ready = #True
-      JSWindows(Str(window))\Injected = #True
-      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-      webViewGadget =  Parameters(1)
-      HideGadget(webViewGadget,#False)
+    If IsWindow(window)
+      If Not JSWindows(Str(window))\Ready
+        JSWindows(Str(window))\Ready = #True
+        *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+        webViewGadget =  Parameters(1)
+        PostEvent(#CustomWindowEvent, window, 0,#EventRenderedHtml)
+      EndIf 
     EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
   
-
-  
-  Procedure UpdateWebViewScale(gadget, width, height)
-    Protected script$ = "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
-    WebViewExecuteScript(gadget, script$)
-  EndProcedure
-  
-   
-  
-  
-  
   Procedure InjectJS(*Window.AppWindow)
     
-    
-    JSWindows(Str(*Window\Window))\InjectTimer = ElapsedMilliseconds()
-    
+
     window.i = *Window\Window
     webViewGadget.i = JSWindows(Str(*Window\Window))\WebViewGadget
     
     width = WindowWidth(window)
     height = WindowHeight(window)
-        
+    
+    fadeInScale.f = 0.97
+    fadeInTime = 100
+    
     startupJS.s = "" + 
                   "function pbjsUpdateScale(width, height) {" +
                   "  console.log('resize',width,height);"+
@@ -729,7 +727,7 @@ Module JSWindow
                   "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"+
                   ""+
                   "(function(){" + 
-                  "if(!window.__pbjsStyleAdded){" + 
+                  "if(!window.__pbjsAdded){" + 
                   "" + 
                   "console.log('!!!!!!!INSERT');" + 
                   "const style=document.createElement('style');" + 
@@ -743,19 +741,17 @@ Module JSWindow
                   "}" + 
                   "" + 
                   "body {" + 
-                  "opacity: 0.01;" + 
-                  "transform: scale(0.97);"+
+                  "opacity: 0.0001;" + 
+                  "transform: scale("+fadeInScale+");"+
                   "}" + 
                   "" + 
                   "body.injected-startup-code {" + 
                   "opacity: 1;" + 
                   "transform: scale(1);"+           
-                  "transition: opacity 100ms ease-out, transform 100ms ease-out;" + 
+                  "transition: opacity "+fadeInTime+"ms ease-out, transform "+fadeInTime+"ms ease-out;" + 
                   "}';" + 
                   "" + 
                   "document.head.appendChild(style);" + 
-                  "window.__pbjsStyleAdded=true;" + 
-                  "}" + 
                   "" +
                   "if (document.readyState === 'loading') {" +
                   "  document.addEventListener('DOMContentLoaded', function() {" +
@@ -772,6 +768,9 @@ Module JSWindow
                   "},0);" +
                   "},10);" +
                   ""+
+                  "window.__pbjsAdded=true;" + 
+                  "}" + 
+                  "" + 
                   "})();" 
     
     
@@ -779,10 +778,15 @@ Module JSWindow
     
   EndProcedure 
   
-  ;#######MACOS
+    
+  Procedure UpdateWebViewScale(gadget, width, height)
+    Protected script$ = "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
+    WebViewExecuteScript(gadget, script$)
+  EndProcedure
   
+
+  ;#######MACOS RESIZE
   
-  ; Add this section after your Windows-specific code in the JSWindow module
   
   CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
     
@@ -947,10 +951,7 @@ Module JSWindow
   
   ; Modify your CreateJSWindow procedure to register notifications:
   
-  ; All our custom events
-  Enumeration #PB_Event_FirstCustomValue
-    #EventLoadedHtml
-  EndEnumeration
+
   
   
   Procedure LoadHtml(window)
@@ -969,7 +970,7 @@ Module JSWindow
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @RemoveWindow())
       
       JSWindows(Str(window))\Visible = #False
-      JSWindows(Str(window))\Injected = #False
+      JSWindows(Str(window))\Ready = #False
       JSWindows(Str(window))\HtmlStart = *htmlStart
       JSWindows(Str(window))\HtmlEnd = *htmlStop
       JSWindows(Str(window))\WindowReadyProc = *WindowReadyCallback
@@ -1064,9 +1065,11 @@ Module JSWindow
   
   Procedure.i HandleEvent(*Window.AppWindow,Event.i, Gadget.i, Type.i)
     
+    *JSWIndow.JSWindow = JSWindows(Str(*Window\Window))
+    
     Protected closeWindow = #False
     
-    If JSWindows(Str(*Window\Window))\LoadedCode And Not JSWindows(Str(*Window\Window))\Injected And ElapsedMilliseconds()-JSWindows(Str(*Window\Window))\InjectTimer > 16
+    If *JSWIndow\LoadedCode And Not *JSWIndow\Ready
       InjectJS(*Window)
     EndIf 
     
@@ -1079,17 +1082,25 @@ Module JSWindow
       Case #PB_Event_SizeWindow
         w = WindowWidth(*Window\Window)
         h = WindowHeight(*Window\Window)
-        UpdateWebViewScale(JSWindows(Str(*Window\Window))\WebViewGadget, w, h) 
+        UpdateWebViewScale(*JSWIndow\WebViewGadget, w, h) 
       Case  #CustomWindowEvent
-        If Type.i = #EventLoadedHtml
-          webViewGadget = JSWindows(Str(*Window\Window))\WebViewGadget
-          SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, JSWindows(Str(*Window\Window))\Html)
-          JSWindows(Str(*Window\Window))\LoadedCode = #True 
-          InjectJS(*Window)
-          
-          RegisterSync(webViewGadget)
-          
-        EndIf 
+        Select Type.i 
+          Case #EventLoadedHtml
+            webViewGadget = *JSWIndow\WebViewGadget
+            SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, *JSWIndow\Html)
+            *JSWIndow\LoadedCode = #True 
+            InjectJS(*Window)
+            RegisterSync(webViewGadget)
+          Case #EventRenderedHtml
+            webViewGadget = *JSWIndow\WebViewGadget
+            HideGadget(webViewGadget,#False)
+            startupJS.s =  "document.body.classList.add('injected-startup-code');" 
+            ;WebViewExecuteScript(webViewGadget, startupJS)
+          Case #EventDocumentReady
+            If *JSWIndow\WindowReadyProc
+              CallFunctionFast(*JSWIndow\WindowReadyProc, *Window , *JSWIndow)
+            EndIf 
+        EndSelect 
     EndSelect
     
     If closeWindow
@@ -1109,10 +1120,10 @@ Module JSWindow
   
   
 EndModule
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 697
-; FirstLine = 685
+; IDE Options = PureBasic 6.21 (Windows - x64)
+; CursorPosition = 534
+; FirstLine = 509
 ; Folding = ----------
 ; EnableXP
 ; DPIAware
-; Executable = ../main.exe
+; Executable = ..\main.exe
