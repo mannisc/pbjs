@@ -356,7 +356,7 @@ DeclareModule WindowManager
   
   Declare InitWindowManager()
   Declare AddManagedWindow(Title.s, window, *HandleProc, *CloseProc, *CleanupProc = 0)
-  Declare OpenManagedWindow(*Window.AppWindow)
+  Declare OpenManagedWindow(*Window.AppWindow,manualOpen=#False)
   Declare CloseManagedWindow(*Window.AppWindow)
   Declare RunEventLoop(*HandleMainEvent.HandleMainEvent)
   Declare CleanupManagedWindows()
@@ -410,37 +410,38 @@ Module WindowManager
     ProcedureReturn @ManagedWindows()
   EndProcedure
   
-  Procedure OpenManagedWindow(*Window.AppWindow)
+  Procedure OpenManagedWindow(*Window.AppWindow,manualOpen=#False)
     If Not *Window\Open
       If *Window\Window <> -1
-        CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-          ; Basically just ShowWindow with fix to draw immiditaly correctly on fadeIn
-          
-          Protected hWnd = WindowID(*Window\Window)
-          
-          originalX = WindowX(*Window\Window)
-          originalY = WindowY(*Window\Window)
-          
-          ; Show window instantly (no animation) by positioning it off-screen
-          minValue = -2147483648 ;lowest min value possible
-          SetWindowPos_(hWnd, 0, minValue, minValue, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW | #SWP_NOACTIVATE)
-          
-          ; Now paint while it's "visible" (but off-screen)
-          Protected rect.RECT
-          Protected hdc = GetDC_(hWnd)
-          GetClientRect_(hWnd, @rect)
-          FillRect_(hdc, @rect, brush)
-          ReleaseDC_(hWnd, hdc)
-          UpdateWindow_(hWnd)
-          RedrawWindow_(hWnd, #Null, #Null, #RDW_UPDATENOW | #RDW_ERASE | #RDW_INVALIDATE | #RDW_ALLCHILDREN)
-          Delay(16) ; One frame at 60fps
-                    ; NOW move to correct position WITH animation
-          SetWindowPos_(hWnd, 0, originalX, originalY, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW)
-          
-        CompilerElse
-          HideWindow(*Window\Window, #False)
-        CompilerEndIf
-        
+        If Not manualOpen
+          CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+            ; Basically just ShowWindow with fix to draw immiditaly correctly on fadeIn
+            
+            Protected hWnd = WindowID(*Window\Window)
+            
+            originalX = WindowX(*Window\Window)
+            originalY = WindowY(*Window\Window)
+            
+            ; Show window instantly (no animation) by positioning it off-screen
+            minValue = -2147483648 ;lowest min value possible
+            SetWindowPos_(hWnd, 0, minValue, minValue, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW | #SWP_NOACTIVATE)
+            
+            ; Now paint while it's "visible" (but off-screen)
+            Protected rect.RECT
+            Protected hdc = GetDC_(hWnd)
+            GetClientRect_(hWnd, @rect)
+            FillRect_(hdc, @rect, brush)
+            ReleaseDC_(hWnd, hdc)
+            UpdateWindow_(hWnd)
+            RedrawWindow_(hWnd, #Null, #Null, #RDW_UPDATENOW | #RDW_ERASE | #RDW_INVALIDATE | #RDW_ALLCHILDREN)
+            Delay(16) ; One frame at 60fps
+                      ; NOW move to correct position WITH animation
+            SetWindowPos_(hWnd, 0, originalX, originalY, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW)
+            
+          CompilerElse
+            HideWindow(*Window\Window, #False)
+          CompilerEndIf
+        EndIf 
         *Window\Open = #True
         ProcedureReturn 1
       EndIf 
@@ -602,8 +603,9 @@ DeclareModule JSWindow
   Declare CreateJSWindow(x,y,w,h,title.s,flags,*htmlStart,*htmlStop,*WindowReadyCallback=0)
   Declare OpenJSWindow(*Window.AppWindow )    
   Structure JSWindow
-    WebViewGadget.i
+    OpenTime.i
     Visible.b
+    WebViewGadget.i
     LoadedCode.b
     Ready.b
     Html.s
@@ -636,45 +638,7 @@ Module JSWindow
   
   Prototype.i ProtoWindowReady(*Window, *JSWindow)
   
-
-  
   Global NewMap JSWindows.JSWindow()
-  
-  
-  Procedure ShowWebViewGadgetThread(gadgetID)
-    CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-      duration = 200
-      Protected startTime = ElapsedMilliseconds()
-      Protected endTime = startTime + duration
-      Protected hWnd = GadgetID(gadgetID)
-      Protected style = GetWindowLong_(hWnd, #GWL_EXSTYLE)
-      SetWindowLong_(hWnd, #GWL_EXSTYLE, style | #WS_EX_LAYERED)
-      SetLayeredWindowAttributes_(hWnd, 0, 0, #LWA_ALPHA)
-      HideGadget(gadgetID, #False)
-      Delay(100)
-      Repeat
-        Protected now = ElapsedMilliseconds()
-        Protected alpha.f = (now - startTime) / (endTime - startTime)
-        If alpha > 1 : alpha = 1 : EndIf
-        SetLayeredWindowAttributes_(hWnd, 0, 255 * alpha, #LWA_ALPHA)
-        Delay(10)
-      Until now >= endTime
-      SetLayeredWindowAttributes_(hWnd, 0, 255, #LWA_ALPHA)
-      
-    CompilerElse   
-      HideGadget(gadgetID, #False)
-    CompilerEndIf
-  EndProcedure
-  
-  Procedure ShowWebView(window,gadgetID)
-    If JSWindows(Str(window))\Visible = #False
-      JSWindows(Str(window))\Visible = #True 
-      CreateThread(@ShowWebViewGadgetThread(),gadgetID)
-    EndIf 
-  EndProcedure
-  
-  
- 
   
   Procedure CallbackReadyState(JsonParameters.s)
     Dim Parameters(0)
@@ -710,13 +674,20 @@ Module JSWindow
     
 
     window.i = *Window\Window
-    webViewGadget.i = JSWindows(Str(*Window\Window))\WebViewGadget
+    *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+    webViewGadget.i = *JSWindow\WebViewGadget
     
     width = WindowWidth(window)
     height = WindowHeight(window)
     
-    fadeInScale.f = 0.97
-    fadeInTime = 100
+    If *JSWindow\Visible
+      fadeInTime = 150
+      fadeInY = 9
+      
+    Else
+      fadeInTime = 0
+      fadeInY = 0
+    EndIf 
     
     startupJS.s = "" + 
                   "function pbjsUpdateScale(width, height) {" +
@@ -733,7 +704,7 @@ Module JSWindow
                   "const style=document.createElement('style');" + 
                   "style.id='pbjs-dynamic-style';" + 
                   "" + 
-                  "style.textContent='body, html {" + 
+                  "style.textContent='html, body {" + 
                   "width: var(--container-width);" + 
                   "height: var(--container-height);" + 
                   "min-width: 0!important;" + 
@@ -742,12 +713,12 @@ Module JSWindow
                   "" + 
                   "body {" + 
                   "opacity: 0.0001;" + 
-                  "transform: scale("+fadeInScale+");"+
+                  "transform: translateY("+fadeInY+"px)"+
                   "}" + 
                   "" + 
                   "body.injected-startup-code {" + 
                   "opacity: 1;" + 
-                  "transform: scale(1);"+           
+                  "transform: translateY(0);"+
                   "transition: opacity "+fadeInTime+"ms ease-out, transform "+fadeInTime+"ms ease-out;" + 
                   "}';" + 
                   "" + 
@@ -962,6 +933,9 @@ Module JSWindow
   
   
   
+  
+  
+  
   Procedure.i CreateJSWindow(x,y,w,h,title.s,flags, *htmlStart,*htmlStop,*WindowReadyCallback=0)
     
     window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
@@ -1068,11 +1042,11 @@ Module JSWindow
     *JSWIndow.JSWindow = JSWindows(Str(*Window\Window))
     
     Protected closeWindow = #False
-    
-    If *JSWIndow\LoadedCode And Not *JSWIndow\Ready
+    If Not *JSWIndow\Ready And *JSWIndow\LoadedCode 
       InjectJS(*Window)
-    EndIf 
+    EndIf
     
+
     Select Event
       Case #PB_Event_CloseWindow
         closeWindow = #True
@@ -1092,10 +1066,11 @@ Module JSWindow
             InjectJS(*Window)
             RegisterSync(webViewGadget)
           Case #EventRenderedHtml
-            webViewGadget = *JSWIndow\WebViewGadget
-            HideGadget(webViewGadget,#False)
-            startupJS.s =  "document.body.classList.add('injected-startup-code');" 
-            ;WebViewExecuteScript(webViewGadget, startupJS)
+            If *Window\Open And Not *JSWIndow\Visible
+              HideWindow(*Window\Window, #False)
+              HideGadget(*JSWIndow\WebViewGadget,#False)
+              *JSWIndow\Visible = #True 
+            EndIf 
           Case #EventDocumentReady
             If *JSWIndow\WindowReadyProc
               CallFunctionFast(*JSWIndow\WindowReadyProc, *Window , *JSWIndow)
@@ -1110,20 +1085,41 @@ Module JSWindow
   EndProcedure
   
   
+  Procedure ForceWindowVisible(*Window.AppWindow )
+     Delay(600)
+     PostEvent(#CustomWindowEvent, *Window\Window, 0,#EventRenderedHtml) 
+  EndProcedure
+  
   
   Procedure OpenJSWindow(*Window.AppWindow )  
+    Protected manualOpen
+    *JSWIndow.JSWindow = JSWindows(Str(*Window\Window))
+    If *JSWIndow\Ready
+      HideGadget(*JSWIndow\WebViewGadget,#False)
+      manualOpen = #False
+    Else
+      CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+        manualOpen = #True
+      CompilerElse
+        manualOpen = #False
+        *JSWIndow\Visible = #True 
+      CompilerEndIf 
+    EndIf 
+   
+    *JSWIndow\Visible = Bool(Not manualOpen)
+    *JSWIndow\OpenTime = ElapsedMilliseconds()
+    OpenManagedWindow(*Window,manualOpen)
     
-    
-    OpenManagedWindow(*Window)
+    CreateThread(@ForceWindowVisible(),*Window)
     
   EndProcedure
   
   
 EndModule
-; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 534
-; FirstLine = 509
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 928
+; FirstLine = 927
 ; Folding = ----------
 ; EnableXP
 ; DPIAware
-; Executable = ..\main.exe
+; Executable = ../main.exe

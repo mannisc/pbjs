@@ -48,12 +48,11 @@ Module Execute
     *Window1 = JSWindow::CreateJSWindow(600, 100, 600, 400, "PBJS Example",   #PB_Window_SystemMenu | #PB_Window_SizeGadget |  #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget,  mainWindowHtmlStart,mainWindowHtmlStop )
     
     
-    
     *Window2 = JSWindow::CreateJSWindow(100, 50, 700, 600, "PBJS Example", 
                                         #PB_Window_SystemMenu | #PB_Window_SizeGadget | 
                                         #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindowHtmlStart,mainWindowHtmlStop,@WindowLoaded())
    
-   JSWindow::OpenJSWindow(*Window1)
+   ;JSWindow::OpenJSWindow(*Window1)
     
     JSWindow::OpenJSWindow(*Window2)
 
@@ -79,8 +78,8 @@ DataSection
   IncludeBinary "react/main-window/dist/index.html"
   EndMainWindow:
 EndDataSection
-; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 55
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 54
 ; FirstLine = 31
 ; Folding = -
 ; EnableXP
