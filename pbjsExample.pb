@@ -39,6 +39,7 @@ Module Execute
         ElseIf event = #PB_Event_CloseWindow
           CloseWindow(1)
           canClose = #True 
+          End 
         EndIf 
       EndIf 
     EndIf 
@@ -73,10 +74,10 @@ Module Execute
     
         
 
-    *Window1 = JSWindow::CreateJSWindow("main-window",600, 100, 600, 400, "PBJS JS Example",   #PB_Window_SystemMenu | #PB_Window_SizeGadget |  #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget,  mainWindowHtmlStart, mainWindowHtmlStop ,#JSWindow_Behaviour_HideWindow)
+    *Window1 = JSWindow::CreateJSWindow("main-window",600, 100, 600, 400, "PBJS JS Example 1",   #PB_Window_SystemMenu | #PB_Window_SizeGadget |  #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget,  mainWindowHtmlStart, mainWindowHtmlStop ,#JSWindow_Behaviour_HideWindow)
     
     
-    *Window2 = JSWindow::CreateJSWindow("sub-window",500, 50, 700, 600, "PBJS JS Example", 
+    *Window2 = JSWindow::CreateJSWindow("sub-window",500, 50, 700, 600, "PBJS JS Example 2", 
                                         #PB_Window_SystemMenu | #PB_Window_SizeGadget | 
                                         #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindowHtmlStart, mainWindowHtmlStop, #JSWindow_Behaviour_HideWindow, @WindowLoaded())
    
@@ -84,9 +85,13 @@ Module Execute
    
    
    OpenWindow(1,100,300,300,300,"PBJS Native", #PB_Window_SystemMenu)
-   ButtonGadget(1,75,130,150,30,"Open PBJS Window")
-   ButtonGadget(2,75,170,150,30,"Resize PBJS Window")
-
+   ButtonGadget(1,75,10,150,30,"Open PBJS Window")
+   ButtonGadget(2,75,50,150,30,"Resize PBJS Window")
+   
+   EditorGadget(3,0,100,300,200)
+   
+   
+   
    JSWindow::OpenJSWindow(*Window1) 
    
 
@@ -119,8 +124,8 @@ DataSection
   EndMainWindow:
 EndDataSection
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 111
-; FirstLine = 59
+; CursorPosition = 41
+; FirstLine = 22
 ; Folding = --
 ; EnableXP
 ; DPIAware
