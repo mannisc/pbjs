@@ -429,7 +429,7 @@ Module WindowManager
           
           CompilerIf #PB_Compiler_OS = #PB_OS_Windows 
             
-            If  *Window\WasOpen ;Or (OSVersion <> #PB_OS_Windows_11 And osVersion <> #PB_OS_Windows_Future)
+            If  *Window\WasOpen Or (OSVersion <> #PB_OS_Windows_11 And osVersion <> #PB_OS_Windows_Future)
               HideWindow(*Window\Window, #False)
             Else 
               *Window\WasOpen = #True 
@@ -439,7 +439,7 @@ Module WindowManager
               GetWindowRect_(hWnd, @winRect)
               
               ; Show window instantly (no animation) by positioning it off-screen
-              Protected minValue = -10000 ;lowest min value possible
+              Protected minValue = -1000000000 ;lowest min value possible
               SetWindowPos_(hWnd, 0, minValue, minValue, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW | #SWP_NOACTIVATE)
               ; Now paint while it's "visible" (but off-screen)
               Protected rect.RECT
