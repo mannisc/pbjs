@@ -12,7 +12,7 @@ DeclareModule OsTheme
   Declare InitOsTheme()
   
   Global IsDarkModeActiveCached = #False
-  Global darkThemeBackgroundColor = RGB(36,36,36)
+  Global darkThemeBackgroundColor = RGB(15,15,15)
   Global darkThemeForegroundColor = RGB(255, 255, 255)
   Global lightThemeBackgroundColor = RGB(250,250,250)
   Global lightThemeForegroundColor = RGB(0,0,0)
@@ -759,7 +759,7 @@ CompilerEndIf
       EndIf
     CompilerEndIf
     Debug *JSWindow\WebViewGadget
-     If   Not IsGadget(*JSWindow\WebViewGadget)
+     If   Not IsGadget(*JSWindow\WebViewGadget) Or width = 0 Or height = 0
         ProcedureReturn
     EndIf
     WebViewExecuteScript(*JSWindow\WebViewGadget, script$)
@@ -963,17 +963,11 @@ CompilerEndIf
     
     If *JSWindow\Visible
       
+
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-        fadeInTime =210 
+        fadeInTime = 510 
       CompilerElse
-        fadeInTime =150 
-        
-      CompilerEndIf
-      
-      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-        fadeInTime =150 
-      CompilerElse
-        fadeInTime =150 
+        fadeInTime = 150 
         
       CompilerEndIf
     Else
@@ -1312,8 +1306,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 1198
-; FirstLine = 1179
+; CursorPosition = 969
+; FirstLine = 963
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
