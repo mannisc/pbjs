@@ -1185,6 +1185,10 @@ CompilerEndIf
             *JSWIndow\LoadedCode = #True 
           Case #Event_Content_Ready
             webViewGadget = *JSWIndow\WebViewGadget
+            w = WindowWidth(*JSWIndow\Window)
+            h = WindowHeight(*JSWIndow\Window)
+            UpdateWebViewScale(*JSWIndow\WebViewGadget, w, h) 
+            
             CompilerIf #PB_Compiler_OS = #PB_OS_Windows
               ResizeGadget(webViewGadget,0,0,#PB_Ignore,#PB_Ignore)
             CompilerElse 
@@ -1284,7 +1288,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 19
+; CursorPosition = 1190
+; FirstLine = 1177
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
