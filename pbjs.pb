@@ -710,17 +710,6 @@ Module JSWindow
     EndProcedure
   CompilerEndIf
   
-CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-  
-    Procedure MakeContentVisible(window)
-    Delay(16)
-    If IsWindow(window)
-        PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
-    EndIf 
-  EndProcedure
-  CompilerEndIf
-  
-  
   Procedure CallbackReadyState(JsonParameters.s)
     Dim Parameters(0)
     ParseJSON(0, JsonParameters)
@@ -737,8 +726,7 @@ CompilerIf #PB_Compiler_OS = #PB_OS_Windows
       CompilerElse
         PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
       CompilerEndIf
-        Debug " CallbackReadyState Ready "+*Window\Title
-       SetGadgetText(3,GetGadgetText(3)+Chr(10)+" CallbackReadyState Ready "+*Window\Title)
+
 
        JSWindows(Str(window))\Ready = #True
        CompilerIf #PB_Compiler_OS = #PB_OS_Windows
@@ -1208,7 +1196,6 @@ CompilerEndIf
               RedrawWindow_(WindowID(*JSWIndow\Window), #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN ) 
             CompilerEndIf 
             Debug " #Event_Content_Ready "+*Window\Title
-                              SetGadgetText(3,GetGadgetText(3)+Chr(10)+ " #Event_Content_Ready "+*Window\Title)
             HideGadget(*JSWIndow\WebViewGadget,#False)
 
             If *JSWIndow\Open And Not *JSWIndow\Visible
@@ -1297,10 +1284,9 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 701
-; FirstLine = 700
-; Folding = -----------
+; CursorPosition = 19
+; Folding = ------------
+; EnableThread
 ; EnableXP
 ; DPIAware
-; Executable = ..\..\main.exe
 ; Executable = ..\..\main.exe
