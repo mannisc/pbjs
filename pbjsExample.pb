@@ -120,12 +120,12 @@ WindowManager::CleanupManagedWindows()
 End 
 DataSection
   MainWindow:
-  IncludeBinary "react/main-window/dist/index.html"
+  IncludeBinary "reactExample/main-window/dist/index.html"
   EndMainWindow:
 EndDataSection
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 41
-; FirstLine = 22
+; CursorPosition = 122
+; FirstLine = 91
 ; Folding = --
 ; EnableXP
 ; DPIAware

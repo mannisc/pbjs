@@ -7,15 +7,15 @@
   <section name="data">
     <explorer view="C:\" pattern="0"/>
     <log show="1"/>
-    <lastopen date="2025-11-15 01:31" user="mschm" host="MANFRED-IDEAPAD"/>
+    <lastopen date="2025-11-14 23:25" user="mschm" host="MANFRED-IDEAPAD"/>
   </section>
   <section name="files">
     <file name="pbjs.pb">
-      <config load="1" scan="1" panel="1" warn="1" lastopen="1" sortindex="1" panelstate="+"/>
+      <config load="1" scan="1" panel="1" warn="1" lastopen="1" sortindex="2" panelstate="+"/>
       <fingerprint md5="8684987742b1db41d2d9ef995c8de817"/>
     </file>
     <file name="pbjsExample.pb">
-      <config load="0" scan="1" panel="1" warn="1" lastopen="0" sortindex="999" panelstate="+"/>
+      <config load="0" scan="1" panel="1" warn="1" lastopen="1" sortindex="3" panelstate="+"/>
       <fingerprint md5="d461be3b5392970fff982c49535e72d9"/>
     </file>
   </section>

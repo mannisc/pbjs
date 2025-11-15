@@ -435,7 +435,7 @@ Module WindowManager
               GetWindowRect_(hWnd, @winRect)
               
               ; Show window instantly (no animation) by positioning it off-screen
-              Protected minValue = -2147483648 ;lowest min value possible
+              Protected minValue = -1000000000 ;lowest min value possible
               SetWindowPos_(hWnd, 0, minValue, minValue, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW | #SWP_NOACTIVATE)
               ; Now paint while it's "visible" (but off-screen)
               Protected rect.RECT
@@ -445,7 +445,7 @@ Module WindowManager
               ReleaseDC_(hWnd, hdc)
               UpdateWindow_(hWnd)
               RedrawWindow_(hWnd, #Null, #Null, #RDW_UPDATENOW | #RDW_ERASE | #RDW_INVALIDATE | #RDW_ALLCHILDREN)
-              Delay(16) ; One frame at 60fps
+              Delay(32) ; 16 -  frame at 60fps
                         ; NOW move to correct position WITH animation
               SetWindowPos_(hWnd, 0, winRect\left, winRect\top, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW)
             EndIf 
@@ -696,6 +696,20 @@ Module JSWindow
   
   Prototype.i ProtoWindowReady(*Window, *JSWindow)
   
+  CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+    
+   
+    
+    
+    Procedure MakeContentVisible(window)
+        
+      Delay(100)
+      If IsWindow(window)
+        PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
+      EndIf 
+    EndProcedure
+  CompilerEndIf
+  
 CompilerIf #PB_Compiler_OS = #PB_OS_Windows
   
     Procedure MakeContentVisible(window)
@@ -713,10 +727,16 @@ CompilerIf #PB_Compiler_OS = #PB_OS_Windows
     ExtractJSONArray(JSONValue(0), Parameters())
     window = Parameters(0)
     *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-                            Debug " CallbackReadyState "+*Window\Title
-       SetGadgetText(3,GetGadgetText(3)+Chr(10)+" CallbackReadyState "+*Window\Title)
-
+    
     If Not JSWindows(Str(window))\Ready
+      
+      JSWindows(Str(window))\Ready = #True
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        
+        CreateThread(@MakeContentVisible(),window)
+      CompilerElse
+        PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
+      CompilerEndIf
         Debug " CallbackReadyState Ready "+*Window\Title
        SetGadgetText(3,GetGadgetText(3)+Chr(10)+" CallbackReadyState Ready "+*Window\Title)
 
@@ -730,7 +750,7 @@ CompilerEndIf
     EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
-
+  
   
   
   
@@ -935,6 +955,13 @@ CompilerEndIf
     If *JSWindow\Visible
       
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        fadeInTime =210 
+      CompilerElse
+        fadeInTime =150 
+        
+      CompilerEndIf
+      
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         fadeInTime =150 
       CompilerElse
         fadeInTime =150 
@@ -1044,7 +1071,11 @@ CompilerEndIf
         webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight,#PB_WebView_Debug)
       CompilerEndIf
       
-      HideGadget(webViewGadget,#True)
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
+      CompilerElse 
+        HideGadget(webViewGadget,#True)
+      CompilerEndIf 
       
       BindWebViewCallback(webViewGadget, "callbackReadyState", @CallbackReadyState())
       
@@ -1103,10 +1134,6 @@ CompilerEndIf
         CreateThread(@ForceContentVisible(),*Window\Window)
       EndIf 
       
-      Debug "SET VISIBLE "+*Window\Title+"  :"+Str( *JSWIndow\Visible)
-      SetGadgetText(3,GetGadgetText(3)+Chr(10)+ "SET VISIBLE "+*Window\Title+"  :"+Str( *JSWIndow\Visible))
-
-      
       
     EndIf 
   EndProcedure
@@ -1155,28 +1182,37 @@ CompilerEndIf
         EndSelect
         
       Case #PB_Event_SizeWindow
-        w = WindowWidth(*Window\Window)
-        h = WindowHeight(*Window\Window)
+        w = WindowWidth(*JSWIndow\Window)
+        h = WindowHeight(*JSWIndow\Window)
         UpdateWebViewScale(*JSWIndow\WebViewGadget, w, h) 
       Case  #CustomWindowEvent
         Select Type.i 
           Case #Event_Loaded_Html
             webViewGadget = *JSWIndow\WebViewGadget
-            Debug " #Event_Loaded_Html "+*Window\Title+"  :"+Str( *JSWIndow\Visible)
-                  SetGadgetText(3,GetGadgetText(3)+Chr(10)+ " #Event_Loaded_Html "+*Window\Title+"  :"+Str( *JSWIndow\Visible))
-
+            
             html.s =  JSBridge::WithBridgeScript(*JSWIndow\Html, *JSWIndow\Name)
             html.s =  WithPbjsScript(html, *JSWIndow)
             
             SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
             *JSWIndow\LoadedCode = #True 
           Case #Event_Content_Ready
+            webViewGadget = *JSWIndow\WebViewGadget
+            CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+              ResizeGadget(webViewGadget,0,0,#PB_Ignore,#PB_Ignore)
+            CompilerElse 
+              HideGadget(webViewGadget,#False)
+            CompilerEndIf 
+            CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+              ;UpdateWindow_(WindowID(*JSWIndow\Window))
+              RedrawWindow_(GadgetID(*JSWIndow\WebViewGadget), #Null, #Null, #RDW_UPDATENOW  ) 
+              RedrawWindow_(WindowID(*JSWIndow\Window), #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN ) 
+            CompilerEndIf 
             Debug " #Event_Content_Ready "+*Window\Title
                               SetGadgetText(3,GetGadgetText(3)+Chr(10)+ " #Event_Content_Ready "+*Window\Title)
             HideGadget(*JSWIndow\WebViewGadget,#False)
 
             If *JSWIndow\Open And Not *JSWIndow\Visible
-              HideWindow(*Window\Window, #False)
+              HideWindow(*JSWIndow\Window, #False)
               *JSWIndow\Visible = #True 
             EndIf 
             SetBodyFadeIn(*JSWIndow)
@@ -1256,9 +1292,15 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 
 
 ; IDE Options = PureBasic 6.21 (Windows - x64)
+; CursorPosition = 447
+; FirstLine = 428
+; Folding = -----------
+; EnableThread
+; IDE Options = PureBasic 6.21 (Windows - x64)
 ; CursorPosition = 701
 ; FirstLine = 700
 ; Folding = -----------
 ; EnableXP
 ; DPIAware
+; Executable = ..\..\main.exe
 ; Executable = ..\..\main.exe
