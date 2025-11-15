@@ -2,6 +2,8 @@
   "use strict";
 
   const WINDOW_NAME = "_WINDOW_NAME_INJECTED_BY_NATIVE_";
+  const OS_NAME = "_OS_NAME_INJECTED_BY_NATIVE_";
+
   const handlers = new Map();
   const pendingRequests = new Map();
   const getAllPendingRequests = new Map();
@@ -58,6 +60,7 @@
 
   window.pbjs = {
     windowName: WINDOW_NAME,
+    os: OS_NAME,
 
     invoke: function (windowName, name, params, data) {
       if (!windowName || typeof windowName !== "string") {

@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<project xmlns="http://www.purebasic.com/namespace" version="1.0" creator="PureBasic 6.21 - C Backend (MacOS X - arm64)">
+<project xmlns="http://www.purebasic.com/namespace" version="1.0" creator="PureBasic 6.21 (Windows - x64)">
   <section name="config">
     <options closefiles="1" openmode="0" name="Example"/>
   </section>
   <section name="data">
-    <explorer view="C:/" pattern="0"/>
+    <explorer view="C:\" pattern="0"/>
     <log show="1"/>
-    <lastopen date="2025-11-09 21:37" user="mschmidbartl" host="MacBookPro"/>
+    <lastopen date="2025-11-15 01:31" user="mschm" host="MANFRED-IDEAPAD"/>
   </section>
   <section name="files">
     <file name="pbjs.pb">
       <config load="1" scan="1" panel="1" warn="1" lastopen="1" sortindex="1" panelstate="+"/>
-      <fingerprint md5="3bac2f90b38a3f74bf8b8369f8bb7184"/>
+      <fingerprint md5="8684987742b1db41d2d9ef995c8de817"/>
     </file>
     <file name="pbjsExample.pb">
-      <config load="0" scan="1" panel="1" warn="1" lastopen="1" sortindex="2" panelstate="+"/>
+      <config load="0" scan="1" panel="1" warn="1" lastopen="0" sortindex="999" panelstate="+"/>
       <fingerprint md5="d461be3b5392970fff982c49535e72d9"/>
     </file>
   </section>
@@ -23,7 +23,7 @@
     <target name="Default Target" enabled="1" default="1">
       <inputfile value="pbjsExample.pb"/>
       <outputfile value="..\main.exe"/>
-      <executable value="../../main.exe"/>
+      <executable value="..\..\main.exe"/>
       <options xpskin="1" dpiaware="1" optimizer="0"/>
     </target>
   </section>

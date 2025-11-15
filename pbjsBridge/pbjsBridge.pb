@@ -335,9 +335,22 @@ Module JSBridge
       ProcedureReturn html
     EndIf
     
-    bridgeScriptWithName = ReplaceString(bridgeScript, "_WINDOW_NAME_INJECTED_BY_NATIVE_", windowName)
+    bridgeScript = ReplaceString(bridgeScript, "_WINDOW_NAME_INJECTED_BY_NATIVE_", windowName)
     
-    initScript = ~"<script>\n" + bridgeScriptWithName + ~"</script>\n"
+    Protected osName.s
+    CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+      osName = "mac"
+    CompilerElseIf  #PB_Compiler_OS = #PB_OS_Windows
+      osName = "windows"
+    CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
+      osName = "linux"
+    CompilerElse
+      osName = "other"
+    CompilerEndIf 
+
+    bridgeScript = ReplaceString(bridgeScript, "_OS_NAME_INJECTED_BY_NATIVE_", osName)
+
+    initScript = ~"<script>\n" + bridgeScript + ~"</script>\n"
     
     If FindString(result, "<body", 1, #PB_String_NoCase)
       bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
@@ -348,14 +361,15 @@ Module JSBridge
     Else
       result = initScript + result
     EndIf
+    
 
     ProcedureReturn result
   EndProcedure
   
 EndModule
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 327
-; FirstLine = 3
-; Folding = --
+; CursorPosition = 363
+; FirstLine = 333
+; Folding = ---
 ; EnableXP
 ; DPIAware

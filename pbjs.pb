@@ -696,6 +696,16 @@ Module JSWindow
   
   Prototype.i ProtoWindowReady(*Window, *JSWindow)
   
+CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+  
+    Procedure MakeContentVisible(window)
+    Delay(16)
+    If IsWindow(window)
+        PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
+    EndIf 
+  EndProcedure
+  CompilerEndIf
+  
   
   Procedure CallbackReadyState(JsonParameters.s)
     Dim Parameters(0)
@@ -710,9 +720,13 @@ Module JSWindow
         Debug " CallbackReadyState Ready "+*Window\Title
        SetGadgetText(3,GetGadgetText(3)+Chr(10)+" CallbackReadyState Ready "+*Window\Title)
 
-      JSWindows(Str(window))\Ready = #True
-      PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
+       JSWindows(Str(window))\Ready = #True
+       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
 
+       CreateThread(@MakeContentVisible(),window)
+       CompilerElse
+      PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
+CompilerEndIf
     EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
@@ -919,7 +933,13 @@ Module JSWindow
     height = WindowHeight(window)
     
     If *JSWindow\Visible
-      fadeInTime = 150 
+      
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        fadeInTime =150 
+      CompilerElse
+        fadeInTime =150 
+        
+      CompilerEndIf
     Else
       fadeInTime = 0
     EndIf 
@@ -1153,12 +1173,12 @@ Module JSWindow
           Case #Event_Content_Ready
             Debug " #Event_Content_Ready "+*Window\Title
                               SetGadgetText(3,GetGadgetText(3)+Chr(10)+ " #Event_Content_Ready "+*Window\Title)
+            HideGadget(*JSWIndow\WebViewGadget,#False)
 
             If *JSWIndow\Open And Not *JSWIndow\Visible
               HideWindow(*Window\Window, #False)
               *JSWIndow\Visible = #True 
             EndIf 
-            HideGadget(*JSWIndow\WebViewGadget,#False)
             SetBodyFadeIn(*JSWIndow)
             If *JSWindow\Ready
               If *JSWindow\WindowReadyProc
@@ -1235,10 +1255,10 @@ EndModule
 IncludeFile "pbjsBridge/pbjsBridge.pb"
 
 
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1234
-; FirstLine = 1201
-; Folding = ----------
+; IDE Options = PureBasic 6.21 (Windows - x64)
+; CursorPosition = 701
+; FirstLine = 700
+; Folding = -----------
 ; EnableXP
 ; DPIAware
-; Executable = ../../main.exe
+; Executable = ..\..\main.exe
