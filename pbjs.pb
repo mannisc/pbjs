@@ -657,6 +657,7 @@ DeclareModule JSWindow
   Declare HideJSWindow(*Window.AppWindow)
   Declare CloseJSWindow(*Window.AppWindow)
   Declare ResizeJSWindow(*Window.AppWindow, x, y, w, h)
+  Declare GetWebView(*Window.AppWindow)
   
   Structure JSWindow
     Name.s
@@ -742,32 +743,34 @@ CompilerEndIf
     EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
-  
-  
-  
-  
+
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
     Protected script$ = "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
     
-   
     Debug *JSWindow\Name
     
     CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-      
-      If   IsIconic_(WindowID(*JSWindow\Window))
+      If IsIconic_(WindowID(*JSWindow\Window))
         ProcedureReturn
       EndIf
     CompilerEndIf
+    
     Debug *JSWindow\WebViewGadget
-     If   Not IsGadget(*JSWindow\WebViewGadget) Or width = 0 Or height = 0
+    If Not IsGadget(*JSWindow\WebViewGadget) Or width = 0 Or height = 0
         ProcedureReturn
     EndIf
     WebViewExecuteScript(*JSWindow\WebViewGadget, script$)
   EndProcedure
-  
-  
+
+  Procedure GetWebView(*Window.AppWindow)
+    Protected windowKey.s = Str(*Window\Window)
+    If FindMapElement(JSWindows(), windowKey)
+      ProcedureReturn JSWindows(windowKey)\WebViewGadget
+    EndIf
+    ProcedureReturn 0
+  EndProcedure
+
   ;#######MACOS RESIZE
-  
   
   CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
     
@@ -965,7 +968,7 @@ CompilerEndIf
       
 
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-        fadeInTime = 510 
+        fadeInTime = 310 
       CompilerElse
         fadeInTime = 150 
         
@@ -1190,6 +1193,7 @@ CompilerEndIf
         h = WindowHeight(*JSWindow\Window)
         UpdateWebViewScale(*JSWindow, w, h) 
         
+        
 
       Case  #CustomWindowEvent
         Select Type.i 
@@ -1306,8 +1310,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 969
-; FirstLine = 963
+; CursorPosition = 972
+; FirstLine = 957
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
