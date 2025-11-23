@@ -749,7 +749,7 @@ CompilerEndIf
     
     Debug *JSWindow\Name
     
-    CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+    CompilerIf #PB_Compiler_OS = #PB_OS_Windows
       If IsIconic_(WindowID(*JSWindow\Window))
         ProcedureReturn
       EndIf
@@ -1309,11 +1309,11 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; FirstLine = 428
 ; Folding = -----------
 ; EnableThread
-; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 972
-; FirstLine = 957
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 1074
+; FirstLine = 1054
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
 ; DPIAware
-; Executable = ..\..\main.exe
+; Executable = ../../main.exe
