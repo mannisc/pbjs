@@ -1052,6 +1052,9 @@ CompilerEndIf
   
   
   
+  
+  
+  
   Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0)
     
     window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
@@ -1062,28 +1065,31 @@ CompilerEndIf
       
       Protected hWnd = WindowID(window)
       
+      CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+        webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
+        
+        CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0) 
+        
+      CompilerElse
+        webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
+      CompilerEndIf
+      
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         SetWindowLongPtr_(WindowID(window), #GWL_STYLE, GetWindowLongPtr_(WindowID(window), #GWL_STYLE) | #WS_CLIPCHILDREN)
         ApplyThemeToWinHandle(hWnd)
         
         SetWindowColor(window, themeBackgroundColor)
         SetWindowCallback(@WindowCallback(),window, #PB_Window_NoChildEvents)
-        UpdateWindow_(hWnd)
-        RedrawWindow_(hWnd, #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN | #RDW_FRAME) 
-      CompilerEndIf
-      CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-        webViewGadget = WebViewGadget(#PB_Any, -1, -1, MaxDesktopWidth+2, MaxDesktopHeight+2,#PB_WebView_Debug)
-      CompilerElse
-        webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight,#PB_WebView_Debug)
-      CompilerEndIf
-      
-      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-        ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
-      CompilerElse 
-        HideGadget(webViewGadget,#True)
+         CompilerEndIf
+        CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+          ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
+        CompilerElse 
+        HideGadget(webViewGadget,#False)
       CompilerEndIf 
       
       BindWebViewCallback(webViewGadget, "callbackReadyState", @CallbackReadyState())
+
+
       
       
       *JSWindow.JSWindow = JSWindows(Str(window)) 
@@ -1310,8 +1316,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1074
-; FirstLine = 1054
+; CursorPosition = 1076
+; FirstLine = 1056
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
