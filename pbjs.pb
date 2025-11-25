@@ -1003,6 +1003,8 @@ CompilerEndIf
                   "   height: var(--container-height);" + 
                   "   min-width: 0!important;" + 
                   "   min-height: 0!important;" + 
+                  "   max-width: var(--container-width);" + 
+                  "   max-height: var(--container-height);" + 
                   " }" + 
                   "" + 
                   " body {" + 
