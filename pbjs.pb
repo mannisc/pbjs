@@ -57,7 +57,7 @@ Module OsTheme
         result = #False 
       EndIf
     CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
-      
+      Debug "DARKMODE??"
       Protected result, line$, theme$, cmd$, tmp$
       
       ; --- 1️⃣ Try freedesktop.org unified color-scheme (modern GNOME/KDE)
@@ -67,10 +67,8 @@ Module OsTheme
         CloseProgram(result)
         If LCase(tmp$) = "prefer-dark"
           result = #True
-          ProcedureReturn
         ElseIf LCase(tmp$) = "default"
           result = #False
-          ProcedureReturn
         EndIf
       EndIf
       
@@ -81,10 +79,8 @@ Module OsTheme
         CloseProgram(result)
         If FindString(LCase(theme$), "dark")
           result = #True
-          ProcedureReturn
         ElseIf theme$ <> ""
           result = #False
-          ProcedureReturn
         EndIf
       EndIf
       
@@ -105,12 +101,11 @@ Module OsTheme
           Else
             result = #False
           EndIf
-          ProcedureReturn
         EndIf
       EndIf
       
-      ; --- 4️⃣ Default: assume Light mode
-      result = #False
+      Debug "DARK?"
+      Debug result
       
     CompilerEndIf
     
@@ -701,14 +696,21 @@ Module JSWindow
   
   Prototype.i ProtoWindowReady(*Window, *JSWindow)
   
-  CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+  CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
     
    
     
     
     Procedure MakeContentVisible(window)
+      
+       CompilerIf #PB_Compiler_OS = #PB_OS_Linux
+        Delay(100) 
+      CompilerElse
         
-      Delay(100)
+        Delay(100)
+      CompilerEndIf
+      
+      
       If IsWindow(window)
         PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
       EndIf 
@@ -724,26 +726,20 @@ Module JSWindow
     
     If Not JSWindows(Str(window))\Ready
       
+      
       JSWindows(Str(window))\Ready = #True
-      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
         
         CreateThread(@MakeContentVisible(),window)
+        
       CompilerElse
+        
         PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
       CompilerEndIf
-
-
-       JSWindows(Str(window))\Ready = #True
-       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-
-       CreateThread(@MakeContentVisible(),window)
-       CompilerElse
-      PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
-CompilerEndIf
     EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
-
+  
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
     Protected script$ = "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
     
@@ -966,9 +962,11 @@ CompilerEndIf
     
     If *JSWindow\Visible
       
-
+      
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         fadeInTime = 310 
+      CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
+        fadeInTime = 510
       CompilerElse
         fadeInTime = 150 
         
@@ -1076,14 +1074,15 @@ CompilerEndIf
         webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
       CompilerEndIf
       
+      SetWindowColor(window, themeBackgroundColor)
+
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         SetWindowLongPtr_(WindowID(window), #GWL_STYLE, GetWindowLongPtr_(WindowID(window), #GWL_STYLE) | #WS_CLIPCHILDREN)
         ApplyThemeToWinHandle(hWnd)
         
-        SetWindowColor(window, themeBackgroundColor)
         SetWindowCallback(@WindowCallback(),window, #PB_Window_NoChildEvents)
          CompilerEndIf
-        CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
           ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
         CompilerElse 
         HideGadget(webViewGadget,#False)
@@ -1219,7 +1218,7 @@ CompilerEndIf
             h = WindowHeight(*JSWindow\Window)
             UpdateWebViewScale(*JSWindow, w, h) 
             
-            CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+            CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
               ResizeGadget(webViewGadget,0,0,#PB_Ignore,#PB_Ignore)
             CompilerElse 
               HideGadget(webViewGadget,#False)
@@ -1317,9 +1316,9 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; FirstLine = 428
 ; Folding = -----------
 ; EnableThread
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 555
-; FirstLine = 547
+; IDE Options = PureBasic 6.21 (Linux - x64)
+; CursorPosition = 968
+; FirstLine = 953
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
