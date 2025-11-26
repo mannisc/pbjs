@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSFileSystem Test</title>
+    <style>
+        body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
+        .log { margin-bottom: 5px; }
+        .success { color: #4CAF50; }
+        .error { color: #F44336; }
+        .info { color: #2196F3; }
+    </style>
+</head>
+<body>
+    <h1>JSFileSystem Test</h1>
+    <div id="console"></div>
+
+    <script>
+        const consoleDiv = document.getElementById('console');
+        function log(msg, type = 'info') {
+            const div = document.createElement('div');
+            div.className = 'log ' + type;
+            div.textContent = msg;
+            consoleDiv.appendChild(div);
+            console.log(msg);
+        }
+
+        async function runTests() {
+            log('Starting tests...', 'info');
+            
+            const testDir = 'test_fs_dir';
+            const testFile = testDir + '/test.txt';
+            const renamedFile = testDir + '/renamed.txt';
+            const content = 'Hello from JSFileSystem!';
+
+            try {
+                // 0. Cleanup from previous runs
+                log('0. Cleaning up previous runs...');
+                try {
+                    await fs.promises.rmdir(testDir);
+                    log('   Cleanup successful', 'info');
+                } catch (e) {
+                    log('   Cleanup skipped (not found or other error)', 'info');
+                }
+
+                // 1. Create Directory
+                log('1. Creating directory: ' + testDir);
+                await fs.promises.mkdir(testDir);
+                log('   Success', 'success');
+
+                // 2. Write File
+                log('2. Writing file: ' + testFile);
+                await fs.promises.writeFile(testFile, content);
+                log('   Success', 'success');
+
+                // 3. Read File
+                log('3. Reading file: ' + testFile);
+                const readContent = await fs.promises.readFile(testFile, 'utf8');
+                if (readContent === content) {
+                    log('   Success: Content matches', 'success');
+                } else {
+                    throw new Error('Content mismatch: ' + readContent);
+                }
+
+                // 4. Stat
+                log('4. Stat file: ' + testFile);
+                const stats = await fs.promises.stat(testFile);
+                log('   Size: ' + stats.size + ', Mode: ' + stats.mode, 'info');
+                if (stats.isFile()) log('   Is File: Yes', 'success');
+                else throw new Error('Should be a file');
+
+                // 5. Readdir
+                log('5. Reading directory: ' + testDir);
+                const files = await fs.promises.readdir(testDir);
+                log('   Files: ' + JSON.stringify(files), 'info');
+                if (files.includes('test.txt')) log('   Found test.txt', 'success');
+                else throw new Error('test.txt not found in directory');
+
+                // 6. Rename
+                log('6. Renaming file to: ' + renamedFile);
+                await fs.promises.rename(testFile, renamedFile);
+                log('   Success', 'success');
+
+                // 7. Check Rename
+                log('7. Checking renamed file exists');
+                try {
+                    await fs.promises.access(renamedFile);
+                    log('   Renamed file exists', 'success');
+                } catch (e) {
+                    throw new Error('Renamed file does not exist');
+                }
+
+                // 8. Delete File
+                log('8. Deleting file: ' + renamedFile);
+                await fs.promises.unlink(renamedFile);
+                log('   Success', 'success');
+
+                // 9. Delete Directory
+                log('9. Deleting directory: ' + testDir);
+                await fs.promises.rmdir(testDir);
+                log('   Success', 'success');
+
+                log('ALL TESTS PASSED!', 'success');
+
+            } catch (e) {
+                log('TEST FAILED: ' + e.message, 'error');
+                console.error(e);
+            }
+        }
+
+        // Wait for bridge
+        if (window.fs) {
+            runTests();
+        } else {
+            // Poll or wait for event? 
+            // The script is injected before body, so it should be ready.
+            // But let's be safe.
+            setTimeout(runTests, 1000);
+        }
+    </script>
+</body>
+</html>
