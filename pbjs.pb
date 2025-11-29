@@ -638,6 +638,9 @@ IncludeFile "pbjsBridge/pbjsBridgeDeclare.pb"
 DeclareModule JSWindow
   UseModule WindowManager
   
+  ; Callback prototype for resize/move events
+  Prototype ResizeCallback(windowName.s, x.l, y.l, w.l, h.l)
+  
   Enumeration #PB_Event_FirstCustomValue
     #Event_Loaded_Html
     #Event_Content_Ready
@@ -647,7 +650,7 @@ DeclareModule JSWindow
     #JSWindow_Behaviour_CloseWindow
   EndEnumeration
   
-  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0)
+  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0)
   Declare OpenJSWindow(*Window.AppWindow )    
   Declare HideJSWindow(*Window.AppWindow)
   Declare CloseJSWindow(*Window.AppWindow)
@@ -673,6 +676,7 @@ DeclareModule JSWindow
     *HtmlStart
     *HtmlEnd
     *WindowReadyProc.ProtoWindowReady
+    *ResizeProc.ResizeCallback  ; Optional callback for resize/move events
   EndStructure 
   
   Global NewMap JSWindows.JSWindow()
@@ -1055,7 +1059,7 @@ Module JSWindow
   
   
   
-  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0)
+  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0)
     
     window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
     If window
@@ -1101,6 +1105,7 @@ Module JSWindow
       *JSWindow\HtmlStart = *htmlStart
       *JSWindow\HtmlEnd = *htmlStop
       *JSWindow\WindowReadyProc = *WindowReadyCallback
+      *JSWindow\ResizeProc = *ResizeCallback
       *JSWindow\CloseBehaviour = CloseBehaviour
       *JSWindow\WebViewGadget = webViewGadget
       
