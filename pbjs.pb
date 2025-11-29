@@ -1348,13 +1348,14 @@ Module JSWindow
               RedrawWindow_(GadgetID(*JSWindow\WebViewGadget), #Null, #Null, #RDW_UPDATENOW  ) 
               RedrawWindow_(WindowID(*JSWindow\Window), #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN ) 
             CompilerEndIf 
-            Debug " #Event_Content_Ready "+*Window\Title
+            Debug " #Event_Content_Ready "+*JSWindow\Name
             HideGadget(webViewGadget,#False)
             
             If *JSWindow\Open And Not *JSWindow\Visible
               HideWindow(*JSWindow\Window, #False)
-              *JSWindow\Visible = #True 
             EndIf 
+            *JSWindow\Visible = #True 
+            
             SetBodyFadeIn(*JSWindow)
             If *JSWindow\Ready
               If *JSWindow\WindowReadyProc
@@ -1440,8 +1441,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 714
-; FirstLine = 709
+; CursorPosition = 1255
+; FirstLine = 1229
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
