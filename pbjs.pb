@@ -944,18 +944,58 @@ Module JSWindow
       Else
         fadeInTime = 0
       EndIf 
-      bodyFadeInScript.s =  "const style=document.createElement('style');" +
+      bodyFadeInScript.s =  "(function(){const style=document.createElement('style');" +
                             "style.id='pbjs-dynamic-style-pbjs-document-ready';" +
                             "style.textContent='body.pbjs-document-ready{" +
                             "transition:opacity " + fadeInTime + "ms ease-out!important;" +
                             "}';" +
-                            "document.head.appendChild(style);";
+                            "document.head.appendChild(style);})()";
       WebViewExecuteScript(*JSWindow\WebViewGadget, bodyFadeInScript)
     EndIf 
   EndProcedure 
   
   
-  Procedure.s WithPbjsScript(html.s,*JSWindow.JSWindow)
+  
+   DataSection
+    WindowBridgeScript:
+    IncludeBinary "pbjsWindowScript.js"
+    EndWindowBridgeScript:
+  EndDataSection
+  
+ 
+  
+  Procedure.s WithPbjsWindowScript(html.s)
+    Protected result.s, bodyPos.i, bodyEndPos.i, startupJS.s
+     ; Load the bridge script
+    Define *buffer = ?WindowBridgeScript
+    Define size.i = ?EndWindowBridgeScript - ?WindowBridgeScript
+    windowScript.s = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
+  
+    result = html
+
+    
+    insertScript.s = ~"<script>\n" + windowScript + ~"</script>\n"
+
+    
+    If FindString(result, "<body", 1, #PB_String_NoCase)
+      bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
+      bodyEndPos = FindString(result, ">", bodyPos)
+      If bodyEndPos > 0
+        result = Left(result, bodyEndPos) + insertScript + Mid(result, bodyEndPos + 1)
+      EndIf
+    Else
+      result = insertScript + result
+    EndIf
+    
+    ProcedureReturn result
+  EndProcedure
+  
+  
+  
+  
+  
+  
+  Procedure.s WithPbjsBasicScript(html.s,*JSWindow.JSWindow)
     Protected result.s, bodyPos.i, bodyEndPos.i, startupJS.s
     
     result = html
@@ -982,18 +1022,20 @@ Module JSWindow
     startupJS.s = "<script>" +
                   "if(!window.__pbjsAdded){" +
                   "" + 
-                  " function pbjsUpdateScale(width, height) {" +
+                  " window.pbjsUpdateScale =  function(width, height) {" +
                   "   console.log('resize',width,height);"+
                   "   document.documentElement.style.setProperty('--container-width', width + 'px');" +
                   "   document.documentElement.style.setProperty('--container-height', height + 'px')" +
-                  " }"+         
+                  " };"+         
                   ""+
-                  " function pbjsDocumentReady() {" +
+                  " window.pbjsDocumentReady = function () {" +
                   "  setTimeout(()=>{"+
                   "    document.body.classList.add('pbjs-document-ready');" +
                   "  },0);"+
                   "  callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" +
-                  " }"+
+                  " };"+
+                  ""+
+                  "(function (){"+
                   ""+
                   " pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"+
                   ""+
@@ -1030,6 +1072,7 @@ Module JSWindow
                   ""+
                   ""+
                   " window.__pbjsAdded=true;" + 
+                  "})();"+
                   "}" +
                   "</script>"
     
@@ -1213,7 +1256,10 @@ Module JSWindow
             webViewGadget = *JSWindow\WebViewGadget
             
             html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
-            html.s =  WithPbjsScript(html, *JSWindow)
+            html.s =  WithPbjsBasicScript(html, *JSWindow)
+            html.s =  WithPbjsWindowScript(html)
+
+            
             
             SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
             *JSWindow\LoadedCode = #True 
@@ -1321,9 +1367,9 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; FirstLine = 428
 ; Folding = -----------
 ; EnableThread
-; IDE Options = PureBasic 6.21 (Linux - x64)
-; CursorPosition = 968
-; FirstLine = 953
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 1259
+; FirstLine = 1255
 ; Folding = ------------
 ; EnableThread
 ; EnableXP

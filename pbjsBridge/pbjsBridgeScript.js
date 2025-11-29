@@ -59,9 +59,9 @@
   };
 
   window.pbjs = {
+    ...(window.pbjs || {}),
     windowName: WINDOW_NAME,
     os: OS_NAME,
-
     invoke: function (windowName, name, params, data) {
       if (!windowName || typeof windowName !== "string") {
         const error = new Error("windowName must be a non-empty string");
