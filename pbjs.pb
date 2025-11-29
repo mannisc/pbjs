@@ -711,8 +711,10 @@ Module JSWindow
       
       CompilerIf #PB_Compiler_OS = #PB_OS_Linux
         Delay(100) 
+      CompilerElseIf #PB_Compiler_OS = #PB_OS_MacOS
+        Delay(100)  
       CompilerElse 
-        Delay(100)
+        Delay(100)  
       CompilerEndIf
       
       
@@ -1438,8 +1440,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 741
-; FirstLine = 726
+; CursorPosition = 714
+; FirstLine = 709
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
