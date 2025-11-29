@@ -42,10 +42,7 @@ Module JSBridge
     EndBridgeScript:
   EndDataSection
   
-  ; Load the bridge script
-  Define *buffer = ?BridgeScript
-  Define size.i = ?EndBridgeScript - ?BridgeScript
-  bridgeScript = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
+  
 
   ; ============================================================================
   ; HELPER FUNCTIONS
@@ -305,13 +302,6 @@ Module JSBridge
       ProcedureReturn #False
     EndIf
     
-   
-    windowKey = Str(window)
-    JSWindows(windowKey)\WebViewGadget = webViewGadget
-    JSWindows(windowKey)\Window = window
-    JSWindows(windowKey)\Name = windowName
-    
-    
     BindWebViewCallback(webViewGadget, "pbjsNativeSend", @HandleSend())
     BindWebViewCallback(webViewGadget, "pbjsNativeGet", @HandleGet())
     BindWebViewCallback(webViewGadget, "pbjsNativeSendAll", @HandleSendAll())
@@ -335,8 +325,13 @@ Module JSBridge
       ProcedureReturn html
     EndIf
     
-    bridgeScript = ReplaceString(bridgeScript, "_WINDOW_NAME_INJECTED_BY_NATIVE_", windowName)
+    ; Load the bridge script
+    Define *buffer = ?BridgeScript
+    Define size.i = ?EndBridgeScript - ?BridgeScript
+    bridgeScript = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
     
+    bridgeScript = ReplaceString(bridgeScript, "_WINDOW_NAME_INJECTED_BY_NATIVE_", windowName)
+
     Protected osName.s
     CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
       osName = "mac"
@@ -367,9 +362,9 @@ Module JSBridge
   EndProcedure
   
 EndModule
-; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 363
-; FirstLine = 333
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 333
+; FirstLine = 314
 ; Folding = ---
 ; EnableXP
 ; DPIAware

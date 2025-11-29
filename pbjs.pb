@@ -390,7 +390,7 @@ Module WindowManager
   
   
   Global OSVersion = OSVersion()
-
+  
   
   Procedure InitWindowManager()
     Global NewMap ManagedWindowsHandles.HandleInfo()
@@ -418,6 +418,8 @@ Module WindowManager
   EndProcedure
   
   Procedure OpenManagedWindow(*Window.AppWindow,manualOpen=#False)
+            Debug "OPEN MANAGED WINDOW 1"
+
     If Not *Window\Open
       If IsWindow(*Window\Window)
         If Not manualOpen
@@ -453,8 +455,9 @@ Module WindowManager
             HideWindow(*Window\Window, #False)
           CompilerEndIf
         EndIf 
-        
+        Debug "OPEN MANAGED WINDOW 2"
         *Window\Open = #True
+        Debug *Window
         ProcedureReturn 1
       EndIf 
     EndIf
@@ -462,10 +465,12 @@ Module WindowManager
   EndProcedure
   
   Procedure HideManagedWindow(*Window.AppWindow)
+    Debug "HideManagedWindow"
     If *Window\Window
-      *Window\Open = #False     
       If *Window\HideProc
-        CallFunctionFast(*Window\HideProc, *Window)
+        CallFunctionFast(*Window\HideProc, *Window, #True )
+        *Window\Open = #False    
+
       EndIf
     EndIf
   EndProcedure
@@ -526,6 +531,7 @@ Module WindowManager
       EndIf
       ForEach ManagedWindows()
         If ManagedWindows()\HandleProc
+             
           If Event = #CustomWindowEvent Or ManagedWindows()\Open     
             If EventWindow = ManagedWindows()\Window And 
                KeepWindow = CallFunctionFast(ManagedWindows()\HandleProc, @ManagedWindows(), Event,EventGadget,EventType)
@@ -536,7 +542,8 @@ Module WindowManager
             EndIf
           EndIf 
         EndIf
-      Next
+      Next 
+      
     EndIf 
   EndProcedure
   
@@ -652,7 +659,7 @@ DeclareModule JSWindow
   
   Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0)
   Declare OpenJSWindow(*Window.AppWindow )    
-  Declare HideJSWindow(*Window.AppWindow)
+  Declare HideJSWindow(*Window.AppWindow, FromManagedWindow)
   Declare CloseJSWindow(*Window.AppWindow)
   Declare ResizeJSWindow(*Window.AppWindow, x, y, w, h)
   Declare GetWebView(*Window.AppWindow)
@@ -699,18 +706,12 @@ Module JSWindow
   CompilerEndIf
   
   Prototype.i ProtoWindowReady(*Window, *JSWindow)
-  
-  CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
-    
-   
-    
-    
+
     Procedure MakeContentVisible(window)
       
-       CompilerIf #PB_Compiler_OS = #PB_OS_Linux
+      CompilerIf #PB_Compiler_OS = #PB_OS_Linux
         Delay(100) 
-      CompilerElse
-        
+      CompilerElse 
         Delay(100)
       CompilerEndIf
       
@@ -719,9 +720,8 @@ Module JSWindow
         PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
       EndIf 
     EndProcedure
-  CompilerEndIf
   
-  Procedure CallbackReadyState(JsonParameters.s)
+  Procedure JSReadyState(JsonParameters.s)
     Dim Parameters(0)
     ParseJSON(0, JsonParameters)
     ExtractJSONArray(JSONValue(0), Parameters())
@@ -732,17 +732,73 @@ Module JSWindow
       
       
       JSWindows(Str(window))\Ready = #True
-      CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
+      ;CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
         
         CreateThread(@MakeContentVisible(),window)
         
-      CompilerElse
+      ;CompilerElse
         
-        PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
-      CompilerEndIf
+       ; PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
+      ;CompilerEndIf
     EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
+  
+  Procedure JSGetWindow(JsonParameters.s)
+    Dim Parameters.s(0)
+    ParseJSON(0, JsonParameters)
+    ExtractJSONArray(JSONValue(0), Parameters())
+    windowName.s = Parameters(0)
+    ForEach JSWindows()
+      If Trim(JSWindows()\Name)=Trim(windowName)
+        ProcedureReturn UTF8(~"{\"id\":"+Str(JSWindows()\Window)+"}")
+        Break 
+      EndIf 
+    Next 
+    ProcedureReturn UTF8(~"{\"error\":false}")
+  EndProcedure
+  
+  Procedure JSOpenWindow(JsonParameters.s)
+    Dim Parameters(0)
+    ParseJSON(0, JsonParameters)
+    ExtractJSONArray(JSONValue(0), Parameters())
+    window = Parameters(0)
+    *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+    If *Window
+      OpenJSWindow(*Window) 
+      ProcedureReturn UTF8(~"{\"success\":true}")  
+    EndIf 
+    ProcedureReturn UTF8(~"{\"error\":true}")
+  EndProcedure
+  
+  Procedure JSHideWindow(JsonParameters.s)
+    Dim Parameters(0)
+    ParseJSON(0, JsonParameters)
+    ExtractJSONArray(JSONValue(0), Parameters())
+    window = Parameters(0)
+    *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+    If *Window
+      HideJSWindow(*Window, #False ) 
+      ProcedureReturn UTF8(~"{\"success\":true}")  
+    EndIf 
+    ProcedureReturn UTF8(~"{\"error\":true}")
+  EndProcedure
+  
+  Procedure JSCloseWindow(JsonParameters.s)
+    Dim Parameters(0)
+    ParseJSON(0, JsonParameters)
+    ExtractJSONArray(JSONValue(0), Parameters())
+    window = Parameters(0)
+    Debug window
+    *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+    If *Window
+      CloseJSWindow(*Window) 
+      ProcedureReturn UTF8(~"{\"success\":true}")  
+    EndIf 
+    ProcedureReturn UTF8(~"{\"error\":true}")
+  EndProcedure
+  
+  
   
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
     Protected script$ = "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
@@ -757,11 +813,11 @@ Module JSWindow
     
     Debug *JSWindow\WebViewGadget
     If Not IsGadget(*JSWindow\WebViewGadget) Or width = 0 Or height = 0
-        ProcedureReturn
+      ProcedureReturn
     EndIf
     WebViewExecuteScript(*JSWindow\WebViewGadget, script$)
   EndProcedure
-
+  
   Procedure GetWebView(*Window.AppWindow)
     Protected windowKey.s = Str(*Window\Window)
     If FindMapElement(JSWindows(), windowKey)
@@ -769,7 +825,7 @@ Module JSWindow
     EndIf
     ProcedureReturn 0
   EndProcedure
-
+  
   ;#######MACOS RESIZE
   
   CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
@@ -823,7 +879,7 @@ Module JSWindow
           Protected *State.MacOSResizeState = @MacOSResizeStates()
           
           
-           *JSWindow.JSWIndow = JSWindows(Str(MacOSResizeStates()\Window\Window))
+          *JSWindow.JSWIndow = JSWindows(Str(MacOSResizeStates()\Window\Window))
           
           webViewGadget = *JSWindow\WebViewGadget
           
@@ -956,26 +1012,26 @@ Module JSWindow
   
   
   
-   DataSection
+  DataSection
     WindowBridgeScript:
     IncludeBinary "pbjsWindowScript.js"
     EndWindowBridgeScript:
   EndDataSection
   
- 
+  
   
   Procedure.s WithPbjsWindowScript(html.s)
     Protected result.s, bodyPos.i, bodyEndPos.i, startupJS.s
-     ; Load the bridge script
+    ; Load the bridge script
     Define *buffer = ?WindowBridgeScript
     Define size.i = ?EndWindowBridgeScript - ?WindowBridgeScript
     windowScript.s = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
-  
+    
     result = html
-
+    
     
     insertScript.s = ~"<script>\n" + windowScript + ~"</script>\n"
-
+    
     
     If FindString(result, "<body", 1, #PB_String_NoCase)
       bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
@@ -1122,22 +1178,25 @@ Module JSWindow
       CompilerEndIf
       
       SetWindowColor(window, themeBackgroundColor)
-
+      
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         SetWindowLongPtr_(WindowID(window), #GWL_STYLE, GetWindowLongPtr_(WindowID(window), #GWL_STYLE) | #WS_CLIPCHILDREN)
         ApplyThemeToWinHandle(hWnd)
         
         SetWindowCallback(@WindowCallback(),window, #PB_Window_NoChildEvents)
-         CompilerEndIf
-        CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
-          ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
-        CompilerElse 
-        HideGadget(webViewGadget,#False)
+      CompilerEndIf
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
+        ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
+      CompilerElse 
+        HideGadget(webViewGadget,#True)
       CompilerEndIf 
       
-      BindWebViewCallback(webViewGadget, "callbackReadyState", @CallbackReadyState())
-
-
+      BindWebViewCallback(webViewGadget, "callbackReadyState", @JSReadyState())
+      BindWebViewCallback(webViewGadget, "pbjsNativeGetWindow", @JSGetWindow())
+      BindWebViewCallback(webViewGadget, "pbjsNativeOpenWindow", @JSOpenWindow())
+      BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
+      BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
+      
       
       
       *JSWindow.JSWindow = JSWindows(Str(window)) 
@@ -1199,12 +1258,21 @@ Module JSWindow
     EndIf 
   EndProcedure
   
-  Procedure HideJSWindow(*Window.AppWindow)
+  Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
     If IsWindow(*Window\Window)
+      Debug "HideJSWindow"
+      Debug *Window\Open
+      Debug *Window
       If *Window\Open 
-        CloseManagedWindow(*Window)
+        HideWindow(*Window\Window,#True)
       EndIf 
-      HideWindow(*Window\Window,#True)
+      
+      Debug "TRY HIDE"
+      If Not FromManagedWindow
+        HideManagedWindow(*Window)
+      EndIf 
+        Debug "HIDE"
+      
     EndIf 
   EndProcedure
   
@@ -1217,7 +1285,9 @@ Module JSWindow
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
         MacOSUnregisterResizeNotifications(*Window)
       CompilerEndIf
-      CloseWindow(*Window\Window)
+      If IsWindow(*Window\Window)
+        CloseWindow(*Window\Window)
+      EndIf 
     EndIf 
   EndProcedure
   
@@ -1234,7 +1304,6 @@ Module JSWindow
     *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
     
     Protected closeWindow = #False
-    
     Select Event
       Case #PB_Event_CloseWindow
         closeWindow = #True
@@ -1249,7 +1318,7 @@ Module JSWindow
         UpdateWebViewScale(*JSWindow, w, h) 
         
         
-
+        
       Case  #CustomWindowEvent
         Select Type.i 
           Case #Event_Loaded_Html
@@ -1258,7 +1327,7 @@ Module JSWindow
             html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
             html.s =  WithPbjsBasicScript(html, *JSWindow)
             html.s =  WithPbjsWindowScript(html)
-
+            
             
             
             SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
@@ -1271,8 +1340,6 @@ Module JSWindow
             
             CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
               ResizeGadget(webViewGadget,0,0,#PB_Ignore,#PB_Ignore)
-            CompilerElse 
-              HideGadget(webViewGadget,#False)
             CompilerEndIf 
             CompilerIf #PB_Compiler_OS = #PB_OS_Windows
               ;UpdateWindow_(WindowID(*JSWindow\Window))
@@ -1280,8 +1347,8 @@ Module JSWindow
               RedrawWindow_(WindowID(*JSWindow\Window), #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN ) 
             CompilerEndIf 
             Debug " #Event_Content_Ready "+*Window\Title
-            HideGadget(*JSWindow\WebViewGadget,#False)
-
+            HideGadget(webViewGadget,#False)
+            
             If *JSWindow\Open And Not *JSWindow\Visible
               HideWindow(*JSWindow\Window, #False)
               *JSWindow\Visible = #True 
@@ -1297,9 +1364,12 @@ Module JSWindow
     EndSelect
     
     If closeWindow
+      Debug "CLOSE WINDOW"
       If *JSWindow\CloseBehaviour = #JSWindow_Behaviour_CloseWindow
+        Debug "CLOSE"
         CloseManagedWindow(*Window)
       Else
+        Debug "HIDE"
         HideManagedWindow(*Window)
       EndIf 
     EndIf    
@@ -1368,8 +1438,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1259
-; FirstLine = 1255
+; CursorPosition = 741
+; FirstLine = 726
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
