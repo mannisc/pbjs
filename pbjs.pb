@@ -555,7 +555,7 @@ Module WindowManager
     Protected KeepWindow.i
     Protected OpenedWindowExists.i 
     While KeepRunning
-      Event = WindowEvent()
+      Event = WaitWindowEvent(16)
       If Event <> 0
         EventWindow = EventWindow()
         EventGadget = EventGadget()
@@ -1440,11 +1440,11 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; FirstLine = 428
 ; Folding = -----------
 ; EnableThread
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1255
-; FirstLine = 1229
+; IDE Options = PureBasic 6.21 (Windows - x64)
+; CursorPosition = 556
+; FirstLine = 549
 ; Folding = ------------
 ; EnableThread
 ; EnableXP
 ; DPIAware
-; Executable = ../../main.exe
+; Executable = ..\..\main.exe
