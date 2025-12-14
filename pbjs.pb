@@ -1,5 +1,4 @@
 ﻿
-
 ;=====================================================================
 ;-  Window Dark Mode Support
 ;=====================================================================
@@ -22,6 +21,8 @@ DeclareModule OsTheme
   Global themeBackgroundColor = lightThemeBackgroundColor
   Global themeForegroundColor = lightThemeForegroundColor
   
+  #Debug_On = #PB_Compiler_Debugger  
+
 EndDeclareModule
 
 Module OsTheme
@@ -680,6 +681,10 @@ DeclareModule JSWindow
     CloseBehaviour.i
     
     Html.s
+    
+    StartupJS.s
+    WindowJS.s
+    
     *HtmlStart
     *HtmlEnd
     *WindowReadyProc.ProtoWindowReady
@@ -730,18 +735,16 @@ Module JSWindow
     window = Parameters(0)
     *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
     
-    If Not JSWindows(Str(window))\Ready
+         
       
+    If Not JSWindows(Str(window))\Ready
+       
       
       JSWindows(Str(window))\Ready = #True
-      ;CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
         
-        CreateThread(@MakeContentVisible(),window)
+      CreateThread(@MakeContentVisible(),window)
         
-      ;CompilerElse
-        
-       ; PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
-      ;CompilerEndIf
+
     EndIf 
     ProcedureReturn UTF8(~"")
   EndProcedure
@@ -803,6 +806,9 @@ Module JSWindow
   
   
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
+    Debug width 
+    Debug height 
+    
     Protected script$ = "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
     
     Debug *JSWindow\Name
@@ -1022,19 +1028,17 @@ Module JSWindow
   
   
   
-  Procedure.s WithPbjsWindowScript(html.s)
-    Protected result.s, bodyPos.i, bodyEndPos.i, startupJS.s
+  Procedure PreparePbjsWindowScript(*JSWindow.JSWindow)
     ; Load the bridge script
     Define *buffer = ?WindowBridgeScript
-    Define size.i = ?EndWindowBridgeScript - ?WindowBridgeScript
-    windowScript.s = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
-    
-    result = html
-    
-    
-    insertScript.s = ~"<script>\n" + windowScript + ~"</script>\n"
-    
-    
+    Define size.i = ?EndWindowBridgeScript - ?WindowBridgeScript 
+    *JSWindow\WindowJS = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
+  EndProcedure
+  
+  Procedure.s WithPbjsWindowScript(html.s, *JSWindow.JSWindow)
+    PreparePbjsWindowScript(*JSWindow)    
+    result.s = html
+    insertScript.s = ~"<script>\n" + *JSWindow\WindowJS  + ~"</script>\n"
     If FindString(result, "<body", 1, #PB_String_NoCase)
       bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
       bodyEndPos = FindString(result, ">", bodyPos)
@@ -1050,18 +1054,12 @@ Module JSWindow
   
   
   
-  
-  
-  
-  Procedure.s WithPbjsBasicScript(html.s,*JSWindow.JSWindow)
-    Protected result.s, bodyPos.i, bodyEndPos.i, startupJS.s
-    
-    result = html
-    window.i = *JSWindow\Window
+  Procedure PreparePbjsBasicScript(*JSWindow.JSWindow)
+     window.i = *JSWindow\Window
     webViewGadget.i = *JSWindow\WebViewGadget
     width = WindowWidth(window)
     height = WindowHeight(window)
-    
+      Debug WindowWidth(window)
     If *JSWindow\Visible
       
       
@@ -1076,8 +1074,7 @@ Module JSWindow
     Else
       fadeInTime = 0
     EndIf 
-    
-    startupJS.s = "<script>" +
+     *JSWindow\StartupJS = ""+
                   "if(!window.__pbjsAdded){" +
                   "" + 
                   " window.pbjsUpdateScale =  function(width, height) {" +
@@ -1131,17 +1128,26 @@ Module JSWindow
                   ""+
                   " window.__pbjsAdded=true;" + 
                   "})();"+
-                  "}" +
-                  "</script>"
+                  "}" 
+  EndProcedure
+  
+  Procedure.s WithPbjsBasicScript(html.s,*JSWindow.JSWindow)
+    Protected result.s, bodyPos.i, bodyEndPos.i
+    
+    result = html
+   
+    PreparePbjsBasicScript(*JSWindow)
+    
+    Debug "ÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖ"
     
     If FindString(result, "<body", 1, #PB_String_NoCase)
       bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
       bodyEndPos = FindString(result, ">", bodyPos)
       If bodyEndPos > 0
-        result = Left(result, bodyEndPos) + startupJS + Mid(result, bodyEndPos + 1)
+        result = Left(result, bodyEndPos) + "<script>" +*JSWindow\StartupJS + "</script>"+ Mid(result, bodyEndPos + 1)
       EndIf
     Else
-      result = startupJS + result
+      result = *JSWindow\StartupJS + result
     EndIf
     
     ProcedureReturn result
@@ -1156,7 +1162,13 @@ Module JSWindow
   EndProcedure 
   
   
-  
+  Procedure BindWebviewEvents(webViewGadget)
+    BindWebViewCallback(webViewGadget, "callbackReadyState", @JSReadyState())
+    BindWebViewCallback(webViewGadget, "pbjsNativeGetWindow", @JSGetWindow())
+    BindWebViewCallback(webViewGadget, "pbjsNativeOpenWindow", @JSOpenWindow())
+    BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
+    BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
+  EndProcedure 
   
   
   
@@ -1164,6 +1176,7 @@ Module JSWindow
     
     window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
     If window
+      
       
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
       
@@ -1184,22 +1197,19 @@ Module JSWindow
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         SetWindowLongPtr_(WindowID(window), #GWL_STYLE, GetWindowLongPtr_(WindowID(window), #GWL_STYLE) | #WS_CLIPCHILDREN)
         ApplyThemeToWinHandle(hWnd)
-        
         SetWindowCallback(@WindowCallback(),window, #PB_Window_NoChildEvents)
       CompilerEndIf
-      CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
-        ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
-      CompilerElse 
-        HideGadget(webViewGadget,#True)
+      
+      CompilerIf Not #Debug_On
+        
+        CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
+          ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
+        CompilerElse 
+          HideGadget(webViewGadget,#True)
+        CompilerEndIf 
       CompilerEndIf 
       
-      BindWebViewCallback(webViewGadget, "callbackReadyState", @JSReadyState())
-      BindWebViewCallback(webViewGadget, "pbjsNativeGetWindow", @JSGetWindow())
-      BindWebViewCallback(webViewGadget, "pbjsNativeOpenWindow", @JSOpenWindow())
-      BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
-      BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
-      
-      
+      BindWebviewEvents(webViewGadget)
       
       *JSWindow.JSWindow = JSWindows(Str(window)) 
       *JSWindow\Window = window
@@ -1224,6 +1234,13 @@ Module JSWindow
       
       CreateThread(@LoadHtml(),window)
       
+      CompilerIf  #Debug_On; remote debugging
+        PreparePbjsBasicScript(*JSWindow.JSWindow)
+        PreparePbjsWindowScript(*JSWindow)    
+
+        SetGadgetText(webViewGadget,"http://localhost:5173/")
+      CompilerEndIf 
+    
       ProcedureReturn *Window
     EndIf 
     ProcedureReturn -1
@@ -1262,18 +1279,14 @@ Module JSWindow
   
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
     If IsWindow(*Window\Window)
-      Debug "HideJSWindow"
-      Debug *Window\Open
-      Debug *Window
+
       If *Window\Open 
         HideWindow(*Window\Window,#True)
       EndIf 
       
-      Debug "TRY HIDE"
       If Not FromManagedWindow
         HideManagedWindow(*Window)
       EndIf 
-        Debug "HIDE"
       
     EndIf 
   EndProcedure
@@ -1300,10 +1313,35 @@ Module JSWindow
     EndIf 
   EndProcedure
   
+  CompilerIf #Debug_On
+    Global DEBUGMODEcheckTime
+  CompilerEndIf
+  
   
   Procedure.i HandleEvent(*Window.AppWindow,Event.i, Gadget.i, Type.i)
     
+    
     *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+    
+    CompilerIf #Debug_On
+      If Not *JSWindow\Ready And ElapsedMilliseconds() - DEBUGMODEcheckTime > 300
+        Debug "XXXXXXXXXXXXXXXXXXÄÄÄÄÄ INJECT"
+        Debug *JSWindow\StartupJS
+            webViewGadget = *JSWindow\WebViewGadget
+            BindWebviewEvents(webViewGadget)
+         DEBUGMODEcheckTime =  ElapsedMilliseconds() 
+         WebViewExecuteScript(webViewGadget, *JSWindow\StartupJS)
+         WebViewExecuteScript(webViewGadget, *JSWindow\WindowJS )
+         Debug JSBridge::GetStartUpJS(*JSWindow\Name)
+         WebViewExecuteScript(webViewGadget, JSBridge::GetStartUpJS(*JSWindow\Name))
+         
+         
+         
+         
+       EndIf 
+  
+    CompilerEndIf
+   
     
     Protected closeWindow = #False
     Select Event
@@ -1323,21 +1361,27 @@ Module JSWindow
         
       Case  #CustomWindowEvent
         Select Type.i 
+            
           Case #Event_Loaded_Html
-            webViewGadget = *JSWindow\WebViewGadget
-            
-            html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
-            html.s =  WithPbjsBasicScript(html, *JSWindow)
-            html.s =  WithPbjsWindowScript(html)
-            
-            
-            
-            SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
-            *JSWindow\LoadedCode = #True 
+            CompilerIf Not #Debug_On
+              
+              webViewGadget = *JSWindow\WebViewGadget
+              
+              html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
+              html.s =  WithPbjsBasicScript(html, *JSWindow)
+              html.s =  WithPbjsWindowScript(html, *JSWindow)
+              
+              
+              
+              SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
+              *JSWindow\LoadedCode = #True 
+            CompilerEndIf 
           Case #Event_Content_Ready
+            
             webViewGadget = *JSWindow\WebViewGadget
             w = WindowWidth(*JSWindow\Window)
             h = WindowHeight(*JSWindow\Window)
+             
             UpdateWebViewScale(*JSWindow, w, h) 
             
             CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
@@ -1348,7 +1392,9 @@ Module JSWindow
               RedrawWindow_(GadgetID(*JSWindow\WebViewGadget), #Null, #Null, #RDW_UPDATENOW  ) 
               RedrawWindow_(WindowID(*JSWindow\Window), #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN ) 
             CompilerEndIf 
+            
             Debug " #Event_Content_Ready "+*JSWindow\Name
+            
             HideGadget(webViewGadget,#False)
             
             If *JSWindow\Open And Not *JSWindow\Visible
@@ -1357,6 +1403,7 @@ Module JSWindow
             *JSWindow\Visible = #True 
             
             SetBodyFadeIn(*JSWindow)
+            
             If *JSWindow\Ready
               If *JSWindow\WindowReadyProc
                 CallFunctionFast(*JSWindow\WindowReadyProc, *Window , *JSWindow)
@@ -1441,9 +1488,9 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 556
-; FirstLine = 549
-; Folding = ------------
+; CursorPosition = 1335
+; FirstLine = 1331
+; Folding = --------------
 ; EnableThread
 ; EnableXP
 ; DPIAware

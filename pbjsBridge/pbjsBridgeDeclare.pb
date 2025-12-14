@@ -10,12 +10,12 @@ DeclareModule JSBridge
   Declare.s WithBridgeScript(html.s, windowName.s)
   Declare GetJSWindowByName(windowName.s)
   Declare.s GetJSWindowNameByID(window.i)
-  
+  Declare.s GetStartUpJS(windowName.s)
 EndDeclareModule
 
 
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 14
+; CursorPosition = 12
 ; Folding = -
 ; EnableXP
 ; DPIAware

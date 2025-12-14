@@ -78,6 +78,9 @@ Module JSBridge
   ; NATIVE CALLBACKS
   ; ============================================================================
   
+  
+
+  
   Procedure HandleSend(jsonParameters.s)
     Protected json.i, fromWindow.s, toWindow.s, name.s, paramsJson.s, dataJson.s, script.s, messageJson.s
     
@@ -315,16 +318,12 @@ Module JSBridge
   ; HTML WRAPPER
   ; ============================================================================
   
-  Procedure.s WithBridgeScript(html.s, windowName.s)
-    Protected result.s, bodyPos.i, bodyEndPos.i, initScript.s, bridgeScriptWithName.s
+  
+  Procedure.s PrepateBridgeScript(windowName.s)
     
-    result = html
+    Protected bodyPos.i, bodyEndPos.i, initScript.s, bridgeScriptWithName.s
     
-    If Trim(windowName) = ""
-      Debug "Error: Window name cannot be empty for HTML wrapping"
-      ProcedureReturn html
-    EndIf
-    
+
     ; Load the bridge script
     Define *buffer = ?BridgeScript
     Define size.i = ?EndBridgeScript - ?BridgeScript
@@ -344,8 +343,16 @@ Module JSBridge
     CompilerEndIf 
 
     bridgeScript = ReplaceString(bridgeScript, "_OS_NAME_INJECTED_BY_NATIVE_", osName)
+    ProcedureReturn bridgeScript
+    EndProcedure 
+  
+    Procedure.s WithBridgeScript(html.s, windowName.s)
+          result.s = html
 
-    initScript = ~"<script>\n" + bridgeScript + ~"</script>\n"
+    bridgeScript.s = PrepateBridgeScript(windowName)
+
+
+    initScript.s = ~"<script>\n" + bridgeScript + ~"</script>\n"
     
     If FindString(result, "<body", 1, #PB_String_NoCase)
       bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
@@ -361,10 +368,14 @@ Module JSBridge
     ProcedureReturn result
   EndProcedure
   
+  Procedure.s GetStartUpJS(windowName.s)
+     ProcedureReturn PrepateBridgeScript(windowName)
+  EndProcedure 
+  
 EndModule
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 333
-; FirstLine = 314
-; Folding = ---
+; IDE Options = PureBasic 6.21 (Windows - x64)
+; CursorPosition = 370
+; FirstLine = 316
+; Folding = -v-
 ; EnableXP
 ; DPIAware
