@@ -329,6 +329,7 @@ Module JSBridge
     Define size.i = ?EndBridgeScript - ?BridgeScript
     bridgeScript = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
     
+    Debug "PREPARE SCRIPT #################################################### "+windowName
     bridgeScript = ReplaceString(bridgeScript, "_WINDOW_NAME_INJECTED_BY_NATIVE_", windowName)
 
     Protected osName.s
@@ -374,8 +375,8 @@ Module JSBridge
   
 EndModule
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 370
-; FirstLine = 316
-; Folding = -v-
+; CursorPosition = 331
+; FirstLine = 327
+; Folding = ---
 ; EnableXP
 ; DPIAware
