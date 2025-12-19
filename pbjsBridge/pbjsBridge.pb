@@ -247,7 +247,9 @@ Module JSBridge
         
         ForEach JSWindows()
           If JSWindows()\Name <> fromWindow
-            WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            If IsGadget(JSWindows()\WebViewGadget)
+              WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            EndIf
           EndIf
         Next
       EndIf
@@ -375,8 +377,8 @@ Module JSBridge
   
 EndModule
 ; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 331
-; FirstLine = 327
+; CursorPosition = 250
+; FirstLine = 231
 ; Folding = ---
 ; EnableXP
 ; DPIAware
