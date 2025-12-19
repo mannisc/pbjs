@@ -737,16 +737,11 @@ Module JSWindow
     window = Parameters(0)
     *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
     
-    
-    
     If Not JSWindows(Str(window))\Ready
-      
-      
       JSWindows(Str(window))\Ready = #True
       
       CreateThread(@MakeContentVisible(),window)
-              ReloadedJS = #True 
-
+      ReloadedJS = #True 
       
     EndIf 
     ProcedureReturn UTF8(~"")
@@ -809,12 +804,9 @@ Module JSWindow
   
   
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
-    Debug width 
-    Debug height 
-    
+
     Protected script$ = "pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
     
-    Debug *JSWindow\Name
     
     CompilerIf #PB_Compiler_OS = #PB_OS_Windows
       If IsIconic_(WindowID(*JSWindow\Window))
@@ -822,7 +814,6 @@ Module JSWindow
       EndIf
     CompilerEndIf
     
-    Debug *JSWindow\WebViewGadget
     If Not IsGadget(*JSWindow\WebViewGadget) Or width = 0 Or height = 0
       ProcedureReturn
     EndIf
@@ -1180,9 +1171,7 @@ Module JSWindow
     window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
     If window
       
-      
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
-      
       
       Protected hWnd = WindowID(window)
       
@@ -1228,7 +1217,6 @@ Module JSWindow
       
       WindowsByName(windowName) = window
       JSBridge::InitializeBridge(windowName, window, webViewGadget)
-      
       
       ; Register for live resize notifications on macOS
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
@@ -1524,11 +1512,11 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; FirstLine = 428
 ; Folding = -----------
 ; EnableThread
-; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 23
-; FirstLine = 12
-; Folding = --------------
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 1351
+; FirstLine = 1330
+; Folding = ------4-------
 ; EnableThread
 ; EnableXP
 ; DPIAware
-; Executable = ..\..\main.exe
+; Executable = ../../main.exe

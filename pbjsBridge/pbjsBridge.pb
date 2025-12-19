@@ -43,7 +43,7 @@ Module JSBridge
   EndDataSection
   
   
-
+  
   ; ============================================================================
   ; HELPER FUNCTIONS
   ; ============================================================================
@@ -79,7 +79,7 @@ Module JSBridge
   ; ============================================================================
   
   
-
+  
   
   Procedure HandleSend(jsonParameters.s)
     Protected json.i, fromWindow.s, toWindow.s, name.s, paramsJson.s, dataJson.s, script.s, messageJson.s
@@ -154,8 +154,8 @@ Module JSBridge
           ForEach JSWindows()
             If JSWindows()\Window = sourceWindow
               script = "pbjsHandleResponse('" + EscapeJSON(~"{\"requestId\":" + Str(requestId) + 
-                                                          ~",\"fromWindow\":\"" + toWindow + 
-                                                          ~"\",\"data\":{\"error\":\"Window not found: " + toWindow + ~"\"}}") + "');"
+                                                           ~",\"fromWindow\":\"" + toWindow + 
+                                                           ~"\",\"data\":{\"error\":\"Window not found: " + toWindow + ~"\"}}") + "');"
               
               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
               Break
@@ -325,15 +325,14 @@ Module JSBridge
     
     Protected bodyPos.i, bodyEndPos.i, initScript.s, bridgeScriptWithName.s
     
-
+    
     ; Load the bridge script
     Define *buffer = ?BridgeScript
     Define size.i = ?EndBridgeScript - ?BridgeScript
     bridgeScript = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
     
-    Debug "PREPARE SCRIPT #################################################### "+windowName
     bridgeScript = ReplaceString(bridgeScript, "_WINDOW_NAME_INJECTED_BY_NATIVE_", windowName)
-
+    
     Protected osName.s
     CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
       osName = "mac"
@@ -344,17 +343,17 @@ Module JSBridge
     CompilerElse
       osName = "other"
     CompilerEndIf 
-
+    
     bridgeScript = ReplaceString(bridgeScript, "_OS_NAME_INJECTED_BY_NATIVE_", osName)
     ProcedureReturn bridgeScript
-    EndProcedure 
+  EndProcedure 
   
-    Procedure.s WithBridgeScript(html.s, windowName.s)
-          result.s = html
-
+  Procedure.s WithBridgeScript(html.s, windowName.s)
+    result.s = html
+    
     bridgeScript.s = PrepateBridgeScript(windowName)
-
-
+    
+    
     initScript.s = ~"<script>\n" + bridgeScript + ~"</script>\n"
     
     If FindString(result, "<body", 1, #PB_String_NoCase)
@@ -367,18 +366,18 @@ Module JSBridge
       result = initScript + result
     EndIf
     
-
+    
     ProcedureReturn result
   EndProcedure
   
   Procedure.s GetStartUpJS(windowName.s)
-     ProcedureReturn PrepateBridgeScript(windowName)
+    ProcedureReturn PrepateBridgeScript(windowName)
   EndProcedure 
   
 EndModule
-; IDE Options = PureBasic 6.21 (Windows - x64)
-; CursorPosition = 250
-; FirstLine = 231
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 358
+; FirstLine = 343
 ; Folding = ---
 ; EnableXP
 ; DPIAware
