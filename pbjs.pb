@@ -1512,11 +1512,11 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; FirstLine = 428
 ; Folding = -----------
 ; EnableThread
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1351
-; FirstLine = 1330
+; IDE Options = PureBasic 6.21 (Windows - x64)
+; CursorPosition = 23
+; FirstLine = 20
 ; Folding = ------4-------
 ; EnableThread
 ; EnableXP
 ; DPIAware
-; Executable = ../../main.exe
+; Executable = ..\..\main.exe
