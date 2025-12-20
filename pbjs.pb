@@ -21,7 +21,7 @@ DeclareModule OsTheme
   Global themeBackgroundColor = lightThemeBackgroundColor
   Global themeForegroundColor = lightThemeForegroundColor
   
-  #Debug_On = #PB_Compiler_Debugger  
+  #Debug_On = #False;#PB_Compiler_Debugger  
   
 EndDeclareModule
 
