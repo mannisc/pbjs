@@ -699,7 +699,6 @@ EndDeclareModule
 
 
 Module JSWindow
-  Global DebugTime.q
   UseModule OsTheme
   UseModule Ptym
   
@@ -741,7 +740,6 @@ Module JSWindow
     If Not JSWindows(Str(window))\Ready
       JSWindows(Str(window))\Ready = #True
       
-      Debug "TIME [JSReadyState Triggered - ReloadedJS Set to True] Window: " + Str(window)
       CreateThread(@MakeContentVisible(),window)
       ReloadedJS = #True 
       
@@ -1048,8 +1046,6 @@ Module JSWindow
     ProcedureReturn result
   EndProcedure
   
-  
-  
   Procedure PreparePbjsBasicScript(*JSWindow.JSWindow)
     window.i = *JSWindow\Window
     webViewGadget.i = *JSWindow\WebViewGadget
@@ -1057,7 +1053,6 @@ Module JSWindow
     height = WindowHeight(window)
     Debug WindowWidth(window)
     If *JSWindow\Visible
-      
       
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         fadeInTime = 310 
@@ -1133,9 +1128,7 @@ Module JSWindow
     result = html
     
     PreparePbjsBasicScript(*JSWindow)
-    
-    Debug "ÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖÖ"
-    
+        
     If FindString(result, "<body", 1, #PB_String_NoCase)
       bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
       bodyEndPos = FindString(result, ">", bodyPos)
@@ -1149,11 +1142,6 @@ Module JSWindow
     ProcedureReturn result
   EndProcedure
   
-  
-  
- 
-  
-  
   Procedure BindWebviewEvents(webViewGadget)
     BindWebViewCallback(webViewGadget, "callbackReadyState", @JSReadyState())
     BindWebViewCallback(webViewGadget, "pbjsNativeGetWindow", @JSGetWindow())
@@ -1161,18 +1149,13 @@ Module JSWindow
     BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
   EndProcedure 
-  
-  
-  
+
   Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0)
     
     window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
     If window
-      DebugTime = ElapsedMilliseconds()
-      Debug "TIME [CreateJSWindow Start]"
       
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
-      Debug "TIME [AddManagedWindow]: " + Str(ElapsedMilliseconds()-DebugTime) : DebugTime = ElapsedMilliseconds()
       
       Protected hWnd = WindowID(window)
       
@@ -1184,8 +1167,7 @@ Module JSWindow
       CompilerElse
         webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
       CompilerEndIf
-      Debug "TIME [WebViewGadget Creation]: " + Str(ElapsedMilliseconds()-DebugTime) : DebugTime = ElapsedMilliseconds()
-      
+
       SetWindowColor(window, themeBackgroundColor)
       
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
@@ -1193,10 +1175,7 @@ Module JSWindow
         ApplyThemeToWinHandle(hWnd)
         SetWindowCallback(@WindowCallback(),window, #PB_Window_NoChildEvents)
       CompilerEndIf
-      Debug "TIME [Windows Styles & Theme]: " + Str(ElapsedMilliseconds()-DebugTime) : DebugTime = ElapsedMilliseconds()
-      
 
-      
       CompilerIf Not #Debug_On
         
         CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
@@ -1207,7 +1186,6 @@ Module JSWindow
       CompilerEndIf 
       
       BindWebviewEvents(webViewGadget)
-      Debug "TIME [BindWebviewEvents]: " + Str(ElapsedMilliseconds()-DebugTime) : DebugTime = ElapsedMilliseconds()
       
       *JSWindow.JSWindow = JSWindows(Str(window)) 
       *JSWindow\Window = window
@@ -1223,7 +1201,6 @@ Module JSWindow
       
       WindowsByName(windowName) = window
       JSBridge::InitializeBridge(windowName, window, webViewGadget)
-      Debug "TIME [JSBridge Init]: " + Str(ElapsedMilliseconds()-DebugTime) : DebugTime = ElapsedMilliseconds()
       
       ; Register for live resize notifications on macOS
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
@@ -1233,11 +1210,18 @@ Module JSWindow
       ; CreateThread(@LoadHtml(),window)
       
       ; Optimization: Load HTML synchronously to avoid thread scheduling latency (~400ms saved)
-      Protected loadStart.q = ElapsedMilliseconds()
       Protected html.s = PeekS(*htmlStart, *htmlStop-*htmlStart, #PB_UTF8|#PB_ByteLength)
       *JSWindow\Html = html
-      PostEvent(#CustomWindowEvent, window, 0, #Event_Loaded_Html)
-      Debug "TIME [LoadHtml Synchronous]: " + Str(ElapsedMilliseconds() - loadStart)      
+      ; PostEvent(#CustomWindowEvent, window, 0, #Event_Loaded_Html) <-- REMOVED calling directly now:
+      
+      CompilerIf Not #Debug_On
+         html =  JSBridge::WithBridgeScript(html, *JSWindow\Name)
+         html =  WithPbjsBasicScript(html, *JSWindow)
+         html =  WithPbjsWindowScript(html, *JSWindow)
+         SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
+         *JSWindow\LoadedCode = #True 
+      CompilerEndIf      
+
       
       CompilerIf  #Debug_On; remote debugging
         PreparePbjsBasicScript(*JSWindow.JSWindow)
@@ -1248,7 +1232,6 @@ Module JSWindow
       
       ProcedureReturn *Window
     EndIf 
-    Debug "TIME [CreateJSWindow End]: " + Str(ElapsedMilliseconds()-DebugTime) : DebugTime = ElapsedMilliseconds()
     ProcedureReturn -1
   EndProcedure 
   
@@ -1403,22 +1386,10 @@ Module JSWindow
         Select Type.i 
             
           Case #Event_Loaded_Html
-            Debug "TIME [Event Loaded Html]: " + Str(ElapsedMilliseconds()-DebugTime) : DebugTime = ElapsedMilliseconds()
-            CompilerIf Not #Debug_On
-              
-              webViewGadget = *JSWindow\WebViewGadget
-              
-              html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
-              html.s =  WithPbjsBasicScript(html, *JSWindow)
-              html.s =  WithPbjsWindowScript(html, *JSWindow)
-              
-              
-              
-              SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
-              *JSWindow\LoadedCode = #True 
-            CompilerEndIf 
+            ; Logic from here moved to CreateJSWindow for optimization
+
+ 
           Case #Event_Content_Ready
-            Debug "TIME [Event Content Ready]: " + Str(ElapsedMilliseconds()-DebugTime) : DebugTime = ElapsedMilliseconds()
             
             webViewGadget = *JSWindow\WebViewGadget
             w = WindowWidth(*JSWindow\Window)
