@@ -1102,7 +1102,11 @@ Module JSWindow
                           "  setTimeout(()=>{"+
                           "    document.body.classList.add('pbjs-document-ready');" +
                           "  },0);"+
-                          "  callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" +
+                          "  const callReady = () => {" +
+                          "    if(window.callbackReadyState) callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" +
+                          "    else setTimeout(callReady, 50);" +
+                          "  };" +
+                          "  callReady();" + 
                           " };"+
                           ""+
                           "(function (){"+
