@@ -658,7 +658,7 @@ DeclareModule JSWindow
     #JSWindow_Behaviour_CloseWindow
   EndEnumeration
   
-  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, parentName.s = "", CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
   Declare OpenJSWindow(*Window.AppWindow )    
   Declare HideJSWindow(*Window.AppWindow, FromManagedWindow)
   Declare CloseJSWindow(*Window.AppWindow)
@@ -667,6 +667,7 @@ DeclareModule JSWindow
   
   Structure JSWindow
     Name.s
+    ParentName.s
     
     Window.i
     WebViewGadget.i
@@ -1237,7 +1238,7 @@ Module JSWindow
   
   
   
-  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, parentName.s = "", CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
     
     window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
     If window
@@ -1278,6 +1279,7 @@ Module JSWindow
       *JSWindow\Window = window
       *JSWindow\Name = windowName
       *JSWindow\Visible = #False
+      *JSWindow\ParentName = parentName
       *JSWindow\Ready = #False
       *JSWindow\HtmlStart = *htmlStart
       *JSWindow\HtmlEnd = *htmlStop
@@ -1343,21 +1345,34 @@ Module JSWindow
   
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
     If IsWindow(*Window\Window)
+      Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
       
       If *Window\Open 
         HideWindow(*Window\Window,#True)
+        
+        If *JSWindow\ParentName <> ""
+          Protected parentWindowID = WindowsByName(*JSWindow\ParentName)
+          If IsWindow(parentWindowID)
+            SetActiveWindow(parentWindowID)
+          EndIf
+        EndIf
       EndIf 
       
       If Not FromManagedWindow
         HideManagedWindow(*Window)
       EndIf 
+
+
+ 
       
     EndIf 
   EndProcedure
   
   
   Procedure CloseJSWindow(*Window.AppWindow)
+    Protected *JSWindow.JSWindow
     If IsWindow(*Window\Window)
+      *JSWindow = JSWindows(Str(*Window\Window))
       If Not *Window\Closed 
         CloseManagedWindow(*Window)
       EndIf 
@@ -1367,6 +1382,13 @@ Module JSWindow
       If IsWindow(*Window\Window)
         CloseWindow(*Window\Window)
       EndIf 
+
+      If *JSWindow And *JSWindow\ParentName <> ""
+        Protected parentWindowID = WindowsByName(*JSWindow\ParentName)
+        If IsWindow(parentWindowID)
+          SetActiveWindow(parentWindowID)
+        EndIf
+      EndIf
     EndIf 
   EndProcedure
   
