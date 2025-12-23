@@ -64,6 +64,101 @@
     ...(window.pbjs || {}),
     windowName: WINDOW_NAME,
     os: OS_NAME,
+    getWindow: function (windowName) {
+      if (window.pbjsNativeGetWindow) {
+        // Returns the window object/ID string or null if not found
+        // Native bindings usually return a serialized JSON string or a raw ID.
+        // Let's assume it returns a JSON string or object.
+        const winData = window.pbjsNativeGetWindow(windowName);
+        console.log("pbjs.getWindow(" + windowName + ") raw data:", winData);
+        
+        if (!winData) return undefined;
+        // Check if parsing is needed (if it's a JSON string error/obj)
+        let winObj = winData;
+        if (typeof winData === 'string') {
+             try { 
+                winObj = JSON.parse(winData); 
+             } catch(e) {
+                console.error("pbjs.getWindow JSON parse error:", e);
+                // assume it's an ID if integer-like string? or error?
+                // actually pbjsNativeGetWindow returns JSON string usually.
+             }
+        }
+        console.log("pbjs.getWindow(" + windowName + ") parsed obj:", winObj);
+        
+        if (winObj && winObj.error) return undefined; // Window not found
+        
+        // Wrap with helper methods
+        return {
+            ...winObj,
+            open: function() {
+                // Use windowName from closure if ID is missing (backend now supports Name lookup)
+                const param = this.id || winObj.id || windowName;
+                console.log("pbjs.window.open() called. Param:", param);
+                if(window.pbjsNativeOpenWindow) {
+                     window.pbjsNativeOpenWindow(param); 
+                }
+            },
+            hide: function() {
+                const param = this.id || winObj.id || windowName;
+                if(window.pbjsNativeHideWindow) {
+                     window.pbjsNativeHideWindow(param); 
+                }
+            },
+            close: function() {
+                // JSCloseWindow backend might not support Name yet, stick to ID if available
+                const param = this.id || winObj.id; 
+                if(window.pbjsNativeCloseWindow && param) {
+                     window.pbjsNativeCloseWindow(param); 
+                }
+            }
+        };
+      }
+      return undefined;
+    },
+
+    isWindowReady: function (windowName) {
+      if (window.pbjsNativeIsWindowReady) {
+        return window.pbjsNativeIsWindowReady(windowName);
+      }
+      return true; // Default to true if not available to maintain compatibility
+    },
+
+    waitForWindow: function(windowName, timeout = 6000) {
+      return new Promise((resolve, reject) => {
+         let attempts = 0;
+         const maxAttempts = Math.floor(timeout / 100);
+         
+         const check = () => {
+             // 1. Check existence if possible
+             // getWindow returns undefined if native helper missing, which we treat as "unknown/proceed"
+             const win = this.getWindow(windowName);
+             if (win === null) { // Explicit null means "known not to exist"
+                 const error = new Error("Window '" + windowName + "' does not exist");
+                 // We don't log error here, caller handles it? 
+                 // Or we can log it. 
+                 reject(error);
+                 return;
+             }
+             
+             // 2. Check readiness
+             // isWindowReady returns true if native helper missing (compatibility default)
+             if (this.isWindowReady(windowName)) {
+                 resolve(this.getWindow(windowName));
+             } else {
+                 if (attempts < maxAttempts) {
+                     attempts++;
+                     setTimeout(check, 100);
+                 } else {
+                     const error = new Error("Window '" + windowName + "' not ready after " + timeout + "ms");
+                     reject(error);
+                 }
+             }
+         };
+         check();
+      });
+    },
+
     invoke: function (windowName, name, params, data) {
       if (!windowName || typeof windowName !== "string") {
         const error = new Error("windowName must be a non-empty string");
@@ -78,43 +173,50 @@
 
       log.invoke(windowName, name, params, data);
 
-      return new Promise((resolve, reject) => {
-        if (!window.pbjsNativeGet) {
-          const error = new Error("Native bridge not available");
-          log.error("invoke", error);
-          reject(error);
-          return;
-        }
+      // Wait for window to be ready before calling native
+      return this.waitForWindow(windowName).then(() => {
+          return new Promise((resolve, reject) => {
+              if (!window.pbjsNativeGet) {
+                  const error = new Error("Native bridge not available");
+                  log.error("invoke", error);
+                  reject(error);
+                  return;
+              }
 
-        const requestId = nextRequestId++;
-        pendingRequests.set(requestId, {
-          resolve: resolve,
-          reject: reject,
-          windowName: windowName,
-          name: name,
-        });
+              const requestId = nextRequestId++;
+              pendingRequests.set(requestId, {
+                  resolve: resolve,
+                  reject: reject,
+                  windowName: windowName,
+                  name: name,
+              });
 
-        setTimeout(() => {
-          if (pendingRequests.has(requestId)) {
-            pendingRequests.delete(requestId);
-            const error = new Error(
-              "Request timeout for " + name + " to " + windowName
-            );
-            log.error("invoke timeout", error);
-            reject(error);
-          }
-        }, 30000);
-        window.pbjsNativeGet(
-          JSON.stringify({
-            type: "get",
-            fromWindow: WINDOW_NAME,
-            toWindow: windowName,
-            name: name,
-            params: JSON.stringify(params || {}),
-            data: JSON.stringify(data || {}),
-            requestId: requestId,
-          })
-        );
+              setTimeout(() => {
+                  if (pendingRequests.has(requestId)) {
+                      pendingRequests.delete(requestId);
+                      const error = new Error(
+                          "Request timeout for " + name + " to " + windowName
+                      );
+                      log.error("invoke timeout", error);
+                      reject(error);
+                  }
+              }, 30000);
+
+              window.pbjsNativeGet(
+                  JSON.stringify({
+                      type: "get",
+                      fromWindow: WINDOW_NAME,
+                      toWindow: windowName,
+                      name: name,
+                      params: JSON.stringify(params || {}),
+                      data: JSON.stringify(data || {}),
+                      requestId: requestId,
+                  })
+              );
+          });
+      }).catch(err => {
+          log.error("invoke failed", err);
+          throw err;
       });
     },
 

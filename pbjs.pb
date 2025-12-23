@@ -784,23 +784,68 @@ Module JSWindow
   EndProcedure
   
   Procedure JSOpenWindow(JsonParameters.s)
-    Dim Parameters(0)
-    ParseJSON(0, JsonParameters)
-    ExtractJSONArray(JSONValue(0), Parameters())
-    window = Parameters(0)
-    *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-    If *Window
-      OpenJSWindow(*Window) 
-      ProcedureReturn UTF8(~"{\"success\":true}")  
-    EndIf 
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+    
+    Debug "JSOpenWindow CALLED with: " + JsonParameters
+    
+    If ParseJSON(0, JsonParameters)
+      ExtractJSONArray(JSONValue(0), Parameters())
+      Param.s = Parameters(0)
+      
+      ; Try to find by Name first
+      ForEach JSWindows()
+         If Trim(JSWindows()\Name) = Trim(Param)
+            window = JSWindows()\Window
+            found = #True
+            Debug "JSOpenWindow found by Name: " + Param + " -> " + Str(window)
+            Break
+         EndIf
+      Next
+      
+      ; If not found by name, try ID
+      If Not found
+         window = Val(Param)
+         Debug "JSOpenWindow using ID: " + Str(window)
+      EndIf
+      
+      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+      If *Window
+        Debug "JSOpenWindow found managed window, attempting to open..."
+        OpenJSWindow(*Window) ; Manual open logic is internal
+        ProcedureReturn UTF8(~"{\"success\":true}")  
+      Else
+        Debug "JSOpenWindow ERROR: Could not find managed window for handle: " + Str(window) + " (Param: " + Param + ")"
+      EndIf
+    Else
+      Debug "JSOpenWindow ERROR: Failed to parse JSON"
+    EndIf
+    
     ProcedureReturn UTF8(~"{\"error\":true}")
   EndProcedure
   
   Procedure JSHideWindow(JsonParameters.s)
-    Dim Parameters(0)
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+    
     ParseJSON(0, JsonParameters)
     ExtractJSONArray(JSONValue(0), Parameters())
-    window = Parameters(0)
+    Param.s = Parameters(0)
+      
+      ; Try to find by Name first
+      ForEach JSWindows()
+         If Trim(JSWindows()\Name) = Trim(Param)
+            window = JSWindows()\Window
+            found = #True
+            Break
+         EndIf
+      Next
+      
+      ; If not found by name, try ID
+      If Not found
+         window = Val(Param)
+      EndIf
+      
     *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
     If *Window
       HideJSWindow(*Window, #False ) 
