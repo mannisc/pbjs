@@ -679,6 +679,7 @@ DeclareModule JSWindow
     Visible.b
     
     CloseBehaviour.i
+    LastLocation.s
     
     Html.s
     
@@ -1336,24 +1337,25 @@ Module JSWindow
     Global DEBUGMODEoldLocation.s
     Global DEBUGMODEinjectStartupOnce = #False 
     
-    Procedure CallbackLocation(jsonParameters.s)
-      Dim Parameters.s(0)
-      ParseJSON(0, jsonParameters)
-      ExtractJSONArray(JSONValue(0), Parameters())
-      location.s = Parameters(1)
-      
-      If DEBUGMODEoldLocation <> "" And DEBUGMODEoldLocation <> location
-        DEBUGMODEinjectStartupOnce = #True 
+      Procedure CallbackLocation(jsonParameters.s)
+        Dim Parameters.s(0)
+        ParseJSON(0, jsonParameters)
+        ExtractJSONArray(JSONValue(0), Parameters())
+        
         window.s = Parameters(0)
-        JSWindows(window)\Ready = #False 
+        location.s = Parameters(1)
         
-        Ptym::IsStarted = #False
+        If JSWindows(window)\LastLocation <> "" And JSWindows(window)\LastLocation <> location
+          DEBUGMODEinjectStartupOnce = #True 
+          JSWindows(window)\Ready = #False 
+          
+          Ptym::IsStarted = #False
+          
+        EndIf 
         
-      EndIf 
-      
-      DEBUGMODEoldLocation = location
-      ProcedureReturn UTF8(~"")
-    EndProcedure 
+        JSWindows(window)\LastLocation = location
+        ProcedureReturn UTF8(~"")
+      EndProcedure 
     
     Global DEBUGMODEcheckTime
     
