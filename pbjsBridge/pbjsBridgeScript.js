@@ -1,6 +1,8 @@
 (function () {
   "use strict";
 
+  if (window.pbjsBridgeReady) return;
+
   const WINDOW_NAME = "_WINDOW_NAME_INJECTED_BY_NATIVE_";
   const OS_NAME = "_OS_NAME_INJECTED_BY_NATIVE_";
 

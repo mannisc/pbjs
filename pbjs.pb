@@ -1349,7 +1349,11 @@ Module JSWindow
           DEBUGMODEinjectStartupOnce = #True 
           JSWindows(window)\Ready = #False 
           
-          Ptym::IsStarted = #False
+          
+          ; CRITICAL FIX: Do NOT restart the global PTY manager just because one window reloaded/changed URL.
+          ; This was causing all shells to die when MainWindow updated its URL parameters.
+          ; Ptym::IsStarted = #False
+
           
         EndIf 
         
