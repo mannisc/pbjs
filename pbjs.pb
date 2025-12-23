@@ -399,31 +399,6 @@ Module WindowManager
     UpdateMaxDesktopSize()
   EndProcedure 
   
-  Structure JSWindow
-    Name.s
-    Window.i
-  EndStructure
-  
-  Global NewMap JSWindows.JSWindow()
-  
-  Procedure.i CreateJSWindow(windowName.s, *Window.JSWindow)
-    AddMapElement(JSWindows(), Str(*Window))
-    JSWindows()\Name = windowName
-    JSWindows()\Window = *Window
-    Debug "CreateJSWindow: Added " + windowName + " to map. Address: " + Str(*Window) + " MapSize: " + Str(MapSize(JSWindows()))
-    ProcedureReturn #True
-  EndProcedure
-  
-  Procedure.i JSGetWindow(windowName.s)
-    ForEach JSWindows()
-      If JSWindows()\Name = windowName
-        Debug "JSGetWindow: Found " + windowName + " at address: " + Str(JSWindows()\Window)
-        ProcedureReturn JSWindows()\Window
-      EndIf
-    Next
-    Debug "JSGetWindow: Window " + windowName + " not found."
-    ProcedureReturn 0
-  EndProcedure
   
   Procedure.i AddManagedWindow(Title.s, window, *HandleProc,*HideProc = 0, *CloseProc = 0, *CleanupProc = 0)
     AddElement(ManagedWindows())
@@ -774,20 +749,37 @@ Module JSWindow
   
   Procedure JSGetWindow(JsonParameters.s)
     Dim Parameters.s(0)
-    ParseJSON(0, JsonParameters)
+    
+    Debug "JSGetWindow CALLED with: " + JsonParameters
+    
+    If ParseJSON(0, JsonParameters) = 0
+       Debug "ParseJSON failed"
+       ProcedureReturn UTF8(~"{\"error\": \"ParseJSON failed. Input: " + JsonParameters + ~"\"}")
+    EndIf
+    
     ExtractJSONArray(JSONValue(0), Parameters())
     windowName.s = Parameters(0)
-    Debug "JSGetWindow: Request for '" + windowName + "'. MapSize: " + Str(MapSize(JSWindows()))
+    
+    Debug "Looking for: " + windowName
+    Debug "Total Windows in Map: " + Str(MapSize(JSWindows()))
+    
     ForEach JSWindows()
-      Debug "  Checking against: '" + JSWindows()\Name + "'"
+      Debug " - Map Entry: " + JSWindows()\Name + " -> " + Str(JSWindows()\Window)
       If Trim(JSWindows()\Name)=Trim(windowName)
-        Debug "  MATCH FOUND!"
+        Debug "MATCH FOUND!"
         ProcedureReturn UTF8(~"{\"id\":"+Str(JSWindows()\Window)+"}")
         Break 
       EndIf 
     Next 
-    Debug "  NO MATCH FOUND for " + windowName
-    ProcedureReturn UTF8(~"{\"error\":false}")
+    
+    Debug "NO MATCH FOUND for " + windowName
+    
+    Protected DebugInfo.s = "MapSize: " + Str(MapSize(JSWindows())) + ". Available: "
+    ForEach JSWindows()
+       DebugInfo + "'" + JSWindows()\Name + "', "
+    Next
+    
+    ProcedureReturn UTF8(~"{\"error\": \"Window not found. Input: " + windowName + ". " + DebugInfo + ~"\"}")
   EndProcedure
   
   Procedure JSOpenWindow(JsonParameters.s)
@@ -834,7 +826,7 @@ Module JSWindow
   
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
 
-    Protected script$ = "window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
+    Protected script$ = "if(window.pbjsUpdateScale) window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
     
     
     CompilerIf #PB_Compiler_OS = #PB_OS_Windows
@@ -1544,7 +1536,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 23
+; CursorPosition = 1393
+; FirstLine = 1375
 ; Folding = ------4-------
 ; EnableThread
 ; EnableXP
