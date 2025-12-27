@@ -419,7 +419,7 @@ Module WindowManager
   EndProcedure
   
   Procedure OpenManagedWindow(*Window.AppWindow,manualOpen=#False)
-    Debug "OPEN MANAGED WINDOW 1"
+    Debug "OPEN MANAGED WINDOW"
     
     If Not *Window\Open
       If IsWindow(*Window\Window)
@@ -456,7 +456,6 @@ Module WindowManager
             HideWindow(*Window\Window, #False)
           CompilerEndIf
         EndIf 
-        Debug "OPEN MANAGED WINDOW 2"
         *Window\Open = #True
         Debug *Window
         ProcedureReturn 1
@@ -691,6 +690,8 @@ DeclareModule JSWindow
     *HtmlEnd
     *WindowReadyProc.ProtoWindowReady
     *ResizeProc.ResizeCallback  ; Optional callback for resize/move events
+   
+    
   EndStructure 
   
   Global NewMap JSWindows.JSWindow()
@@ -1240,22 +1241,20 @@ Module JSWindow
   
   Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, parentName.s = "", CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
     
-    window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags | #PB_Window_Invisible)
+    window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags| #PB_Window_Invisible)
+    
     If window
+      webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
+      
+      CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+        CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0) 
+      CompilerEndIf
       
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
       
       Protected hWnd = WindowID(window)
       
-      CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-        webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
-        
-        CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0) 
-        
-      CompilerElse
-        webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
-      CompilerEndIf
-      
+
       SetWindowColor(window, themeBackgroundColor)
       
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
@@ -1268,14 +1267,15 @@ Module JSWindow
         
         CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
           ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
-        CompilerElse 
-          HideGadget(webViewGadget,#True)
-        CompilerEndIf 
+         CompilerElse 
+           HideGadget(webViewGadget,#True)
+         CompilerEndIf 
       CompilerEndIf 
       
       BindWebviewEvents(webViewGadget)
       
       *JSWindow.JSWindow = JSWindows(Str(window)) 
+       
       *JSWindow\Window = window
       *JSWindow\Name = windowName
       *JSWindow\Visible = #False
@@ -1314,11 +1314,14 @@ Module JSWindow
   
   
   
+  
+  
+  
+  
   Procedure OpenJSWindow(*Window.AppWindow )  
     Protected manualOpen
     If IsWindow(*Window\Window)
       *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
-      
       If *JSWindow\Visible
         manualOpen = #False
       Else
@@ -1329,20 +1332,17 @@ Module JSWindow
         CompilerEndIf 
       EndIf 
       *JSWindow\Open = #True
-      
       *JSWindow\Visible = Bool(Not manualOpen)
-      
-      
       *JSWindow\OpenTime = ElapsedMilliseconds()
       OpenManagedWindow(*Window,manualOpen)
       If Not *JSWindow\Visible
         CreateThread(@ForceContentVisible(),*Window\Window)
       EndIf 
-      
-      
     EndIf 
   EndProcedure
   
+
+
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
     If IsWindow(*Window\Window)
       Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
@@ -1503,6 +1503,7 @@ Module JSWindow
             CompilerEndIf 
           Case #Event_Content_Ready
             
+
             webViewGadget = *JSWindow\WebViewGadget
             w = WindowWidth(*JSWindow\Window)
             h = WindowHeight(*JSWindow\Window)
@@ -1613,8 +1614,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 798
-; FirstLine = 792
+; CursorPosition = 1249
+; FirstLine = 1220
 ; Folding = ------4-------
 ; EnableThread
 ; EnableXP
