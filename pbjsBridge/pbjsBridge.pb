@@ -107,7 +107,12 @@ Module JSBridge
         ForEach JSWindows()
           If JSWindows()\Window = targetWindow
             script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
-            WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            If JSWindows()\Ready
+               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            Else
+               AddElement(JSWindows()\PendingMessages())
+               JSWindows()\PendingMessages() = script
+            EndIf
             Break
           EndIf
         Next
@@ -144,7 +149,12 @@ Module JSBridge
         ForEach JSWindows()
           If JSWindows()\Window = targetWindow
             script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
-            WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            If JSWindows()\Ready
+               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            Else
+               AddElement(JSWindows()\PendingMessages())
+               JSWindows()\PendingMessages() = script
+            EndIf
             Break
           EndIf
         Next
@@ -157,8 +167,14 @@ Module JSBridge
                                                            ~",\"fromWindow\":\"" + toWindow + 
                                                            ~"\",\"data\":{\"error\":\"Window not found: " + toWindow + ~"\"}}") + "');"
               
-              WebViewExecuteScript(JSWindows()\WebViewGadget, script)
-              Break
+              
+               If JSWindows()\Ready
+                 WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+               Else
+                 AddElement(JSWindows()\PendingMessages())
+                 JSWindows()\PendingMessages() = script
+               EndIf
+               Break
             EndIf
           Next
         EndIf
@@ -192,7 +208,12 @@ Module JSBridge
       
       ForEach JSWindows()
         If JSWindows()\Name <> fromWindow
-          WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+          If JSWindows()\Ready
+            WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+          Else
+            AddElement(JSWindows()\PendingMessages())
+            JSWindows()\PendingMessages() = script
+          EndIf
           count + 1
         EndIf
       Next
@@ -285,7 +306,12 @@ Module JSBridge
         ForEach JSWindows()
           If JSWindows()\Window = targetWindow
             script = "pbjsHandleResponse('" + EscapeJSON(responseJson) + "');"
-            WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            If JSWindows()\Ready
+               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            Else
+               AddElement(JSWindows()\PendingMessages())
+               JSWindows()\PendingMessages() = script
+            EndIf
             Break
           EndIf
         Next
@@ -295,6 +321,26 @@ Module JSBridge
     EndIf
   EndProcedure
   
+  Procedure HandleLog(jsonParameters.s)
+    Protected json.i, level.s, message.s, windowName.s
+    
+    Dim parameters.s(0)
+    ParseJSON(0, jsonParameters)
+    ExtractJSONArray(JSONValue(0), parameters())
+    jsonData.s = parameters(0)
+    
+    json = ParseJSON(#PB_Any, jsonData)
+    If json
+      level = GetJSONString(GetJSONMember(JSONValue(json), "level"))
+      message = GetJSONString(GetJSONMember(JSONValue(json), "message"))
+      windowName = GetJSONString(GetJSONMember(JSONValue(json), "window"))
+      
+      Debug "[JS][" + windowName + "] " + level + ": " + message
+      
+      FreeJSON(json)
+    EndIf
+  EndProcedure
+
   Procedure SendParameters(*JSWindow.JSWindow, paramsJson.s)
     If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
       Protected messageJson.s
@@ -304,7 +350,12 @@ Module JSBridge
       escapedJson = EscapeJSON(messageJson)
       
       Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + escapedJson + "');"
-      WebViewExecuteScript(*JSWindow\WebViewGadget, script)
+      If *JSWindow\Ready
+         WebViewExecuteScript(*JSWindow\WebViewGadget, script)
+      Else
+         AddElement(*JSWindow\PendingMessages())
+         *JSWindow\PendingMessages() = script
+      EndIf
     EndIf
   EndProcedure
   
@@ -325,6 +376,7 @@ Module JSBridge
     BindWebViewCallback(webViewGadget, "pbjsNativeSendAll", @HandleSendAll())
     BindWebViewCallback(webViewGadget, "pbjsNativeGetAll", @HandleGetAll())
     BindWebViewCallback(webViewGadget, "pbjsNativeReply", @HandleReply())
+    BindWebViewCallback(webViewGadget, "pbjsNativeLog", @HandleLog())
     
     ProcedureReturn window
   EndProcedure

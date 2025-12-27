@@ -285,6 +285,9 @@
       }
       const key = windowName + ":" + name;
       handlers.set(key, handler);
+      
+      // Replay unhandled messages
+      replayUnhandledMessages();
     },
 
     handleAll: function (name, handler) {
@@ -295,6 +298,9 @@
         throw new TypeError("Handler must be a function");
       }
       handlers.set("*:" + name, handler);
+      
+      // Replay unhandled messages
+      replayUnhandledMessages();
     },
 
     removeHandler: function (windowName, name) {
@@ -307,52 +313,24 @@
     },
   };
 
-  function serializeResponse(value) {
-    if (value === undefined || value === null) {
-      return true;
-    }
-    if (
-      typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean"
-    ) {
-      return value;
-    }
-    if (value instanceof Error) {
-      return value.message;
-    }
-    return value;
-  }
+  const unhandledMessages = [];
 
-  window.pbjsHandleMessage = function (messageJson) {
-    try {
-      const msg = JSON.parse(messageJson);
+  function replayUnhandledMessages() {
+    for (let i = unhandledMessages.length - 1; i >= 0; i--) {
+      const msg = unhandledMessages[i];
       const key = msg.fromWindow + ":" + msg.name;
       const globalKey = "*:" + msg.name;
       const handler = handlers.get(key) || handlers.get(globalKey);
 
-      log.handler(msg.fromWindow, msg.name, msg.type);
-
-      if (!handler) {
-        if (
-          (msg.type === "get" || msg.type === "getAll") &&
-          msg.requestId !== undefined &&
-          window.pbjsNativeReply
-        ) {
-          window.pbjsNativeReply(
-            JSON.stringify({
-              requestId: msg.requestId,
-              toWindow: msg.fromWindow,
-              fromWindow: WINDOW_NAME,
-              data: JSON.stringify({
-                error: "No handler registered for: " + msg.name,
-              }),
-              isGetAll: msg.type === "getAll",
-            })
-          );
-        }
-        return;
+      if (handler) {
+        unhandledMessages.splice(i, 1);
+        dispatchMessage(msg, handler);
       }
+    }
+  }
+
+  function dispatchMessage(msg, handler) {
+      log.handler(msg.fromWindow, msg.name, msg.type);
 
       const event = {
         type: msg.type,
@@ -447,6 +425,70 @@
           log.error("handler exception", err);
         }
       }
+  }
+
+  function serializeResponse(value) {
+    if (value === undefined || value === null) {
+      return true;
+    }
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      return value;
+    }
+    if (value instanceof Error) {
+      return value.message;
+    }
+    return value;
+  }
+
+  window.pbjsHandleMessage = function (messageJson) {
+    try {
+      const msg = JSON.parse(messageJson);
+      const key = msg.fromWindow + ":" + msg.name;
+      const globalKey = "*:" + msg.name;
+      const handler = handlers.get(key) || handlers.get(globalKey);
+
+      if (!handler) {
+        if (
+          (msg.type === "get" || msg.type === "getAll") &&
+          msg.requestId !== undefined &&
+          window.pbjsNativeReply
+        ) {
+          // For now, if get/getAll is unhandled, we retain the old behavior of erroring immediately?
+          // Or should we buffer queries too? 
+          // Buffering queries might lead to timeouts on the caller side.
+          // Let's buffer "send" only for now, or buffer everything but warn?
+          // The issue specifically is "handleParameters" which is a "send".
+          
+          if(msg.type === "send") {
+             unhandledMessages.push(msg);
+             console.log("Buffered unhandled message: " + msg.name);
+             return;
+          }
+
+          window.pbjsNativeReply(
+            JSON.stringify({
+              requestId: msg.requestId,
+              toWindow: msg.fromWindow,
+              fromWindow: WINDOW_NAME,
+              data: JSON.stringify({
+                error: "No handler registered for: " + msg.name,
+              }),
+              isGetAll: msg.type === "getAll",
+            })
+          );
+        } else if (msg.type === "send") {
+           unhandledMessages.push(msg);
+           console.log("Buffered unhandled message: " + msg.name);
+        }
+        return;
+      }
+
+      dispatchMessage(msg, handler);
+
     } catch (error) {
       log.error("pbjsHandleMessage", error);
     }
@@ -523,6 +565,49 @@
         pending.resolve([]);
       }
     }
+  };
+
+  // Console Override for Native Debugging
+  const originalConsole = {
+    log: console.log,
+    warn: console.warn,
+    error: console.error
+  };
+
+  function sendToNativeLog(level, args) {
+    if (window.pbjsNativeLog) {
+      try {
+        const message = args.map(arg => {
+          if (typeof arg === 'object') {
+            try { return JSON.stringify(arg); } catch(e) { return String(arg); }
+          }
+          return String(arg);
+        }).join(' ');
+        
+        window.pbjsNativeLog(JSON.stringify({
+          level: level,
+          message: message,
+          window: WINDOW_NAME
+        }));
+      } catch (err) {
+        // Avoid infinite loops if logging fails
+      }
+    }
+  }
+
+  console.log = function(...args) {
+    originalConsole.log.apply(console, args);
+    sendToNativeLog("INFO", args);
+  };
+
+  console.warn = function(...args) {
+    originalConsole.warn.apply(console, args);
+    sendToNativeLog("WARN", args);
+  };
+
+  console.error = function(...args) {
+    originalConsole.error.apply(console, args);
+    sendToNativeLog("ERROR", args);
   };
 
   window.pbjsBridgeReady = true;

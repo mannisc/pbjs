@@ -686,6 +686,8 @@ DeclareModule JSWindow
     StartupJS.s
     WindowJS.s
     
+    List PendingMessages.s()
+    
     *HtmlStart
     *HtmlEnd
     *WindowReadyProc.ProtoWindowReady
@@ -745,6 +747,12 @@ Module JSWindow
       
       CreateThread(@MakeContentVisible(),window)
       ReloadedJS = #True 
+      
+      ; FLUSH PENDING MESSAGES
+      ForEach JSWindows(Str(window))\PendingMessages()
+        WebViewExecuteScript(JSWindows(Str(window))\WebViewGadget, JSWindows(Str(window))\PendingMessages())
+      Next
+      ClearList(JSWindows(Str(window))\PendingMessages())
       
     EndIf 
     ProcedureReturn UTF8(~"")
