@@ -796,7 +796,7 @@ Module JSWindow
       
       ; Try to find by Name first
       ForEach JSWindows()
-         If Trim(JSWindows()\Name) = Trim(Param)
+         If Trim(JSWindows()\Name) = Trim(Param) And IsWindow(JSWindows()\Window)
             window = JSWindows()\Window
             found = #True
             Debug "JSOpenWindow found by Name: " + Param + " -> " + Str(window)
@@ -1613,8 +1613,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1393
-; FirstLine = 1375
+; CursorPosition = 798
+; FirstLine = 792
 ; Folding = ------4-------
 ; EnableThread
 ; EnableXP
