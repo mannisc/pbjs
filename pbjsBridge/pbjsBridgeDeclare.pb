@@ -11,6 +11,8 @@ DeclareModule JSBridge
   Declare GetJSWindowByName(windowName.s)
   Declare.s GetJSWindowNameByID(window.i)
   Declare.s GetStartUpJS(windowName.s)
+  Declare.s EscapeJSON(text.s)
+  Declare SendParameters(*JSWindow, paramsJson.s)
 EndDeclareModule
 
 

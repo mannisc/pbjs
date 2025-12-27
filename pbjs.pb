@@ -793,21 +793,21 @@ Module JSWindow
     
     If ParseJSON(0, JsonParameters)
       ExtractJSONArray(JSONValue(0), Parameters())
-      Param.s = Parameters(0)
+      windowId.s = Parameters(0)
       
       ; Try to find by Name first
       ForEach JSWindows()
-         If Trim(JSWindows()\Name) = Trim(Param) And IsWindow(JSWindows()\Window)
+         If Trim(JSWindows()\Name) = Trim(windowId) And IsWindow(JSWindows()\Window)
             window = JSWindows()\Window
             found = #True
-            Debug "JSOpenWindow found by Name: " + Param + " -> " + Str(window)
+            Debug "JSOpenWindow found by Name: " + windowId + " -> " + Str(window)
             Break
          EndIf
       Next
       
       ; If not found by name, try ID
       If Not found
-         window = Val(Param)
+         window = Val(windowId)
          Debug "JSOpenWindow using ID: " + Str(window)
       EndIf
       
@@ -815,9 +815,21 @@ Module JSWindow
       If *Window
         Debug "JSOpenWindow found managed window, attempting to open..."
         OpenJSWindow(*Window) ; Manual open logic is internal
+        
+        If ArraySize(Parameters()) > 0
+          WindowParameters.s = Parameters(1)
+           If WindowParameters <> ""
+              ; Find JSWindow
+              *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+              If *JSWindow 
+                 JSBridge::SendParameters(*JSWindow, WindowParameters)
+              EndIf
+           EndIf
+        EndIf
+        
         ProcedureReturn UTF8(~"{\"success\":true}")  
       Else
-        Debug "JSOpenWindow ERROR: Could not find managed window for handle: " + Str(window) + " (Param: " + Param + ")"
+        Debug "JSOpenWindow ERROR: Could not find managed window for handle: " + Str(window) + " (Param: " + windowId + ")"
       EndIf
     Else
       Debug "JSOpenWindow ERROR: Failed to parse JSON"
@@ -825,6 +837,7 @@ Module JSWindow
     
     ProcedureReturn UTF8(~"{\"error\":true}")
   EndProcedure
+
   
   Procedure JSHideWindow(JsonParameters.s)
     Dim Parameters.s(0)

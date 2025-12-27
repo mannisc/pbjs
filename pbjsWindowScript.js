@@ -30,7 +30,7 @@
       }
       return {
         ...pbWindow,
-        open: async () => window.pbjsNativeOpenWindow(pbWindow.id),
+        open: async (params) => window.pbjsNativeOpenWindow(pbWindow.id, JSON.stringify(params)),
         hide: async () => window.pbjsNativeHideWindow(pbWindow.id),
         close: async () => window.pbjsNativeCloseWindow(pbWindow.id),
       };

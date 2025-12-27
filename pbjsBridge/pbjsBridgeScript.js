@@ -91,12 +91,16 @@
         // Wrap with helper methods
         return {
             ...winObj,
-            open: function() {
+            open: function(params) {
                 // Use windowName from closure if ID is missing (backend now supports Name lookup)
                 const param = this.id || winObj.id || windowName;
-                console.log("pbjs.window.open() called. Param:", param);
+                console.log("pbjs.window.open() called. Param:", param, params);
                 if(window.pbjsNativeOpenWindow) {
-                     window.pbjsNativeOpenWindow(param); 
+                     if (params) {
+                        window.pbjsNativeOpenWindow(param, JSON.stringify(params)); 
+                     } else {
+                        window.pbjsNativeOpenWindow(param); 
+                     }
                 }
             },
             hide: function() {

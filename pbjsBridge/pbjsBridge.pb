@@ -295,6 +295,19 @@ Module JSBridge
     EndIf
   EndProcedure
   
+  Procedure SendParameters(*JSWindow.JSWindow, paramsJson.s)
+    If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
+      Protected messageJson.s
+      messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"system\",\"name\":\"handleParameters\",\"params\":" + paramsJson + ~",\"data\":{}}"
+      
+      Protected escapedJson.s
+      escapedJson = EscapeJSON(messageJson)
+      
+      Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + escapedJson + "');"
+      WebViewExecuteScript(*JSWindow\WebViewGadget, script)
+    EndIf
+  EndProcedure
+  
   ; ============================================================================
   ; INITIALIZATION
   ; ============================================================================
