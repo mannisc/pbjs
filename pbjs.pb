@@ -861,7 +861,6 @@ Module JSWindow
       *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
       If *Window
         Debug "JSOpenWindow found managed window, attempting to open..."
-        OpenJSWindow(*Window) ; Manual open logic is internal
         
         If ArraySize(Parameters()) > 0
           WindowParameters.s = Parameters(1)
@@ -873,6 +872,8 @@ Module JSWindow
             EndIf
           EndIf
         EndIf
+        
+        OpenJSWindow(*Window) ; Manual open logic is internal
         
         ProcedureReturn UTF8(~"{\"success\":true}")  
       Else

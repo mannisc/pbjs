@@ -316,16 +316,17 @@
   const unhandledMessages = [];
 
   function replayUnhandledMessages() {
-    for (let i = unhandledMessages.length - 1; i >= 0; i--) {
-      const msg = unhandledMessages[i];
-      const key = msg.fromWindow + ":" + msg.name;
-      const globalKey = "*:" + msg.name;
-      const handler = handlers.get(key) || handlers.get(globalKey);
+    for (let i = 0; i < unhandledMessages.length; i++) {
+        const msg = unhandledMessages[i];
+        const key = msg.fromWindow + ":" + msg.name;
+        const globalKey = "*:" + msg.name;
+        const handler = handlers.get(key) || handlers.get(globalKey);
 
-      if (handler) {
-        unhandledMessages.splice(i, 1);
-        dispatchMessage(msg, handler);
-      }
+        if (handler) {
+            unhandledMessages.splice(i, 1);
+            i--; // Adjust index since we removed an element
+            dispatchMessage(msg, handler);
+        }
     }
   }
 
