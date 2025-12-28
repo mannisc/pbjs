@@ -452,38 +452,10 @@
       const handler = handlers.get(key) || handlers.get(globalKey);
 
       if (!handler) {
-        if (
-          (msg.type === "get" || msg.type === "getAll") &&
-          msg.requestId !== undefined &&
-          window.pbjsNativeReply
-        ) {
-          // For now, if get/getAll is unhandled, we retain the old behavior of erroring immediately?
-          // Or should we buffer queries too? 
-          // Buffering queries might lead to timeouts on the caller side.
-          // Let's buffer "send" only for now, or buffer everything but warn?
-          // The issue specifically is "handleParameters" which is a "send".
-          
-          if(msg.type === "send") {
-             unhandledMessages.push(msg);
-             console.log("Buffered unhandled message: " + msg.name);
-             return;
-          }
-
-          window.pbjsNativeReply(
-            JSON.stringify({
-              requestId: msg.requestId,
-              toWindow: msg.fromWindow,
-              fromWindow: WINDOW_NAME,
-              data: JSON.stringify({
-                error: "No handler registered for: " + msg.name,
-              }),
-              isGetAll: msg.type === "getAll",
-            })
-          );
-        } else if (msg.type === "send") {
-           unhandledMessages.push(msg);
-           console.log("Buffered unhandled message: " + msg.name);
-        }
+        // Buffer all unhandled messages to handle race conditions where the window/handler isn't ready yet.
+        // This allows 'invoke' (get) calls to wait until the component mounts and registers the handler.
+        unhandledMessages.push(msg);
+        console.warn("Buffered unhandled message: " + msg.name + " [" + msg.type + "]");
         return;
       }
 
