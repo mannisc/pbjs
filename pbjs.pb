@@ -486,7 +486,7 @@ Module WindowManager
       EndIf
     EndIf
   EndProcedure
-
+  
   Procedure CloseManagedWindows()
     ForEach ManagedWindows()
       CloseManagedWindow(@ManagedWindows())
@@ -699,7 +699,7 @@ DeclareModule JSWindow
     *HtmlEnd
     *WindowReadyProc.ProtoWindowReady
     *ResizeProc.ResizeCallback  ; Optional callback for resize/move events
-   
+    
     
   EndStructure 
   
@@ -741,18 +741,18 @@ Module JSWindow
       PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
     EndIf 
   EndProcedure
-    Procedure LogToDebugFile(message.s)
-      Protected filename.s = "/Users/mschmidbartl/Desktop/Vynce/vynce/vynce_debug.log"
-      Protected file = OpenFile(#PB_Any, filename, #PB_File_Append)
-      If Not file
-        file = CreateFile(#PB_Any, filename)
-      EndIf
-      
-      If file
-        WriteStringN(file, "[PBJS] " + FormatDate("%hh:%ii:%ss", Date()) + " " + message)
-        CloseFile(file)
-      EndIf
-    EndProcedure
+  Procedure LogToDebugFile(message.s)
+    Protected filename.s = "/Users/mschmidbartl/Desktop/Vynce/vynce/vynce_debug.log"
+    Protected file = OpenFile(#PB_Any, filename, #PB_File_Append)
+    If Not file
+      file = CreateFile(#PB_Any, filename)
+    EndIf
+    
+    If file
+      WriteStringN(file, "[PBJS] " + FormatDate("%hh:%ii:%ss", Date()) + " " + message)
+      CloseFile(file)
+    EndIf
+  EndProcedure
   Procedure JSReadyState(JsonParameters.s)
     LogToDebugFile("JSReadyState Raw: " + JsonParameters)
     
@@ -776,19 +776,19 @@ Module JSWindow
     LogToDebugFile("Parsed Window ID: " + Str(window))
     
     If window <> 0
-       *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-       
-       If Not JSWindows(Str(window))\Ready
-          LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
-       Else
-          LogToDebugFile("JSReadyState: Subsequent Ready (Reload) for window " + Str(window))
-       EndIf
-    
-       JSWindows(Str(window))\Ready = #True
-       CreateThread(@MakeContentVisible(),window)
-       ReloadedJS = #True
+      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+      
+      If Not JSWindows(Str(window))\Ready
+        LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
+      Else
+        LogToDebugFile("JSReadyState: Subsequent Ready (Reload) for window " + Str(window))
+      EndIf
+      
+      JSWindows(Str(window))\Ready = #True
+      CreateThread(@MakeContentVisible(),window)
+      ReloadedJS = #True
     Else
-       LogToDebugFile("ERROR: Invalid Window ID (0)")
+      LogToDebugFile("ERROR: Invalid Window ID (0)")
     EndIf
     
     ; FLUSH PENDING MESSAGES
@@ -803,8 +803,8 @@ Module JSWindow
     Debug "JSGetWindow CALLED with: " + JsonParameters
     
     If ParseJSON(0, JsonParameters) = 0
-       Debug "ParseJSON failed"
-       ProcedureReturn UTF8(~"{\"error\": \"ParseJSON failed. Input: " + JsonParameters + ~"\"}")
+      Debug "ParseJSON failed"
+      ProcedureReturn UTF8(~"{\"error\": \"ParseJSON failed. Input: " + JsonParameters + ~"\"}")
     EndIf
     
     ExtractJSONArray(JSONValue(0), Parameters())
@@ -826,7 +826,7 @@ Module JSWindow
     
     Protected DebugInfo.s = "MapSize: " + Str(MapSize(JSWindows())) + ". Available: "
     ForEach JSWindows()
-       DebugInfo + "'" + JSWindows()\Name + "', "
+      DebugInfo + "'" + JSWindows()\Name + "', "
     Next
     
     ProcedureReturn UTF8(~"{\"error\": \"Window not found. Input: " + windowName + ". " + DebugInfo + ~"\"}")
@@ -844,18 +844,18 @@ Module JSWindow
       
       ; Try to find by Name first
       ForEach JSWindows()
-         If Trim(JSWindows()\Name) = Trim(windowId) And IsWindow(JSWindows()\Window)
-            window = JSWindows()\Window
-            found = #True
-            Debug "JSOpenWindow found by Name: " + windowId + " -> " + Str(window)
-            Break
-         EndIf
+        If Trim(JSWindows()\Name) = Trim(windowId) And IsWindow(JSWindows()\Window)
+          window = JSWindows()\Window
+          found = #True
+          Debug "JSOpenWindow found by Name: " + windowId + " -> " + Str(window)
+          Break
+        EndIf
       Next
       
       ; If not found by name, try ID
       If Not found
-         window = Val(windowId)
-         Debug "JSOpenWindow using ID: " + Str(window)
+        window = Val(windowId)
+        Debug "JSOpenWindow using ID: " + Str(window)
       EndIf
       
       *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
@@ -865,13 +865,13 @@ Module JSWindow
         
         If ArraySize(Parameters()) > 0
           WindowParameters.s = Parameters(1)
-           If WindowParameters <> ""
-              ; Find JSWindow
-              *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
-              If *JSWindow 
-                 JSBridge::SendParameters(*JSWindow, WindowParameters)
-              EndIf
-           EndIf
+          If WindowParameters <> ""
+            ; Find JSWindow
+            *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+            If *JSWindow 
+              JSBridge::SendParameters(*JSWindow, WindowParameters)
+            EndIf
+          EndIf
         EndIf
         
         ProcedureReturn UTF8(~"{\"success\":true}")  
@@ -884,7 +884,7 @@ Module JSWindow
     
     ProcedureReturn UTF8(~"{\"error\":true}")
   EndProcedure
-
+  
   
   Procedure JSHideWindow(JsonParameters.s)
     Dim Parameters.s(0)
@@ -893,21 +893,21 @@ Module JSWindow
     ParseJSON(0, JsonParameters)
     ExtractJSONArray(JSONValue(0), Parameters())
     Param.s = Parameters(0)
-      
-      ; Try to find by Name first
-      ForEach JSWindows()
-         If Trim(JSWindows()\Name) = Trim(Param)
-            window = JSWindows()\Window
-            found = #True
-            Break
-         EndIf
-      Next
-      
-      ; If not found by name, try ID
-      If Not found
-         window = Val(Param)
+    
+    ; Try to find by Name first
+    ForEach JSWindows()
+      If Trim(JSWindows()\Name) = Trim(Param)
+        window = JSWindows()\Window
+        found = #True
+        Break
       EndIf
-      
+    Next
+    
+    ; If not found by name, try ID
+    If Not found
+      window = Val(Param)
+    EndIf
+    
     *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
     If *Window
       HideJSWindow(*Window, #False ) 
@@ -933,7 +933,7 @@ Module JSWindow
   
   
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
-
+    
     Protected script$ = "if(window.pbjsUpdateScale) window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
     
     
@@ -1314,7 +1314,7 @@ Module JSWindow
       
       Protected hWnd = WindowID(window)
       
-
+      
       SetWindowColor(window, themeBackgroundColor)
       
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
@@ -1327,15 +1327,15 @@ Module JSWindow
         
         CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
           ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
-         CompilerElse 
-           HideGadget(webViewGadget,#True)
-         CompilerEndIf 
+        CompilerElse 
+          HideGadget(webViewGadget,#True)
+        CompilerEndIf 
       CompilerEndIf 
       
       BindWebviewEvents(webViewGadget)
       
       *JSWindow.JSWindow = JSWindows(Str(window)) 
-       
+      
       *JSWindow\Window = window
       *JSWindow\Name = windowName
       *JSWindow\Visible = #False
@@ -1401,8 +1401,8 @@ Module JSWindow
     EndIf 
   EndProcedure
   
-
-
+  
+  
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
     If IsWindow(*Window\Window)
       Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
@@ -1421,9 +1421,9 @@ Module JSWindow
       If Not FromManagedWindow
         HideManagedWindow(*Window)
       EndIf 
-
-
- 
+      
+      
+      
       
     EndIf 
   EndProcedure
@@ -1442,7 +1442,7 @@ Module JSWindow
       If IsWindow(*Window\Window)
         CloseWindow(*Window\Window)
       EndIf 
-
+      
       If *JSWindow And *JSWindow\ParentName <> ""
         Protected parentWindowID = WindowsByName(*JSWindow\ParentName)
         If IsWindow(parentWindowID)
@@ -1464,29 +1464,29 @@ Module JSWindow
     Global DEBUGMODEoldLocation.s
     Global DEBUGMODEinjectStartupOnce = #False 
     
-      Procedure CallbackLocation(jsonParameters.s)
-        Dim Parameters.s(0)
-        ParseJSON(0, jsonParameters)
-        ExtractJSONArray(JSONValue(0), Parameters())
+    Procedure CallbackLocation(jsonParameters.s)
+      Dim Parameters.s(0)
+      ParseJSON(0, jsonParameters)
+      ExtractJSONArray(JSONValue(0), Parameters())
+      
+      window.s = Parameters(0)
+      location.s = Parameters(1)
+      
+      If JSWindows(window)\LastLocation <> "" And JSWindows(window)\LastLocation <> location
+        DEBUGMODEinjectStartupOnce = #True 
+        JSWindows(window)\Ready = #False 
         
-        window.s = Parameters(0)
-        location.s = Parameters(1)
         
-        If JSWindows(window)\LastLocation <> "" And JSWindows(window)\LastLocation <> location
-          DEBUGMODEinjectStartupOnce = #True 
-          JSWindows(window)\Ready = #False 
-          
-          
-          ; CRITICAL FIX: Do NOT restart the global PTY manager just because one window reloaded/changed URL.
-          ; This was causing all shells to die when MainWindow updated its URL parameters.
-          ; Ptym::IsStarted = #False
-
-          
-        EndIf 
+        ; CRITICAL FIX: Do NOT restart the global PTY manager just because one window reloaded/changed URL.
+        ; This was causing all shells to die when MainWindow updated its URL parameters.
+        ; Ptym::IsStarted = #False
         
-        JSWindows(window)\LastLocation = location
-        ProcedureReturn UTF8(~"")
-      EndProcedure 
+        
+      EndIf 
+      
+      JSWindows(window)\LastLocation = location
+      ProcedureReturn UTF8(~"")
+    EndProcedure 
     
     Global DEBUGMODEcheckTime
     
@@ -1563,7 +1563,7 @@ Module JSWindow
             CompilerEndIf 
           Case #Event_Content_Ready
             
-
+            
             webViewGadget = *JSWindow\WebViewGadget
             w = WindowWidth(*JSWindow\Window)
             h = WindowHeight(*JSWindow\Window)
@@ -1674,9 +1674,9 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 742
-; FirstLine = 735
-; Folding = ------4-------
+; CursorPosition = 1665
+; FirstLine = 1642
+; Folding = --------------
 ; EnableThread
 ; EnableXP
 ; DPIAware
