@@ -734,27 +734,62 @@ Module JSWindow
       PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
     EndIf 
   EndProcedure
-  
+    Procedure LogToDebugFile(message.s)
+      Protected filename.s = "/Users/mschmidbartl/Desktop/Vynce/vynce/vynce_debug.log"
+      Protected file = OpenFile(#PB_Any, filename, #PB_File_Append)
+      If Not file
+        file = CreateFile(#PB_Any, filename)
+      EndIf
+      
+      If file
+        WriteStringN(file, "[PBJS] " + FormatDate("%hh:%ii:%ss", Date()) + " " + message)
+        CloseFile(file)
+      EndIf
+    EndProcedure
   Procedure JSReadyState(JsonParameters.s)
-    Dim Parameters(0)
-    ParseJSON(0, JsonParameters)
-    ExtractJSONArray(JSONValue(0), Parameters())
-    window = Parameters(0)
-    *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+    LogToDebugFile("JSReadyState Raw: " + JsonParameters)
     
-    If Not JSWindows(Str(window))\Ready
-      JSWindows(Str(window))\Ready = #True
-      
-      CreateThread(@MakeContentVisible(),window)
-      ReloadedJS = #True 
-      
-      ; FLUSH PENDING MESSAGES
-      ForEach JSWindows(Str(window))\PendingMessages()
-        WebViewExecuteScript(JSWindows(Str(window))\WebViewGadget, JSWindows(Str(window))\PendingMessages())
-      Next
-      ClearList(JSWindows(Str(window))\PendingMessages())
-      
-    EndIf 
+    Protected window.i = 0
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    
+    If json
+      Protected *root = JSONValue(json)
+      If JSONType(*root) = #PB_JSON_Array And JSONArraySize(*root) > 0
+        Protected *val = GetJSONElement(*root, 0)
+        
+        If JSONType(*val) = #PB_JSON_String
+          window = Val(GetJSONString(*val))
+        ElseIf JSONType(*val) = #PB_JSON_Number
+          window = GetJSONInteger(*val)
+        EndIf
+      EndIf
+      FreeJSON(json)
+    EndIf
+    
+    LogToDebugFile("Parsed Window ID: " + Str(window))
+    
+    If window <> 0
+       *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+       
+       If Not JSWindows(Str(window))\Ready
+          LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
+       Else
+          LogToDebugFile("JSReadyState: Subsequent Ready (Reload) for window " + Str(window))
+       EndIf
+    
+       JSWindows(Str(window))\Ready = #True
+       CreateThread(@MakeContentVisible(),window)
+       ReloadedJS = #True
+    Else
+       LogToDebugFile("ERROR: Invalid Window ID (0)")
+    EndIf
+    
+    ; FLUSH PENDING MESSAGES
+    ForEach JSWindows(Str(window))\PendingMessages()
+      WebViewExecuteScript(JSWindows(Str(window))\WebViewGadget, JSWindows(Str(window))\PendingMessages())
+    Next
+    ClearList(JSWindows(Str(window))\PendingMessages()) 
+    
     ProcedureReturn UTF8(~"")
   EndProcedure
   
@@ -1635,8 +1670,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1249
-; FirstLine = 1220
+; CursorPosition = 742
+; FirstLine = 735
 ; Folding = ------4-------
 ; EnableThread
 ; EnableXP
