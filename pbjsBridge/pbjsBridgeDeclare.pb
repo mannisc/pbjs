@@ -13,6 +13,7 @@ DeclareModule JSBridge
   Declare.s GetStartUpJS(windowName.s)
   Declare.s EscapeJSON(text.s)
   Declare SendParameters(*JSWindow, paramsJson.s)
+  Declare FlushPendingMessages(*JSWindow)
 EndDeclareModule
 
 

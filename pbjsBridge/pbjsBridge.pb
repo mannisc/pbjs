@@ -74,6 +74,15 @@ Module JSBridge
     ProcedureReturn result
   EndProcedure
   
+  Procedure FlushPendingMessages(*JSWindow.JSWindow)
+    If *JSWindow
+      ForEach *JSWindow\PendingMessages()
+        WebViewExecuteScript(*JSWindow\WebViewGadget, *JSWindow\PendingMessages())
+      Next
+      ClearList(*JSWindow\PendingMessages()) 
+    EndIf
+  EndProcedure
+  
   ; ============================================================================
   ; NATIVE CALLBACKS
   ; ============================================================================

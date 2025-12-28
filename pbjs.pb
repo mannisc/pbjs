@@ -785,10 +785,7 @@ Module JSWindow
     EndIf
     
     ; FLUSH PENDING MESSAGES
-    ForEach JSWindows(Str(window))\PendingMessages()
-      WebViewExecuteScript(JSWindows(Str(window))\WebViewGadget, JSWindows(Str(window))\PendingMessages())
-    Next
-    ClearList(JSWindows(Str(window))\PendingMessages()) 
+    JSBridge::FlushPendingMessages(@JSWindows(Str(window))) 
     
     ProcedureReturn UTF8(~"")
   EndProcedure
