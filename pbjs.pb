@@ -363,6 +363,7 @@ DeclareModule WindowManager
   Declare CloseManagedWindow(*Window.AppWindow)
   Declare RunEventLoop(*HandleMainEvent.HandleMainEvent,*ShouldKeepRunning.ShouldKeepRunning = 0)
   Declare CleanupManagedWindows()
+  Declare CloseManagedWindows()
   Declare GetManagedWindowFromWindowHandle(hWnd)
   Declare WindowMaxSizeChanged()
   Declare UpdateMaxDesktopSize()
@@ -484,6 +485,12 @@ Module WindowManager
         CallFunctionFast(*Window\CloseProc, *Window)
       EndIf
     EndIf
+  EndProcedure
+
+  Procedure CloseManagedWindows()
+    ForEach ManagedWindows()
+      CloseManagedWindow(@ManagedWindows())
+    Next
   EndProcedure
   
   
