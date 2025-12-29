@@ -664,7 +664,7 @@ DeclareModule JSWindow
     #JSWindow_Behaviour_CloseWindow
   EndEnumeration
   
-  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, parentName.s = "", CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
   Declare OpenJSWindow(*Window.AppWindow )    
   Declare HideJSWindow(*Window.AppWindow, FromManagedWindow)
   Declare CloseJSWindow(*Window.AppWindow)
@@ -673,7 +673,7 @@ DeclareModule JSWindow
   
   Structure JSWindow
     Name.s
-    ParentName.s
+    *Parent.AppWindow
     
     Window.i
     WebViewGadget.i
@@ -1300,9 +1300,14 @@ Module JSWindow
   
   
   
-  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, parentName.s = "", CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
     
-    window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags| #PB_Window_Invisible)
+    Protected parentWindowID = 0
+    If *Parent And IsWindow(*Parent\Window)
+      parentWindowID = WindowID(*Parent\Window)
+    EndIf
+    
+    window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags| #PB_Window_Invisible, parentWindowID)
     
     If window
       webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
@@ -1314,7 +1319,6 @@ Module JSWindow
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
       
       Protected hWnd = WindowID(window)
-      
       
       SetWindowColor(window, themeBackgroundColor)
       
@@ -1340,7 +1344,7 @@ Module JSWindow
       *JSWindow\Window = window
       *JSWindow\Name = windowName
       *JSWindow\Visible = #False
-      *JSWindow\ParentName = parentName
+      *JSWindow\Parent = *Parent
       *JSWindow\Ready = #False
       *JSWindow\HtmlStart = *htmlStart
       *JSWindow\HtmlEnd = *htmlStop
@@ -1411,10 +1415,9 @@ Module JSWindow
       If *Window\Open 
         HideWindow(*Window\Window,#True)
         
-        If *JSWindow\ParentName <> ""
-          Protected parentWindowID = WindowsByName(*JSWindow\ParentName)
-          If IsWindow(parentWindowID)
-            SetActiveWindow(parentWindowID)
+        If *JSWindow\Parent
+          If IsWindow(*JSWindow\Parent\Window)
+            SetActiveWindow(*JSWindow\Parent\Window)
           EndIf
         EndIf
       EndIf 
@@ -1444,10 +1447,10 @@ Module JSWindow
         CloseWindow(*Window\Window)
       EndIf 
       
-      If *JSWindow And *JSWindow\ParentName <> ""
-        Protected parentWindowID = WindowsByName(*JSWindow\ParentName)
-        If IsWindow(parentWindowID)
-          SetActiveWindow(parentWindowID)
+
+      If *JSWindow And *JSWindow\Parent
+        If IsWindow(*JSWindow\Parent\Window)
+          SetActiveWindow(*JSWindow\Parent\Window)
         EndIf
       EndIf
     EndIf 
@@ -1675,8 +1678,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1665
-; FirstLine = 1642
+; CursorPosition = 1317
+; FirstLine = 1296
 ; Folding = --------------
 ; EnableThread
 ; EnableXP
