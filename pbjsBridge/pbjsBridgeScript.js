@@ -71,51 +71,51 @@
         // Let's assume it returns a JSON string or object.
         const winData = window.pbjsNativeGetWindow(windowName);
         console.log("pbjs.getWindow(" + windowName + ") raw data:", winData);
-        
+
         if (!winData) return undefined;
         // Check if parsing is needed (if it's a JSON string error/obj)
         let winObj = winData;
-        if (typeof winData === 'string') {
-             try { 
-                winObj = JSON.parse(winData); 
-             } catch(e) {
-                console.error("pbjs.getWindow JSON parse error:", e);
-                // assume it's an ID if integer-like string? or error?
-                // actually pbjsNativeGetWindow returns JSON string usually.
-             }
+        if (typeof winData === "string") {
+          try {
+            winObj = JSON.parse(winData);
+          } catch (e) {
+            console.error("pbjs.getWindow JSON parse error:", e);
+            // assume it's an ID if integer-like string? or error?
+            // actually pbjsNativeGetWindow returns JSON string usually.
+          }
         }
         console.log("pbjs.getWindow(" + windowName + ") parsed obj:", winObj);
-        
+
         if (winObj && winObj.error) return undefined; // Window not found
-        
+
         // Wrap with helper methods
         return {
-            ...winObj,
-            open: function(params) {
-                // Use windowName from closure if ID is missing (backend now supports Name lookup)
-                const param = this.id || winObj.id || windowName;
-                console.log("pbjs.window.open() called. Param:", param, params);
-                if(window.pbjsNativeOpenWindow) {
-                     if (params) {
-                        window.pbjsNativeOpenWindow(param, JSON.stringify(params)); 
-                     } else {
-                        window.pbjsNativeOpenWindow(param); 
-                     }
-                }
-            },
-            hide: function() {
-                const param = this.id || winObj.id || windowName;
-                if(window.pbjsNativeHideWindow) {
-                     window.pbjsNativeHideWindow(param); 
-                }
-            },
-            close: function() {
-                // JSCloseWindow backend might not support Name yet, stick to ID if available
-                const param = this.id || winObj.id; 
-                if(window.pbjsNativeCloseWindow && param) {
-                     window.pbjsNativeCloseWindow(param); 
-                }
+          ...winObj,
+          open: function (params) {
+            // Use windowName from closure if ID is missing (backend now supports Name lookup)
+            const param = this.id || winObj.id || windowName;
+            console.log("pbjs.window.open() called. Param:", param, params);
+            if (window.pbjsNativeOpenWindow) {
+              if (params) {
+                window.pbjsNativeOpenWindow(param, JSON.stringify(params));
+              } else {
+                window.pbjsNativeOpenWindow(param);
+              }
             }
+          },
+          hide: function () {
+            const param = this.id || winObj.id || windowName;
+            if (window.pbjsNativeHideWindow) {
+              window.pbjsNativeHideWindow(param);
+            }
+          },
+          close: function () {
+            // JSCloseWindow backend might not support Name yet, stick to ID if available
+            const param = this.id || winObj.id;
+            if (window.pbjsNativeCloseWindow && param) {
+              window.pbjsNativeCloseWindow(param);
+            }
+          },
         };
       }
       return undefined;
@@ -128,38 +128,43 @@
       return true; // Default to true if not available to maintain compatibility
     },
 
-    waitForWindow: function(windowName, timeout = 6000) {
+    waitForWindow: function (windowName, timeout = 6000) {
       return new Promise((resolve, reject) => {
-         let attempts = 0;
-         const maxAttempts = Math.floor(timeout / 100);
-         
-         const check = () => {
-             // 1. Check existence if possible
-             // getWindow returns undefined if native helper missing, which we treat as "unknown/proceed"
-             const win = this.getWindow(windowName);
-             if (win === null) { // Explicit null means "known not to exist"
-                 const error = new Error("Window '" + windowName + "' does not exist");
-                 // We don't log error here, caller handles it? 
-                 // Or we can log it. 
-                 reject(error);
-                 return;
-             }
-             
-             // 2. Check readiness
-             // isWindowReady returns true if native helper missing (compatibility default)
-             if (this.isWindowReady(windowName)) {
-                 resolve(this.getWindow(windowName));
-             } else {
-                 if (attempts < maxAttempts) {
-                     attempts++;
-                     setTimeout(check, 100);
-                 } else {
-                     const error = new Error("Window '" + windowName + "' not ready after " + timeout + "ms");
-                     reject(error);
-                 }
-             }
-         };
-         check();
+        let attempts = 0;
+        const maxAttempts = Math.floor(timeout / 100);
+
+        const check = () => {
+          // 1. Check existence if possible
+          // getWindow returns undefined if native helper missing, which we treat as "unknown/proceed"
+          const win = this.getWindow(windowName);
+          if (win === null) {
+            // Explicit null means "known not to exist"
+            const error = new Error(
+              "Window '" + windowName + "' does not exist"
+            );
+            // We don't log error here, caller handles it?
+            // Or we can log it.
+            reject(error);
+            return;
+          }
+
+          // 2. Check readiness
+          // isWindowReady returns true if native helper missing (compatibility default)
+          if (this.isWindowReady(windowName)) {
+            resolve(this.getWindow(windowName));
+          } else {
+            if (attempts < maxAttempts) {
+              attempts++;
+              setTimeout(check, 100);
+            } else {
+              const error = new Error(
+                "Window '" + windowName + "' not ready after " + timeout + "ms"
+              );
+              reject(error);
+            }
+          }
+        };
+        check();
       });
     },
 
@@ -178,50 +183,52 @@
       log.invoke(windowName, name, params, data);
 
       // Wait for window to be ready before calling native
-      return this.waitForWindow(windowName).then(() => {
+      return this.waitForWindow(windowName)
+        .then(() => {
           return new Promise((resolve, reject) => {
-              if (!window.pbjsNativeGet) {
-                  const error = new Error("Native bridge not available");
-                  log.error("invoke", error);
-                  reject(error);
-                  return;
+            if (!window.pbjsNativeGet) {
+              const error = new Error("Native bridge not available");
+              log.error("invoke", error);
+              reject(error);
+              return;
+            }
+
+            const requestId = nextRequestId++;
+            pendingRequests.set(requestId, {
+              resolve: resolve,
+              reject: reject,
+              windowName: windowName,
+              name: name,
+            });
+
+            setTimeout(() => {
+              if (pendingRequests.has(requestId)) {
+                pendingRequests.delete(requestId);
+                const error = new Error(
+                  "Request timeout for " + name + " to " + windowName
+                );
+                log.error("invoke timeout", error);
+                reject(error);
               }
+            }, 30000);
 
-              const requestId = nextRequestId++;
-              pendingRequests.set(requestId, {
-                  resolve: resolve,
-                  reject: reject,
-                  windowName: windowName,
-                  name: name,
-              });
-
-              setTimeout(() => {
-                  if (pendingRequests.has(requestId)) {
-                      pendingRequests.delete(requestId);
-                      const error = new Error(
-                          "Request timeout for " + name + " to " + windowName
-                      );
-                      log.error("invoke timeout", error);
-                      reject(error);
-                  }
-              }, 30000);
-
-              window.pbjsNativeGet(
-                  JSON.stringify({
-                      type: "get",
-                      fromWindow: WINDOW_NAME,
-                      toWindow: windowName,
-                      name: name,
-                      params: JSON.stringify(params || {}),
-                      data: JSON.stringify(data || {}),
-                      requestId: requestId,
-                  })
-              );
+            window.pbjsNativeGet(
+              JSON.stringify({
+                type: "get",
+                fromWindow: WINDOW_NAME,
+                toWindow: windowName,
+                name: name,
+                params: JSON.stringify(params || {}),
+                data: JSON.stringify(data || {}),
+                requestId: requestId,
+              })
+            );
           });
-      }).catch(err => {
+        })
+        .catch((err) => {
           log.error("invoke failed", err);
           throw err;
-      });
+        });
     },
 
     invokeAll: function (name, params, data) {
@@ -284,8 +291,9 @@
         throw new TypeError("Handler must be a function");
       }
       const key = windowName + ":" + name;
+      console.log("[PBJS] Registered handler for: " + key);
       handlers.set(key, handler);
-      
+
       // Replay unhandled messages
       replayUnhandledMessages();
     },
@@ -297,8 +305,9 @@
       if (typeof handler !== "function") {
         throw new TypeError("Handler must be a function");
       }
+      console.log("[PBJS] Registered global handler for: *:" + name);
       handlers.set("*:" + name, handler);
-      
+
       // Replay unhandled messages
       replayUnhandledMessages();
     },
@@ -316,116 +325,132 @@
   const unhandledMessages = [];
 
   function replayUnhandledMessages() {
-    for (let i = 0; i < unhandledMessages.length; i++) {
-        const msg = unhandledMessages[i];
-        const key = msg.fromWindow + ":" + msg.name;
-        const globalKey = "*:" + msg.name;
-        const handler = handlers.get(key) || handlers.get(globalKey);
+    if (unhandledMessages.length === 0) return;
 
-        if (handler) {
-            unhandledMessages.splice(i, 1);
-            i--; // Adjust index since we removed an element
-            dispatchMessage(msg, handler);
-        }
+    console.log(
+      "[PBJS] Replaying " + unhandledMessages.length + " unhandled messages..."
+    );
+
+    for (let i = 0; i < unhandledMessages.length; i++) {
+      const msg = unhandledMessages[i];
+      const key = msg.fromWindow + ":" + msg.name;
+      const globalKey = "*:" + msg.name;
+      const handler = handlers.get(key) || handlers.get(globalKey);
+
+      console.log("[PBJS] Checking replay for message:", {
+        name: msg.name,
+        from: msg.fromWindow,
+        type: msg.type,
+        key: key,
+        globalKey: globalKey,
+        handlerFound: !!handler,
+      });
+
+      if (handler) {
+        console.log("[PBJS] Replaying message: " + msg.name);
+        unhandledMessages.splice(i, 1);
+        i--; // Adjust index since we removed an element
+        dispatchMessage(msg, handler);
+      }
     }
   }
 
   function dispatchMessage(msg, handler) {
-      log.handler(msg.fromWindow, msg.name, msg.type);
+    log.handler(msg.fromWindow, msg.name, msg.type);
 
-      const event = {
-        type: msg.type,
-        fromWindow: msg.fromWindow,
-        toWindow: WINDOW_NAME,
-        _responded: false,
+    const event = {
+      type: msg.type,
+      fromWindow: msg.fromWindow,
+      toWindow: WINDOW_NAME,
+      _responded: false,
 
-        success: function (data) {
-          if (this._responded) {
-            console.warn("Response already sent for this event");
-            return;
-          }
-          this._responded = true;
-          if (msg.requestId !== undefined && window.pbjsNativeReply) {
-            const responseData = { success: serializeResponse(data) };
-            window.pbjsNativeReply(
-              JSON.stringify({
-                requestId: msg.requestId,
-                toWindow: msg.fromWindow,
-                fromWindow: WINDOW_NAME,
-                data: JSON.stringify(responseData),
-                isGetAll: msg.type === "getAll",
-              })
-            );
-          }
-        },
-
-        error: function (error) {
-          if (this._responded) {
-            console.warn("Response already sent for this event");
-            return;
-          }
-          this._responded = true;
-          if (msg.requestId !== undefined && window.pbjsNativeReply) {
-            const responseData = { error: serializeResponse(error) };
-            window.pbjsNativeReply(
-              JSON.stringify({
-                requestId: msg.requestId,
-                toWindow: msg.fromWindow,
-                fromWindow: WINDOW_NAME,
-                data: JSON.stringify(responseData),
-                isGetAll: msg.type === "getAll",
-              })
-            );
-          }
-        },
-
-        reply: function (data) {
-          if (this._responded) {
-            console.warn("Response already sent for this event");
-            return;
-          }
-          this._responded = true;
-          if (msg.requestId !== undefined && window.pbjsNativeReply) {
-            window.pbjsNativeReply(
-              JSON.stringify({
-                requestId: msg.requestId,
-                toWindow: msg.fromWindow,
-                fromWindow: WINDOW_NAME,
-                data: JSON.stringify(data),
-                isGetAll: msg.type === "getAll",
-              })
-            );
-          }
-        },
-      };
-
-      if (msg.type === "get" || msg.type === "getAll") {
-        try {
-          Promise.resolve(handler(event, msg.params, msg.data))
-            .then((result) => {
-              if (!event._responded) {
-                event.success(result !== undefined ? result : true);
-              }
-            })
-            .catch((err) => {
-              if (!event._responded) {
-                log.error("handler exception", err);
-                event.error(err instanceof Error ? err.message : String(err));
-              }
-            });
-        } catch (err) {
-          if (!event._responded) {
-            log.error("handler exception", err);
-            event.error(err instanceof Error ? err.message : String(err));
-          }
+      success: function (data) {
+        if (this._responded) {
+          console.warn("Response already sent for this event");
+          return;
         }
-      } else {
-        try {
-          handler(event, msg.params, msg.data);
-        } catch (err) {
+        this._responded = true;
+        if (msg.requestId !== undefined && window.pbjsNativeReply) {
+          const responseData = { success: serializeResponse(data) };
+          window.pbjsNativeReply(
+            JSON.stringify({
+              requestId: msg.requestId,
+              toWindow: msg.fromWindow,
+              fromWindow: WINDOW_NAME,
+              data: JSON.stringify(responseData),
+              isGetAll: msg.type === "getAll",
+            })
+          );
+        }
+      },
+
+      error: function (error) {
+        if (this._responded) {
+          console.warn("Response already sent for this event");
+          return;
+        }
+        this._responded = true;
+        if (msg.requestId !== undefined && window.pbjsNativeReply) {
+          const responseData = { error: serializeResponse(error) };
+          window.pbjsNativeReply(
+            JSON.stringify({
+              requestId: msg.requestId,
+              toWindow: msg.fromWindow,
+              fromWindow: WINDOW_NAME,
+              data: JSON.stringify(responseData),
+              isGetAll: msg.type === "getAll",
+            })
+          );
+        }
+      },
+
+      reply: function (data) {
+        if (this._responded) {
+          console.warn("Response already sent for this event");
+          return;
+        }
+        this._responded = true;
+        if (msg.requestId !== undefined && window.pbjsNativeReply) {
+          window.pbjsNativeReply(
+            JSON.stringify({
+              requestId: msg.requestId,
+              toWindow: msg.fromWindow,
+              fromWindow: WINDOW_NAME,
+              data: JSON.stringify(data),
+              isGetAll: msg.type === "getAll",
+            })
+          );
+        }
+      },
+    };
+
+    if (msg.type === "get" || msg.type === "getAll") {
+      try {
+        Promise.resolve(handler(event, msg.params, msg.data))
+          .then((result) => {
+            if (!event._responded) {
+              event.success(result !== undefined ? result : true);
+            }
+          })
+          .catch((err) => {
+            if (!event._responded) {
+              log.error("handler exception", err);
+              event.error(err instanceof Error ? err.message : String(err));
+            }
+          });
+      } catch (err) {
+        if (!event._responded) {
           log.error("handler exception", err);
+          event.error(err instanceof Error ? err.message : String(err));
         }
       }
+    } else {
+      try {
+        handler(event, msg.params, msg.data);
+      } catch (err) {
+        log.error("handler exception", err);
+      }
+    }
   }
 
   function serializeResponse(value) {
@@ -456,12 +481,13 @@
         // Buffer all unhandled messages to handle race conditions where the window/handler isn't ready yet.
         // This allows 'invoke' (get) calls to wait until the component mounts and registers the handler.
         unhandledMessages.push(msg);
-        console.warn("Buffered unhandled message: " + msg.name + " [" + msg.type + "]");
+        console.warn(
+          "Buffered unhandled message: " + msg.name + " [" + msg.type + "]"
+        );
         return;
       }
 
       dispatchMessage(msg, handler);
-
     } catch (error) {
       log.error("pbjsHandleMessage", error);
     }
@@ -544,41 +570,49 @@
   const originalConsole = {
     log: console.log,
     warn: console.warn,
-    error: console.error
+    error: console.error,
   };
 
   function sendToNativeLog(level, args) {
     if (window.pbjsNativeLog) {
       try {
-        const message = args.map(arg => {
-          if (typeof arg === 'object') {
-            try { return JSON.stringify(arg); } catch(e) { return String(arg); }
-          }
-          return String(arg);
-        }).join(' ');
-        
-        window.pbjsNativeLog(JSON.stringify({
-          level: level,
-          message: message,
-          window: WINDOW_NAME
-        }));
+        const message = args
+          .map((arg) => {
+            if (typeof arg === "object") {
+              try {
+                return JSON.stringify(arg);
+              } catch (e) {
+                return String(arg);
+              }
+            }
+            return String(arg);
+          })
+          .join(" ");
+
+        window.pbjsNativeLog(
+          JSON.stringify({
+            level: level,
+            message: message,
+            window: WINDOW_NAME,
+          })
+        );
       } catch (err) {
         // Avoid infinite loops if logging fails
       }
     }
   }
 
-  console.log = function(...args) {
+  console.log = function (...args) {
     originalConsole.log.apply(console, args);
     sendToNativeLog("INFO", args);
   };
 
-  console.warn = function(...args) {
+  console.warn = function (...args) {
     originalConsole.warn.apply(console, args);
     sendToNativeLog("WARN", args);
   };
 
-  console.error = function(...args) {
+  console.error = function (...args) {
     originalConsole.error.apply(console, args);
     sendToNativeLog("ERROR", args);
   };
