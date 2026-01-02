@@ -858,30 +858,37 @@ Module JSWindow
         Debug "JSOpenWindow using ID: " + Str(window)
       EndIf
       
-      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-      If *Window
-        Debug "JSOpenWindow found managed window, attempting to open..."
-        
-        If ArraySize(Parameters()) > 0
-          WindowParameters.s = Parameters(1)
-          If WindowParameters <> ""
-            ; Find JSWindow
-            *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
-            If *JSWindow 
-              JSBridge::SendParameters(*JSWindow, WindowParameters)
+      Debug "*Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))"
+      Debug window
+      
+      If IsWindow(window)
+       
+        *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+        If *Window
+          Debug "JSOpenWindow found managed window, attempting to open..."
+          If ArraySize(Parameters()) > 0
+            WindowParameters.s = Parameters(1)
+            If WindowParameters <> ""
+              ; Find JSWindow
+              *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+              If *JSWindow 
+                JSBridge::SendParameters(*JSWindow, WindowParameters)
+              EndIf
             EndIf
           EndIf
+          
+          OpenJSWindow(*Window) ; Manual open logic is internal
+          
+          ProcedureReturn UTF8(~"{\"success\":true}")  
+        Else
+          Debug "JSOpenWindow ERROR: Could not find managed window for handle: " + Str(window) + " (Param: " + windowId + ")"
         EndIf
-        
-        OpenJSWindow(*Window) ; Manual open logic is internal
-        
-        ProcedureReturn UTF8(~"{\"success\":true}")  
       Else
-        Debug "JSOpenWindow ERROR: Could not find managed window for handle: " + Str(window) + " (Param: " + windowId + ")"
+        Debug "JSOpenWindow ERROR: Failed to parse JSON"
       EndIf
-    Else
-      Debug "JSOpenWindow ERROR: Failed to parse JSON"
-    EndIf
+    EndIf 
+    
+    CallDebugger
     
     ProcedureReturn UTF8(~"{\"error\":true}")
   EndProcedure
@@ -1678,8 +1685,8 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; Folding = -----------
 ; EnableThread
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 1317
-; FirstLine = 1296
+; CursorPosition = 890
+; FirstLine = 867
 ; Folding = --------------
 ; EnableThread
 ; EnableXP
