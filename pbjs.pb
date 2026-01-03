@@ -58,55 +58,159 @@ Module OsTheme
         result = #False 
       EndIf
     CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
-      Debug "DARKMODE??"
-      Protected result, line$, theme$, cmd$, tmp$
+      Protected isDark = #False
+      Protected determined = #False
+      Protected prog, file, line$, theme$, cmd$, tmp$
       
-      ; --- 1️⃣ Try freedesktop.org unified color-scheme (modern GNOME/KDE)
-      result = RunProgram("gsettings", "get org.freedesktop.appearance color-scheme", "", #PB_Program_Open | #PB_Program_Read)
-      If result
-        tmp$ = Trim(ReadProgramString(result), "'")
-        CloseProgram(result)
-        If LCase(tmp$) = "prefer-dark"
-          result = #True
-        ElseIf LCase(tmp$) = "default"
-          result = #False
+      ; --- 1️⃣ Try freedesktop.org unified color-scheme (Modern Standard)
+      If Not determined
+        prog = RunProgram("gsettings", "get org.freedesktop.appearance color-scheme", "", #PB_Program_Open | #PB_Program_Read)
+        If prog
+          tmp$ = Trim(ReadProgramString(prog), "'")
+          CloseProgram(prog)
+          If LCase(tmp$) = "prefer-dark"
+            isDark = #True
+            determined = #True
+          ElseIf LCase(tmp$) = "prefer-light"
+            isDark = #False
+            determined = #True
+          EndIf
+          ; "default" or empty -> Not determined, fall through
         EndIf
       EndIf
       
-      ; --- 2️⃣ Try GNOME / Cinnamon / XFCE GTK theme
-      result = RunProgram("gsettings", "get org.gnome.desktop.interface gtk-theme", "", #PB_Program_Open | #PB_Program_Read)
-      If result
-        theme$ = Trim(ReadProgramString(result), "'")
-        CloseProgram(result)
-        If FindString(LCase(theme$), "dark")
-          result = #True
-        ElseIf theme$ <> ""
-          result = #False
-        EndIf
-      EndIf
-      
-      ; --- 3️⃣ Try KDE Plasma config
-      If FileSize(GetHomeDirectory() + ".config/kdeglobals") > 0
-        result = ReadFile(#PB_Any, GetHomeDirectory() + ".config/kdeglobals")
-        If result
-          While Eof(result) = 0
-            line$ = ReadString(result)
-            If Left(line$, 11) = "ColorScheme"
-              theme$ = Trim(StringField(line$, 2, "="))
-              Break
-            EndIf
+      ; --- 1.5️⃣ Try XDG Desktop Portal via gdbus (Wayland/Strict Sandbox Standard)
+      If Not determined
+        ; gdbus call --session --dest org.freedesktop.portal.Desktop --object-path /org/freedesktop/portal/desktop --method org.freedesktop.portal.Settings.Read org.freedesktop.appearance color-scheme
+        prog = RunProgram("gdbus", "call --session --dest org.freedesktop.portal.Desktop --object-path /org/freedesktop/portal/desktop --method org.freedesktop.portal.Settings.Read org.freedesktop.appearance color-scheme", "", #PB_Program_Open | #PB_Program_Read)
+        If prog
+          tmp$ = ""
+          While AvailableProgramOutput(prog)
+            tmp$ + ReadProgramString(prog)
           Wend
-          CloseFile(result)
-          If FindString(LCase(theme$), "dark")
-            result = #True
-          Else
-            result = #False
+          CloseProgram(prog)
+          ; Output format: (<<uint32 1>>, ) where 1=dark, 2=light, 0=no preference
+          If FindString(tmp$, "uint32 1")
+            isDark = #True
+            determined = #True
+          ElseIf FindString(tmp$, "uint32 2")
+            isDark = #False
+            determined = #True
+          EndIf
+        EndIf
+      EndIf
+
+      ; --- 2️⃣ Try GNOME prefer-dark-theme (Older Standard)
+      If Not determined
+        prog = RunProgram("gsettings", "get org.gnome.desktop.interface prefer-dark-theme", "", #PB_Program_Open | #PB_Program_Read)
+        If prog
+          tmp$ = Trim(ReadProgramString(prog), "'")
+          CloseProgram(prog)
+          If tmp$ = "true" Or tmp$ = "1"
+            isDark = #True
+            determined = #True
+          ElseIf tmp$ = "false" Or tmp$ = "0"
+            ; Arguably this means explicit light preference, specifically for GNOME-ish setups
+            ; determining here might skip the theme name check which might be "PiXOnyx" on a system that returns false here?
+            ; Safer to only confirm DARK here, unless we are sure.
+            ; Standard behavior: If this is explicitly set to false, it usually means "Don't force dark". 
+            ; It DOES NOT necessarily mean "Force Light". So we continue if false to check theme name.
+          EndIf
+        EndIf
+      EndIf
+
+      ; --- 3️⃣ Try GTK Theme Name (The catch-all fallback)
+      If Not determined
+        prog = RunProgram("gsettings", "get org.gnome.desktop.interface gtk-theme", "", #PB_Program_Open | #PB_Program_Read)
+        If prog
+          theme$ = Trim(ReadProgramString(prog), "'")
+          CloseProgram(prog)
+          theme$ = LCase(theme$)
+          If FindString(theme$, "dark") Or FindString(theme$, "noir") Or FindString(theme$, "onyx")
+            isDark = #True
+            determined = #True
+          ElseIf theme$ <> ""
+             ; found a theme name but it didn't have dark keywords.
+             ; likely light mode. But config files might override?
+             ; Let's assume if we found a valid theme string that isn't dark, it's light.
+             ; UNLESS it's empty.
+             isDark = #False
+             determined = #True
           EndIf
         EndIf
       EndIf
       
-      Debug "DARK?"
-      Debug result
+      ; --- 4️⃣ Try Config Files (KDE, GTK, LXDE) - Only if execution methods failed
+      
+      ; KDE Plasma
+      If Not determined And FileSize(GetHomeDirectory() + ".config/kdeglobals") > 0
+        file = ReadFile(#PB_Any, GetHomeDirectory() + ".config/kdeglobals")
+        If file
+          While Eof(file) = 0
+            line$ = ReadString(file)
+            If Left(line$, 11) = "ColorScheme"
+              theme$ = Trim(StringField(line$, 2, "="))
+              If FindString(LCase(theme$), "dark") Or FindString(LCase(theme$), "noir") Or FindString(LCase(theme$), "onyx")
+                isDark = #True
+                determined = #True
+              Else
+                isDark = #False
+                determined = #True
+              EndIf
+              Break
+            EndIf
+          Wend
+          CloseFile(file)
+        EndIf
+      EndIf
+      
+      ; GTK 3.0 Settings
+      If Not determined And FileSize(GetHomeDirectory() + ".config/gtk-3.0/settings.ini") > 0
+        file = ReadFile(#PB_Any, GetHomeDirectory() + ".config/gtk-3.0/settings.ini")
+        If file
+          While Eof(file) = 0
+            line$ = ReadString(file)
+            If FindString(line$, "gtk-application-prefer-dark-theme")
+               tmp$ = LCase(StringField(line$, 2, "="))
+               If FindString(tmp$, "1") Or FindString(tmp$, "true")
+                 isDark = #True
+                 determined = #True
+                 Break
+               EndIf
+            EndIf
+            If FindString(line$, "gtk-theme-name")
+              theme$ = LCase(StringField(line$, 2, "="))
+              If FindString(theme$, "dark") Or FindString(theme$, "noir") Or FindString(theme$, "onyx")
+                isDark = #True
+                determined = #True
+                Break
+              EndIf
+            EndIf
+          Wend
+          CloseFile(file)
+        EndIf
+      EndIf
+
+      ; Legacy LXDE (Raspberry Pi)
+      If Not determined And FileSize(GetHomeDirectory() + ".config/lxsession/LXDE-pi/desktop.conf") > 0
+         file = ReadFile(#PB_Any, GetHomeDirectory() + ".config/lxsession/LXDE-pi/desktop.conf")
+         If file
+           While Eof(file) = 0
+             line$ = ReadString(file)
+             If FindString(line$, "sNet/ThemeName")
+               theme$ = LCase(StringField(line$, 2, "="))
+                If FindString(theme$, "dark") Or FindString(theme$, "noir") Or FindString(theme$, "onyx")
+                  isDark = #True
+                  determined = #True
+                  Break
+                EndIf
+             EndIf
+           Wend
+           CloseFile(file)
+         EndIf
+      EndIf
+      
+      ProcedureReturn isDark
       
     CompilerEndIf
     
@@ -1683,9 +1787,9 @@ IncludeFile "pbjsBridge/pbjsBridge.pb"
 ; FirstLine = 428
 ; Folding = -----------
 ; EnableThread
-; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 890
-; FirstLine = 867
+; IDE Options = PureBasic 6.30 beta 6 - C Backend (Linux - arm64)
+; CursorPosition = 172
+; FirstLine = 127
 ; Folding = --------------
 ; EnableThread
 ; EnableXP
