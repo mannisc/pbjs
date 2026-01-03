@@ -1209,7 +1209,6 @@ Module JSWindow
                           "if(!window.__pbjsAdded){" +
                           "" + 
                           " window.pbjsUpdateScale =  function(width, height) {" +
-                          "   ; console.log('resize',width,height);"+
                           "   document.documentElement.style.setProperty('--container-width', width + 'px');" +
                           "   document.documentElement.style.setProperty('--container-height', height + 'px')" +
                           " };"+         
