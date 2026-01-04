@@ -1,27 +1,39 @@
 ﻿// This script is injected by JSWindow::CreateJSWindow
-(async function() {
+(async function () {
   const waitForNative = async () => {
-      let attempts = 0;
-      while (!window.pbjsNativeGetWindow && attempts < 20) {
-          await new Promise(r => setTimeout(r, 50));
-          attempts++;
-      }
-      if (!window.pbjsNativeGetWindow) {
-          console.error("pbjsNativeGetWindow failed to appear");
-      }
+    let attempts = 0;
+    while (!window.pbjsNativeGetWindow && attempts < 20) {
+      await new Promise(r => setTimeout(r, 50));
+      attempts++;
+    }
+    if (!window.pbjsNativeGetWindow) {
+      console.error("pbjsNativeGetWindow failed to appear");
+    }
   };
-  
+
   await waitForNative();
 
   window.pbjs = {
     ...(window.pbjs || {}),
     version: "DEBUG_V1",
     ready: true,
+    darkModeHandlers: [],
+    registerDarkModeChangeHandler: (handler) => {
+      if (typeof handler === 'function') {
+        window.pbjs.darkModeHandlers.push(handler);
+      }
+    },
+    updateDarkMode: (isDark) => {
+      window.pbjs.darkMode = isDark;
+      window.pbjs.darkModeHandlers.forEach(h => {
+        try { h(isDark); } catch (e) { console.error("Error in darkModeHandler", e); }
+      });
+    },
     init: () => { console.log("PBJS Script Version: DEBUG_V1"); },
     getWindow: async (name) => {
       if (!window.pbjsNativeGetWindow) {
-          console.error("pbjsNativeGetWindow missing");
-          return undefined;
+        console.error("pbjsNativeGetWindow missing");
+        return undefined;
       }
       const pbWindow = await window.pbjsNativeGetWindow(name);
       if (!pbWindow || pbWindow.error) {

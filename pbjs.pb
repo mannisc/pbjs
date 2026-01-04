@@ -1315,7 +1315,10 @@ Module JSWindow
                           " window.pbjsUpdateScale =  function(width, height) {" +
                           "   document.documentElement.style.setProperty('--container-width', width + 'px');" +
                           "   document.documentElement.style.setProperty('--container-height', height + 'px')" +
-                          " };"+         
+                          " };"+
+                          ""+    
+                          " window.pbjs = (window.pbjs || {});" +
+                          " window.pbjs.darkMode = " + Str(OsTheme::IsDarkModeActive()) + ";" +
                           ""+
                           " window.pbjsDocumentReady = function () {" +
                           "  setTimeout(()=>{"+
