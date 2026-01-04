@@ -221,8 +221,10 @@
     X_OK: 1,
   };
 
+  window.pbjsFileSystemReady = true;
   console.log(
     "%c✓ JSFileSystem Ready",
     "color: #4CAF50; font-weight: bold; font-size: 1.1em"
   );
+  window.dispatchEvent(new Event("pbjs-fs-ready"));
 })();

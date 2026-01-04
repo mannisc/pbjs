@@ -110,13 +110,14 @@
         }
 
         // Wait for bridge
-        if (window.fs) {
+        if (window.fs && window.pbjsFileSystemReady) {
             runTests();
         } else {
-            // Poll or wait for event? 
-            // The script is injected before body, so it should be ready.
-            // But let's be safe.
-            setTimeout(runTests, 1000);
+            console.log("Waiting for pbjs-fs-ready...");
+            window.addEventListener('pbjs-fs-ready', () => {
+                console.log("pbjs-fs-ready received");
+                runTests();
+            }, { once: true });
         }
     </script>
 </body>
