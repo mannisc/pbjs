@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  if (window.pbjsBridgeReady) return;
+  if (window.pbjsReady) return;
 
   const WINDOW_NAME = "_WINDOW_NAME_INJECTED_BY_NATIVE_";
   const OS_NAME = "_OS_NAME_INJECTED_BY_NATIVE_";
@@ -617,11 +617,11 @@
     sendToNativeLog("ERROR", args);
   };
 
-  window.pbjsBridgeReady = true;
+  window.pbjsReady = true;
   console.log(
     "%c✓ PBJS Bridge Ready %c" + WINDOW_NAME,
     "color: #4CAF50; font-weight: bold; font-size: 1.1em",
     "color: #2196F3; font-weight: bold"
   );
-  window.dispatchEvent(new Event("pbjs-bridge-ready"));
+  window.dispatchEvent(new Event("pbjs-ready"));
 })();
