@@ -23,13 +23,31 @@
         window.pbjs.darkModeHandlers.push(handler);
       }
     },
+    isDarkMode: () => {
+      if (typeof window.pbjs.darkMode !== 'undefined') {
+        return window.pbjs.darkMode;
+      }
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    },
     updateDarkMode: (isDark) => {
       window.pbjs.darkMode = isDark;
+      if (isDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
       window.pbjs.darkModeHandlers.forEach(h => {
         try { h(isDark); } catch (e) { console.error("Error in darkModeHandler", e); }
       });
     },
-    init: () => { console.log("PBJS Script Version: DEBUG_V1"); },
+    init: () => {
+      console.log("PBJS Script Version: DEBUG_V1");
+      if (window.pbjs.isDarkMode()) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    },
     getWindow: async (name) => {
       if (!window.pbjsNativeGetWindow) {
         console.error("pbjsNativeGetWindow missing");
