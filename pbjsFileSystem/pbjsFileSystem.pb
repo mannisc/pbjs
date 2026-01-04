@@ -5,6 +5,7 @@
 DeclareModule JSFileSystem
   Declare InitializeFileSystem(window.i, webViewGadget.i)
   Declare.s WithFileSystemScript(html.s, contextId.s)
+  Declare InjectFileSystemScript(gadget.i, contextId.s)
 EndDeclareModule
 
 Module JSFileSystem
@@ -394,6 +395,13 @@ Module JSFileSystem
     EndIf
     
     ProcedureReturn result
+  EndProcedure
+
+  Procedure InjectFileSystemScript(gadget.i, contextId.s)
+    Protected initScript.s
+    initScript = ~"window.pbjsFSContextId = '" + contextId + ~"';"
+    WebViewExecuteScript(gadget, initScript)
+    WebViewExecuteScript(gadget, fsScript)
   EndProcedure
 
 EndModule
