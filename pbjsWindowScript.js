@@ -60,9 +60,9 @@
       }
       return {
         ...pbWindow,
-        open: async (params) => window.pbjsNativeOpenWindow(pbWindow.id, JSON.stringify(params)),
-        hide: async () => window.pbjsNativeHideWindow(pbWindow.id),
-        close: async () => window.pbjsNativeCloseWindow(pbWindow.id),
+        open: async (params) => window.pbjsNativeOpenWindow(String(pbWindow.id), JSON.stringify(params)),
+        hide: async () => window.pbjsNativeHideWindow(String(pbWindow.id)),
+        close: async () => window.pbjsNativeCloseWindow(String(pbWindow.id)),
       };
     },
     waitForWindow: async (name, maxAttempts = 50) => {
@@ -78,4 +78,12 @@
       return undefined;
     },
   };
+
+  window.pbjsReady = true;
+  console.log(
+    "%c✓ PBJS Bridge Core Ready %c" + WINDOW_NAME,
+    "color: #4CAF50; font-weight: bold; font-size: 1.1em",
+    "color: #2196F3; font-weight: bold"
+  );
+  window.dispatchEvent(new Event("pbjs-ready"));
 })();

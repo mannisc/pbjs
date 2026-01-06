@@ -623,5 +623,5 @@
     "color: #4CAF50; font-weight: bold; font-size: 1.1em",
     "color: #2196F3; font-weight: bold"
   );
-  window.dispatchEvent(new Event("pbjs-ready"));
+  //window.dispatchEvent(new Event("pbjs-ready"));
 })();
