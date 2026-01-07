@@ -1255,37 +1255,13 @@ Module JSWindow
   
   
   
-  DataSection
-    WindowBridgeScript:
-    IncludeBinary "pbjsWindowScript.js"
-    EndWindowBridgeScript:
-  EndDataSection
+
   
   
   
-  Procedure PreparePbjsWindowScript(*JSWindow.JSWindow)
-    ; Load the bridge script
-    Define *buffer = ?WindowBridgeScript
-    Define size.i = ?EndWindowBridgeScript - ?WindowBridgeScript 
-    *JSWindow\WindowJS = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
-  EndProcedure
+
   
-  Procedure.s WithPbjsWindowScript(html.s, *JSWindow.JSWindow)
-    PreparePbjsWindowScript(*JSWindow)    
-    result.s = html
-    insertScript.s = ~"<script>\n" + *JSWindow\WindowJS  + ~"</script>\n"
-    If FindString(result, "<body", 1, #PB_String_NoCase)
-      bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
-      bodyEndPos = FindString(result, ">", bodyPos)
-      If bodyEndPos > 0
-        result = Left(result, bodyEndPos) + insertScript + Mid(result, bodyEndPos + 1)
-      EndIf
-    Else
-      result = insertScript + result
-    EndIf
-    
-    ProcedureReturn result
-  EndProcedure
+
   
   
   
@@ -1478,7 +1454,7 @@ Module JSWindow
       
       CompilerIf  #Debug_On; remote debugging
         PreparePbjsBasicScript(*JSWindow.JSWindow)
-        PreparePbjsWindowScript(*JSWindow)    
+
         
         If debugUrl <> ""
           SetGadgetText(webViewGadget, debugUrl)
@@ -1671,7 +1647,7 @@ Module JSWindow
               
               html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
               html.s =  WithPbjsBasicScript(html, *JSWindow)
-              html.s =  WithPbjsWindowScript(html, *JSWindow)
+
               
               
               
