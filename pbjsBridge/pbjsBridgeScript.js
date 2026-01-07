@@ -117,8 +117,8 @@
   // --- WAIT FOR NATIVE BINDINGS ---
   const waitForNative = async () => {
     let attempts = 0;
-    // We check for one specific binding as a proxy for all
-    while (!window.pbjsNativeGetWindow && attempts < 20) {
+    // We check for one specific binding as a proxy for all. Increased to 50 attempts (2.5s) for slower inits.
+    while (!window.pbjsNativeGetWindow && attempts < 50) {
       await new Promise(r => setTimeout(r, 50));
       attempts++;
     }
@@ -439,11 +439,10 @@
       toWindow: WINDOW_NAME,
       _responded: false,
 
-      success: function (data) {
+      _send: function (responseData) {
         if (this._responded) { console.warn("Response already sent"); return; }
         this._responded = true;
         if (msg.requestId !== undefined && window.pbjsNativeReply) {
-          const responseData = { success: serializeResponse(data) };
           window.pbjsNativeReply(JSON.stringify({
             requestId: msg.requestId,
             toWindow: msg.fromWindow,
@@ -453,22 +452,15 @@
           }));
         }
       },
+
+      success: function (data) {
+        this._send({ success: serializeResponse(data) });
+      },
       error: function (error) {
-        if (this._responded) { console.warn("Response already sent"); return; }
-        this._responded = true;
-        if (msg.requestId !== undefined && window.pbjsNativeReply) {
-          const responseData = { error: serializeResponse(error) };
-          window.pbjsNativeReply(JSON.stringify({
-             requestId: msg.requestId,
-             toWindow: msg.fromWindow,
-             fromWindow: WINDOW_NAME,
-             data: JSON.stringify(responseData),
-             isGetAll: msg.type === "getAll",
-          }));
-        }
+        this._send({ error: serializeResponse(error) });
       },
       reply: function (data) {
-        this.success(data); // Alias to success really, but generic
+        this.success(data); 
       }
     };
 
