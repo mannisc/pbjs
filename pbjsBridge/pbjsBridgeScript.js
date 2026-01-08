@@ -180,78 +180,193 @@
 
       // --- WINDOW MANAGEMENT ---
       getWindow: function (windowName) {
-        if (window.pbjsNativeGetWindow) {
-          const winData = window.pbjsNativeGetWindow(windowName);
-          // console.log("pbjs.getWindow(" + windowName + ") raw data:", winData);
+        if (!window.pbjsNativeGetWindow) {
+          return Promise.resolve(undefined);
+        }
 
-          if (!winData) return undefined;
+        return window
+          .pbjsNativeGetWindow(windowName)
+          .then((winData) => {
+            console.log(
+              "pbjs.getWindow(" + windowName + ") raw data:",
+              winData
+            );
 
-          let winObj = winData;
-          if (typeof winData === "string") {
-            try {
-              winObj = JSON.parse(winData);
-            } catch (e) {
-              console.error("pbjs.getWindow JSON parse error:", e);
+            if (!winData) return undefined;
+
+            let winObj = winData;
+            // Native bridge might return string or object depending on binding
+            if (typeof winData === "string") {
+              try {
+                winObj = JSON.parse(winData);
+              } catch (e) {
+                console.error("pbjs.getWindow JSON parse error:", e);
+                return undefined;
+              }
             }
-          }
 
-          if (winObj && winObj.error) return undefined; // Window not found
+            if (winObj && winObj.error) return undefined; // Window not found
 
-          // Wrap with helper methods
-          return {
-            ...winObj,
-            open: function (params) {
-              // Use windowName from closure if ID is missing (backend now supports Name lookup)
-              const param = this.id || winObj.id || windowName;
-              if (window.pbjsNativeOpenWindow) {
-                if (params) {
-                  window.pbjsNativeOpenWindow(param, JSON.stringify(params));
-                } else {
-                  window.pbjsNativeOpenWindow(param);
-                }
-              }
-            },
-            hide: function () {
-              const param = this.id || winObj.id || windowName;
-              if (window.pbjsNativeHideWindow) {
-                window.pbjsNativeHideWindow(param);
-              }
-            },
-            close: function () {
-              const param = this.id || winObj.id;
-              if (window.pbjsNativeCloseWindow && param) {
-                window.pbjsNativeCloseWindow(param);
-              }
-            },
-            isOpen: function () {
-              const param = this.id || winObj.id || windowName;
-              return new Promise((resolve) => {
-                if (window.pbjsNativeIsWindowOpen) {
-                  const result = window.pbjsNativeIsWindowOpen(
-                    JSON.stringify([String(param)])
-                  );
-                  try {
-                    const json = JSON.parse(result);
-                    resolve(!!json.isOpen);
-                  } catch (e) {
-                    console.error("pbjs.isOpen parse error", e);
+            // Wrap with helper methods
+            return {
+              ...winObj,
+              open: function (params) {
+                const param = this.id || winObj.id || windowName;
+                console.log(
+                  "[PBJS] open called for:",
+                  param,
+                  "with params:",
+                  params
+                );
+                return new Promise((resolve) => {
+                  if (window.pbjsNativeOpenWindow) {
+                    const stringParam = String(param);
+                    const paramJson = params
+                      ? JSON.stringify(params)
+                      : undefined;
+
+                    console.log(
+                      "[PBJS] calling pbjsNativeOpenWindow with:",
+                      stringParam,
+                      paramJson
+                    );
+
+                    const promise = paramJson
+                      ? window.pbjsNativeOpenWindow(stringParam, paramJson)
+                      : window.pbjsNativeOpenWindow(stringParam);
+
+                    promise
+                      .then((result) => {
+                        console.log("[PBJS] open native result:", result);
+                        if (!result) {
+                          resolve(false);
+                          return;
+                        }
+                        try {
+                          const json =
+                            typeof result === "string"
+                              ? JSON.parse(result)
+                              : result;
+                          resolve(!!json.success);
+                        } catch (e) {
+                          console.error("[PBJS] open parse error:", e);
+                          resolve(false);
+                        }
+                      })
+                      .catch((err) => {
+                        console.error("[PBJS] open native error:", err);
+                        resolve(false);
+                      });
+                  } else {
+                    console.error("[PBJS] pbjsNativeOpenWindow NOT DEFINED");
                     resolve(false);
                   }
-                } else {
-                  resolve(false);
-                }
-              });
-            },
-          };
-        }
-        return undefined;
+                });
+              },
+              hide: function () {
+                const param = this.id || winObj.id || windowName;
+                return new Promise((resolve) => {
+                  if (window.pbjsNativeHideWindow) {
+                    window
+                      .pbjsNativeHideWindow(param)
+                      .then((result) => {
+                        if (!result) {
+                          resolve(false);
+                          return;
+                        }
+                        try {
+                          const json =
+                            typeof result === "string"
+                              ? JSON.parse(result)
+                              : result;
+                          resolve(!!json.success);
+                        } catch (e) {
+                          resolve(false);
+                        }
+                      })
+                      .catch(() => resolve(false));
+                  } else {
+                    resolve(false);
+                  }
+                });
+              },
+              close: function () {
+                const param = this.id || winObj.id;
+                return new Promise((resolve) => {
+                  if (window.pbjsNativeCloseWindow && param) {
+                    window
+                      .pbjsNativeCloseWindow(param)
+                      .then((result) => {
+                        if (!result) {
+                          resolve(false);
+                          return;
+                        }
+                        try {
+                          const json =
+                            typeof result === "string"
+                              ? JSON.parse(result)
+                              : result;
+                          resolve(!!json.success);
+                        } catch (e) {
+                          resolve(false);
+                        }
+                      })
+                      .catch(() => resolve(false));
+                  } else {
+                    resolve(false);
+                  }
+                });
+              },
+              isOpen: function () {
+                const param = this.id || winObj.id || windowName;
+                return new Promise((resolve) => {
+                  if (window.pbjsNativeIsWindowOpen) {
+                    window
+                      .pbjsNativeIsWindowOpen(String(param))
+                      .then((result) => {
+                        if (!result) {
+                          resolve(false);
+                          return;
+                        }
+                        if (
+                          typeof result === "object" &&
+                          result.isOpen !== undefined
+                        ) {
+                          resolve(!!result.isOpen);
+                          return;
+                        }
+                        try {
+                          const json =
+                            typeof result === "string"
+                              ? JSON.parse(result)
+                              : result;
+                          resolve(!!json.isOpen);
+                        } catch (e) {
+                          resolve(false);
+                        }
+                      })
+                      .catch(() => resolve(false));
+                  } else {
+                    resolve(false);
+                  }
+                });
+              },
+            };
+          })
+          .catch((err) => {
+            console.error("pbjs.getWindow native error:", err);
+            return undefined;
+          });
       },
 
       isWindowReady: function (windowName) {
         if (window.pbjsNativeIsWindowReady) {
-          return window.pbjsNativeIsWindowReady(windowName);
+          return window
+            .pbjsNativeIsWindowReady(windowName)
+            .then((result) => result) // Ensure Promise return
+            .catch(() => false);
         }
-        return true;
+        return Promise.resolve(true); // Default to true if not defined
       },
 
       waitForWindow: function (windowName, timeout = 6000) {
@@ -260,31 +375,60 @@
           const maxAttempts = Math.floor(timeout / 100);
 
           const check = () => {
-            const win = this.getWindow(windowName);
-            if (win === null) {
-              // Explicit non-existence
-              reject(new Error("Window '" + windowName + "' does not exist"));
-              return;
-            }
+            // getWindow is now async
+            this.getWindow(windowName).then((win) => {
+              if (!win) {
+                // win is null/undefined if not found
+                // reject(new Error("Window '" + windowName + "' does not exist"));
+                // Wait, original logic rejected immediately if null?
+                // "Explicit non-existence" - usually getWindow returns null if window is CLOSED/MISSING
+                // Let's assume we keep retrying if it might appear?
+                // Original code: if (win === null) reject...
+                // But getWindow returns undefined on error...
+                // Let's stick to original logic: if explicitly missing, fail?
+                // Actually, waitForWindow usually waits for creation.
+                // If getWindow returns undefined, it might not be created yet.
+                // Let's Retry if undefined.
 
-            if (this.isWindowReady(windowName)) {
-              resolve(this.getWindow(windowName));
-            } else {
-              if (attempts < maxAttempts) {
-                attempts++;
-                setTimeout(check, 100);
-              } else {
-                reject(
-                  new Error(
-                    "Window '" +
-                      windowName +
-                      "' not ready after " +
-                      timeout +
-                      "ms"
-                  )
-                );
+                if (attempts < maxAttempts) {
+                  attempts++;
+                  setTimeout(check, 100);
+                } else {
+                  reject(
+                    new Error(
+                      "Window '" +
+                        windowName +
+                        "' not found after " +
+                        timeout +
+                        "ms"
+                    )
+                  );
+                }
+                return;
               }
-            }
+
+              // Check ready state
+              this.isWindowReady(windowName).then((isReady) => {
+                if (isReady) {
+                  resolve(win);
+                } else {
+                  if (attempts < maxAttempts) {
+                    attempts++;
+                    setTimeout(check, 100);
+                  } else {
+                    reject(
+                      new Error(
+                        "Window '" +
+                          windowName +
+                          "' not ready after " +
+                          timeout +
+                          "ms"
+                      )
+                    );
+                  }
+                }
+              });
+            });
           };
           check();
         });

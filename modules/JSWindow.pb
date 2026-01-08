@@ -156,7 +156,7 @@ Module JSWindow
     ; FLUSH PENDING MESSAGES
     JSBridge::FlushPendingMessages(@JSWindows(Str(window))) 
     
-    ProcedureReturn UTF8(~"")
+    ProcedureReturn UTF8(~"{\"success\":true}")
   EndProcedure
   
   Procedure JSGetWindow(JsonParameters.s)
@@ -220,11 +220,7 @@ Module JSWindow
         Debug "JSOpenWindow using ID: " + Str(window)
       EndIf
       
-      Debug "*Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))"
-      Debug window
-      
       If IsWindow(window)
-       
         *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
         If *Window
           Debug "JSOpenWindow found managed window, attempting to open..."
@@ -243,14 +239,14 @@ Module JSWindow
           
           ProcedureReturn UTF8(~"{\"success\":true}")  
         Else
-          Debug "JSOpenWindow ERROR: Could not find managed window for handle: " + Str(window) + " (Param: " + windowId + ")"
+           Debug "JSOpenWindow ERROR: *Window is null for ID " + Str(window)
         EndIf
       Else
-        Debug "JSOpenWindow ERROR: Failed to parse JSON"
+         Debug "JSOpenWindow ERROR: IsWindow(window) failed for ID " + Str(window)
       EndIf
+    Else
+       Debug "JSOpenWindow ERROR: ParseJSON failed for input: " + JsonParameters
     EndIf 
-    
-    CallDebugger
     
     ProcedureReturn UTF8(~"{\"error\":true}")
   EndProcedure
@@ -287,24 +283,8 @@ Module JSWindow
   EndProcedure
   
   Procedure JSCloseWindow(JsonParameters.s)
-    Dim Parameters(0)
-    ParseJSON(0, JsonParameters)
-    ExtractJSONArray(JSONValue(0), Parameters())
-    window = Parameters(0)
-    Debug window
-    *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-    If *Window
-      CloseJSWindow(*Window) 
-      ProcedureReturn UTF8(~"{\"success\":true}")  
-    EndIf 
-    ProcedureReturn UTF8(~"{\"error\":true}")
-  EndProcedure
-  
-  Procedure JSIsWindowOpen(JsonParameters.s)
     Dim Parameters.s(0)
     Protected window.i, found.i
-    
-    Debug "JSIsWindowOpen CALLED with: " + JsonParameters
     
     If ParseJSON(0, JsonParameters)
       ExtractJSONArray(JSONValue(0), Parameters())
@@ -323,20 +303,56 @@ Module JSWindow
       If Not found
         window = Val(Param)
       EndIf
+
+      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+      If *Window
+        CloseJSWindow(*Window) 
+        ProcedureReturn UTF8(~"{\"success\":true}")  
+      EndIf 
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":true}")
+  EndProcedure
+  
+  Procedure JSIsWindowOpen(JsonParameters.s)
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+    Protected ReturnString.s = ~"{\"isOpen\":false}"
+    
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ExtractJSONArray(JSONValue(json), Parameters())
+      Param.s = Parameters(0)
+      FreeJSON(json)
+      
+      ; Try to find by Name first
+      ForEach JSWindows()
+        If Trim(JSWindows()\Name) = Trim(Param)
+          If IsWindow(JSWindows()\Window)
+            window = JSWindows()\Window
+            found = #True
+            Break
+          EndIf
+        EndIf
+      Next
+      
+      ; If not found by name, try ID
+      If Not found
+        window = Val(Param)
+      EndIf
       
       If IsWindow(window)
         *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
         If *Window
           If *Window\Open
-             ProcedureReturn UTF8(~"{\"isOpen\":true}")
+             ReturnString = ~"{\"isOpen\":true}"
           Else
-             ProcedureReturn UTF8(~"{\"isOpen\":false}")
+             ReturnString = ~"{\"isOpen\":false}"
           EndIf
         EndIf
       EndIf
     EndIf
     
-    ProcedureReturn UTF8(~"{\"isOpen\":false}")
+    ProcedureReturn UTF8(ReturnString)
   EndProcedure
   
   
@@ -588,7 +604,11 @@ Module JSWindow
                           "    document.body.classList.add('pbjs-document-ready');" +
                           "  },0);"+
                           "  const callReady = () => {" +
-                          "    if(window.callbackReadyState) callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ");" +
+                          "    if(window.callbackReadyState) {" +
+                          "      try { " +
+                          "        window.callbackReadyState(" + Str(window) + "," + Str(webViewGadget) + ").catch(e => console.error('ReadyState Error:', e));" + 
+                          "      } catch(e) { console.error('ReadyState Call Error:', e); }" +
+                          "    } " +
                           "    else setTimeout(callReady, 50);" +
                           "  };" +
                           "  callReady();" + 
@@ -821,11 +841,10 @@ Module JSWindow
         MacOSUnregisterResizeNotifications(*Window)
       CompilerEndIf
       If IsWindow(*Window\Window)
+        DeleteMapElement(JSWindows(), Str(*Window\Window))
         CloseWindow(*Window\Window)
       EndIf 
       
-
-
       If *JSWindow And *JSWindow\Parent
         If IsWindow(*JSWindow\Parent\Window)
           SetActiveWindow(*JSWindow\Parent\Window)
@@ -1038,3 +1057,9 @@ Module JSWindow
   EndProcedure
   
 EndModule
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 302
+; FirstLine = 298
+; Folding = ---------
+; EnableXP
+; DPIAware

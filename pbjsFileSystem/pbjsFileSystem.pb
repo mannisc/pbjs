@@ -48,6 +48,7 @@ Module JSFileSystem
     result = ReplaceString(result, Chr(13), Chr(92)+"r")
     result = ReplaceString(result, Chr(10), Chr(92)+"n")
     result = ReplaceString(result, Chr(9), Chr(92)+"t")
+    result = ReplaceString(result, Chr(39), Chr(92)+Chr(39)) ; Escape single quote
     ProcedureReturn result
   EndProcedure
   
@@ -61,6 +62,7 @@ Module JSFileSystem
     EndIf
     
     script = "pbjsHandleFSResponse('" + EscapeJSON(response) + "');"
+    Debug "SendResponse: Sending " + Str(Len(script)) + " bytes to Gadget " + Str(gadget) + " (ReqID: " + Str(requestId) + ")"
     WebViewExecuteScript(gadget, script)
   EndProcedure
   
@@ -333,12 +335,17 @@ Module JSFileSystem
       
       If contextId <> "" And FindMapElement(Contexts(), contextId)
         gadget = Contexts(contextId)\WebViewGadget
+        Debug "HandleFS: [SUCCESS] Found Gadget " + Str(gadget) + " for ContextID: " + contextId
       Else
-        ; Fallback: Use the first one found
+        Debug "HandleFS: [ERROR] ContextID not found: '" + contextId + "'"
+        Debug "HandleFS: Available Contexts:"
         ForEach Contexts()
-          gadget = Contexts()\WebViewGadget
-          Break
+          Debug " - " + MapKey(Contexts())
         Next
+        
+        SendResponse(0, requestId, "", "Native Error: ContextID '" + contextId + "' not found.")
+        FreeJSON(json)
+        ProcedureReturn 
       EndIf
       
       Select method
