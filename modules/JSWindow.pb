@@ -95,8 +95,15 @@ Module JSWindow
       PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
     EndIf 
   EndProcedure
+  
   Procedure LogToDebugFile(message.s)
-    Protected filename.s = "/Users/mschmidbartl/Desktop/Vynce/vynce/vynce_debug.log"
+    Protected logDir.s = GetCurrentDirectory() + "logs/"
+    Protected filename.s = logDir + "debug.log"
+    
+    If FileSize(logDir) <> -2
+      CreateDirectory(logDir)
+    EndIf
+    
     Protected file = OpenFile(#PB_Any, filename, #PB_File_Append)
     If Not file
       file = CreateFile(#PB_Any, filename)
