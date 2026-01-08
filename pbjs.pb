@@ -7,7 +7,7 @@ IncludeFile "modules/OsTheme.pb"
 ; =============================================================================
 ;- WINDOW MANAGER MODULE
 ; =============================================================================
-IncludeFile "modules/WindowManager.pb"
+XIncludeFile "modules/WindowManager.pb"
 
 ; =============================================================================
 ;- JS BRIDGE DECLARE

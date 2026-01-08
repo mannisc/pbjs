@@ -119,7 +119,7 @@
     let attempts = 0;
     // We check for one specific binding as a proxy for all. Increased to 50 attempts (2.5s) for slower inits.
     while (!window.pbjsNativeGetWindow && attempts < 50) {
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
       attempts++;
     }
     if (!window.pbjsNativeGetWindow) {
@@ -141,33 +141,40 @@
 
       // --- DARK MODE SUPPORT ---
       registerDarkModeChangeHandler: (handler) => {
-        if (typeof handler === 'function') {
+        if (typeof handler === "function") {
           window.pbjs.darkModeHandlers.push(handler);
         }
       },
       isDarkMode: () => {
-        if (typeof window.pbjs.darkMode !== 'undefined') {
+        if (typeof window.pbjs.darkMode !== "undefined") {
           return window.pbjs.darkMode;
         }
-        return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        return (
+          window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: dark)").matches
+        );
       },
       updateDarkMode: (isDark) => {
         window.pbjs.darkMode = isDark;
         if (isDark) {
-          document.documentElement.classList.add('dark');
+          document.documentElement.classList.add("dark");
         } else {
-          document.documentElement.classList.remove('dark');
+          document.documentElement.classList.remove("dark");
         }
-        window.pbjs.darkModeHandlers.forEach(h => {
-          try { h(isDark); } catch (e) { console.error("Error in darkModeHandler", e); }
+        window.pbjs.darkModeHandlers.forEach((h) => {
+          try {
+            h(isDark);
+          } catch (e) {
+            console.error("Error in darkModeHandler", e);
+          }
         });
       },
       init: () => {
         console.log("PBJS Script Init (Unified)");
         if (window.pbjs.isDarkMode()) {
-          document.documentElement.classList.add('dark');
+          document.documentElement.classList.add("dark");
         } else {
-          document.documentElement.classList.remove('dark');
+          document.documentElement.classList.remove("dark");
         }
       },
 
@@ -216,6 +223,25 @@
                 window.pbjsNativeCloseWindow(param);
               }
             },
+            isOpen: function () {
+              const param = this.id || winObj.id || windowName;
+              return new Promise((resolve) => {
+                if (window.pbjsNativeIsWindowOpen) {
+                  const result = window.pbjsNativeIsWindowOpen(
+                    JSON.stringify([String(param)])
+                  );
+                  try {
+                    const json = JSON.parse(result);
+                    resolve(!!json.isOpen);
+                  } catch (e) {
+                    console.error("pbjs.isOpen parse error", e);
+                    resolve(false);
+                  }
+                } else {
+                  resolve(false);
+                }
+              });
+            },
           };
         }
         return undefined;
@@ -225,7 +251,7 @@
         if (window.pbjsNativeIsWindowReady) {
           return window.pbjsNativeIsWindowReady(windowName);
         }
-        return true; 
+        return true;
       },
 
       waitForWindow: function (windowName, timeout = 6000) {
@@ -236,9 +262,9 @@
           const check = () => {
             const win = this.getWindow(windowName);
             if (win === null) {
-               // Explicit non-existence
-               reject(new Error("Window '" + windowName + "' does not exist"));
-               return;
+              // Explicit non-existence
+              reject(new Error("Window '" + windowName + "' does not exist"));
+              return;
             }
 
             if (this.isWindowReady(windowName)) {
@@ -248,7 +274,15 @@
                 attempts++;
                 setTimeout(check, 100);
               } else {
-                reject(new Error("Window '" + windowName + "' not ready after " + timeout + "ms"));
+                reject(
+                  new Error(
+                    "Window '" +
+                      windowName +
+                      "' not ready after " +
+                      timeout +
+                      "ms"
+                  )
+                );
               }
             }
           };
@@ -260,117 +294,122 @@
 
       invoke: function (windowName, name, params, data) {
         if (!windowName || typeof windowName !== "string") {
-            const error = new Error("windowName must be a non-empty string");
-            log.error("invoke", error);
-            return Promise.reject(error);
+          const error = new Error("windowName must be a non-empty string");
+          log.error("invoke", error);
+          return Promise.reject(error);
         }
         if (!name || typeof name !== "string") {
-            const error = new Error("name must be a non-empty string");
-            log.error("invoke", error);
-            return Promise.reject(error);
+          const error = new Error("name must be a non-empty string");
+          log.error("invoke", error);
+          return Promise.reject(error);
         }
 
         log.invoke(windowName, name, params, data);
 
         return this.waitForWindow(windowName)
-            .then(() => {
-                return new Promise((resolve, reject) => {
-                    if (!window.pbjsNativeGet) {
-                        const error = new Error("Native bridge not available");
-                        log.error("invoke", error);
-                        reject(error);
-                        return;
-                    }
+          .then(() => {
+            return new Promise((resolve, reject) => {
+              if (!window.pbjsNativeGet) {
+                const error = new Error("Native bridge not available");
+                log.error("invoke", error);
+                reject(error);
+                return;
+              }
 
-                    const requestId = nextRequestId++;
-                    pendingRequests.set(requestId, {
-                        resolve: resolve,
-                        reject: reject,
-                        windowName: windowName,
-                        name: name,
-                    });
+              const requestId = nextRequestId++;
+              pendingRequests.set(requestId, {
+                resolve: resolve,
+                reject: reject,
+                windowName: windowName,
+                name: name,
+              });
 
-                    setTimeout(() => {
-                        if (pendingRequests.has(requestId)) {
-                            pendingRequests.delete(requestId);
-                            const error = new Error("Request timeout for " + name + " to " + windowName);
-                            log.error("invoke timeout", error);
-                            reject(error);
-                        }
-                    }, 30000);
+              setTimeout(() => {
+                if (pendingRequests.has(requestId)) {
+                  pendingRequests.delete(requestId);
+                  const error = new Error(
+                    "Request timeout for " + name + " to " + windowName
+                  );
+                  log.error("invoke timeout", error);
+                  reject(error);
+                }
+              }, 30000);
 
-                    window.pbjsNativeGet(
-                        JSON.stringify({
-                            type: "get",
-                            fromWindow: WINDOW_NAME,
-                            toWindow: windowName,
-                            name: name,
-                            params: JSON.stringify(params || {}),
-                            data: JSON.stringify(data || {}),
-                            requestId: requestId,
-                        })
-                    );
-                });
-            })
-            .catch((err) => {
-                log.error("invoke failed", err);
-                throw err;
+              window.pbjsNativeGet(
+                JSON.stringify({
+                  type: "get",
+                  fromWindow: WINDOW_NAME,
+                  toWindow: windowName,
+                  name: name,
+                  params: JSON.stringify(params || {}),
+                  data: JSON.stringify(data || {}),
+                  requestId: requestId,
+                })
+              );
             });
+          })
+          .catch((err) => {
+            log.error("invoke failed", err);
+            throw err;
+          });
       },
 
       invokeAll: function (name, params, data) {
         if (!name || typeof name !== "string") {
-            const error = new Error("name must be a non-empty string");
-            log.error("invokeAll", error);
-            return Promise.reject(error);
+          const error = new Error("name must be a non-empty string");
+          log.error("invokeAll", error);
+          return Promise.reject(error);
         }
 
         log.invoke("ALL WINDOWS", name, params, data);
 
         return new Promise((resolve, reject) => {
-            if (!window.pbjsNativeGetAll) {
-                const error = new Error("Native bridge not available");
-                log.error("invokeAll", error);
-                reject(error);
-                return;
+          if (!window.pbjsNativeGetAll) {
+            const error = new Error("Native bridge not available");
+            log.error("invokeAll", error);
+            reject(error);
+            return;
+          }
+
+          const requestId = nextRequestId++;
+          getAllPendingRequests.set(requestId, {
+            resolve: resolve,
+            reject: reject,
+            responses: [],
+            expectedCount: 0,
+            receivedCount: 0,
+            name: name,
+          });
+
+          setTimeout(() => {
+            if (getAllPendingRequests.has(requestId)) {
+              const pending = getAllPendingRequests.get(requestId);
+              getAllPendingRequests.delete(requestId);
+              resolve(pending.responses);
             }
+          }, 30000);
 
-            const requestId = nextRequestId++;
-            getAllPendingRequests.set(requestId, {
-                resolve: resolve,
-                reject: reject,
-                responses: [],
-                expectedCount: 0,
-                receivedCount: 0,
-                name: name,
-            });
-
-            setTimeout(() => {
-                if (getAllPendingRequests.has(requestId)) {
-                    const pending = getAllPendingRequests.get(requestId);
-                    getAllPendingRequests.delete(requestId);
-                    resolve(pending.responses);
-                }
-            }, 30000);
-
-            window.pbjsNativeGetAll(
-                JSON.stringify({
-                    type: "getAll",
-                    fromWindow: WINDOW_NAME,
-                    name: name,
-                    params: JSON.stringify(params || {}),
-                    data: JSON.stringify(data || {}),
-                    requestId: requestId,
-                })
-            );
+          window.pbjsNativeGetAll(
+            JSON.stringify({
+              type: "getAll",
+              fromWindow: WINDOW_NAME,
+              name: name,
+              params: JSON.stringify(params || {}),
+              data: JSON.stringify(data || {}),
+              requestId: requestId,
+            })
+          );
         });
       },
 
       handle: function (windowName, name, handler) {
-        if (!windowName || typeof windowName !== "string") throw new Error("windowName must be a non-empty string");
-        if (!name || typeof name !== "string") throw new Error("name must be a non-empty string");
-        if (typeof handler !== "function") throw new TypeError("Handler must be a function");
-        
+        if (!windowName || typeof windowName !== "string")
+          throw new Error("windowName must be a non-empty string");
+        if (!name || typeof name !== "string")
+          throw new Error("name must be a non-empty string");
+        if (typeof handler !== "function")
+          throw new TypeError("Handler must be a function");
+
         const key = windowName + ":" + name;
         console.log("[PBJS] Registered handler for: " + key);
         handlers.set(key, handler);
@@ -378,9 +417,11 @@
       },
 
       handleAll: function (name, handler) {
-        if (!name || typeof name !== "string") throw new Error("name must be a non-empty string");
-        if (typeof handler !== "function") throw new TypeError("Handler must be a function");
-        
+        if (!name || typeof name !== "string")
+          throw new Error("name must be a non-empty string");
+        if (typeof handler !== "function")
+          throw new TypeError("Handler must be a function");
+
         console.log("[PBJS] Registered global handler for: *:" + name);
         handlers.set("*:" + name, handler);
         replayUnhandledMessages();
@@ -402,19 +443,20 @@
     // Signal Readiness
     window.pbjsReady = true;
     console.log(
-        "%c✓ PBJS Bridge Ready %c" + WINDOW_NAME,
-        "color: #4CAF50; font-weight: bold; font-size: 1.1em",
-        "color: #2196F3; font-weight: bold"
+      "%c✓ PBJS Bridge Ready %c" + WINDOW_NAME,
+      "color: #4CAF50; font-weight: bold; font-size: 1.1em",
+      "color: #2196F3; font-weight: bold"
     );
     window.dispatchEvent(new Event("pbjs-ready"));
-
   })();
 
   // --- INTERNAL MESSAGE HANDLING (Needs to be global) ---
 
   function replayUnhandledMessages() {
     if (unhandledMessages.length === 0) return;
-    console.log("[PBJS] Replaying " + unhandledMessages.length + " unhandled messages...");
+    console.log(
+      "[PBJS] Replaying " + unhandledMessages.length + " unhandled messages..."
+    );
 
     for (let i = 0; i < unhandledMessages.length; i++) {
       const msg = unhandledMessages[i];
@@ -440,16 +482,21 @@
       _responded: false,
 
       _send: function (responseData) {
-        if (this._responded) { console.warn("Response already sent"); return; }
+        if (this._responded) {
+          console.warn("Response already sent");
+          return;
+        }
         this._responded = true;
         if (msg.requestId !== undefined && window.pbjsNativeReply) {
-          window.pbjsNativeReply(JSON.stringify({
-            requestId: msg.requestId,
-            toWindow: msg.fromWindow,
-            fromWindow: WINDOW_NAME,
-            data: JSON.stringify(responseData),
-            isGetAll: msg.type === "getAll",
-          }));
+          window.pbjsNativeReply(
+            JSON.stringify({
+              requestId: msg.requestId,
+              toWindow: msg.fromWindow,
+              fromWindow: WINDOW_NAME,
+              data: JSON.stringify(responseData),
+              isGetAll: msg.type === "getAll",
+            })
+          );
         }
       },
 
@@ -460,33 +507,43 @@
         this._send({ error: serializeResponse(error) });
       },
       reply: function (data) {
-        this.success(data); 
-      }
+        this.success(data);
+      },
     };
 
     if (msg.type === "get" || msg.type === "getAll") {
-        try {
-            Promise.resolve(handler(event, msg.params, msg.data))
-                .then((result) => {
-                    if (!event._responded) {
-                        event.success(result !== undefined ? result : true);
-                    }
-                })
-                .catch((err) => {
-                    if (!event._responded) event.error(err instanceof Error ? err.message : String(err));
-                });
-        } catch (err) {
-            if (!event._responded) event.error(err instanceof Error ? err.message : String(err));
-        }
+      try {
+        Promise.resolve(handler(event, msg.params, msg.data))
+          .then((result) => {
+            if (!event._responded) {
+              event.success(result !== undefined ? result : true);
+            }
+          })
+          .catch((err) => {
+            if (!event._responded)
+              event.error(err instanceof Error ? err.message : String(err));
+          });
+      } catch (err) {
+        if (!event._responded)
+          event.error(err instanceof Error ? err.message : String(err));
+      }
     } else {
-        try { handler(event, msg.params, msg.data); } 
-        catch (err) { log.error("handler exception", err); }
+      try {
+        handler(event, msg.params, msg.data);
+      } catch (err) {
+        log.error("handler exception", err);
+      }
     }
   }
 
   function serializeResponse(value) {
     if (value === undefined || value === null) return true;
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    )
+      return value;
     if (value instanceof Error) return value.message;
     return value;
   }
@@ -500,7 +557,9 @@
 
       if (!handler) {
         unhandledMessages.push(msg);
-        console.warn("Buffered unhandled message: " + msg.name + " [" + msg.type + "]");
+        console.warn(
+          "Buffered unhandled message: " + msg.name + " [" + msg.type + "]"
+        );
         return;
       }
       dispatchMessage(msg, handler);
@@ -510,51 +569,69 @@
   };
 
   window.pbjsHandleResponse = function (responseJson) {
-      try {
-          const response = JSON.parse(responseJson);
-          
-          if (response.isGetAll) {
-              const pending = getAllPendingRequests.get(response.requestId);
-              if (pending) {
-                  log.response(response.fromWindow, pending.name, response.data, response.data && response.data.error);
-                  pending.responses.push({ windowName: response.fromWindow, response: response.data });
-                  pending.receivedCount++;
-                  if (pending.receivedCount >= pending.expectedCount && pending.expectedCount > 0) {
-                      getAllPendingRequests.delete(response.requestId);
-                      pending.resolve(pending.responses);
-                  }
-              }
-          } else {
-              const pending = pendingRequests.get(response.requestId);
-              if (pending) {
-                  pendingRequests.delete(response.requestId);
-                  const hasError = response.data && response.data.error;
-                  log.response(response.fromWindow, pending.name, response.data, hasError);
-                  if (hasError) {
-                       const errMsg = typeof response.data.error === "string" ? response.data.error : JSON.stringify(response.data.error);
-                       pending.reject(new Error(errMsg));
-                  } else {
-                       pending.resolve(response.data);
-                  }
-              }
+    try {
+      const response = JSON.parse(responseJson);
+
+      if (response.isGetAll) {
+        const pending = getAllPendingRequests.get(response.requestId);
+        if (pending) {
+          log.response(
+            response.fromWindow,
+            pending.name,
+            response.data,
+            response.data && response.data.error
+          );
+          pending.responses.push({
+            windowName: response.fromWindow,
+            response: response.data,
+          });
+          pending.receivedCount++;
+          if (
+            pending.receivedCount >= pending.expectedCount &&
+            pending.expectedCount > 0
+          ) {
+            getAllPendingRequests.delete(response.requestId);
+            pending.resolve(pending.responses);
           }
-      } catch (error) {
-          log.error("pbjsHandleResponse", error);
+        }
+      } else {
+        const pending = pendingRequests.get(response.requestId);
+        if (pending) {
+          pendingRequests.delete(response.requestId);
+          const hasError = response.data && response.data.error;
+          log.response(
+            response.fromWindow,
+            pending.name,
+            response.data,
+            hasError
+          );
+          if (hasError) {
+            const errMsg =
+              typeof response.data.error === "string"
+                ? response.data.error
+                : JSON.stringify(response.data.error);
+            pending.reject(new Error(errMsg));
+          } else {
+            pending.resolve(response.data);
+          }
+        }
       }
+    } catch (error) {
+      log.error("pbjsHandleResponse", error);
+    }
   };
 
   window.pbjsSetGetAllExpectedCount = function (requestId, count) {
-      const pending = getAllPendingRequests.get(requestId);
-      if (pending) {
-          pending.expectedCount = count;
-          if (pending.receivedCount >= count && count > 0) {
-              getAllPendingRequests.delete(requestId);
-              pending.resolve(pending.responses);
-          } else if (count === 0) {
-              getAllPendingRequests.delete(requestId);
-              pending.resolve([]);
-          }
+    const pending = getAllPendingRequests.get(requestId);
+    if (pending) {
+      pending.expectedCount = count;
+      if (pending.receivedCount >= count && count > 0) {
+        getAllPendingRequests.delete(requestId);
+        pending.resolve(pending.responses);
+      } else if (count === 0) {
+        getAllPendingRequests.delete(requestId);
+        pending.resolve([]);
       }
+    }
   };
-
 })();

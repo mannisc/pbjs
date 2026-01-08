@@ -71,6 +71,7 @@ Module JSWindow
   Declare UpdateWebViewScale(gadget, width, height)
   Declare HandleEvent(*Window.AppWindow, Event.i, Gadget.i, Type.i)
   Declare ForceContentVisible(window)
+  Declare JSIsWindowOpen(JsonParameters.s)
   
   
   ; For Windows
@@ -297,6 +298,45 @@ Module JSWindow
       ProcedureReturn UTF8(~"{\"success\":true}")  
     EndIf 
     ProcedureReturn UTF8(~"{\"error\":true}")
+  EndProcedure
+  
+  Procedure JSIsWindowOpen(JsonParameters.s)
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+    
+    Debug "JSIsWindowOpen CALLED with: " + JsonParameters
+    
+    If ParseJSON(0, JsonParameters)
+      ExtractJSONArray(JSONValue(0), Parameters())
+      Param.s = Parameters(0)
+      
+      ; Try to find by Name first
+      ForEach JSWindows()
+        If Trim(JSWindows()\Name) = Trim(Param)
+          window = JSWindows()\Window
+          found = #True
+          Break
+        EndIf
+      Next
+      
+      ; If not found by name, try ID
+      If Not found
+        window = Val(Param)
+      EndIf
+      
+      If IsWindow(window)
+        *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+        If *Window
+          If *Window\Open
+             ProcedureReturn UTF8(~"{\"isOpen\":true}")
+          Else
+             ProcedureReturn UTF8(~"{\"isOpen\":false}")
+          EndIf
+        EndIf
+      EndIf
+    EndIf
+    
+    ProcedureReturn UTF8(~"{\"isOpen\":false}")
   EndProcedure
   
   
@@ -632,6 +672,7 @@ Module JSWindow
     BindWebViewCallback(webViewGadget, "pbjsNativeOpenWindow", @JSOpenWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
+    BindWebViewCallback(webViewGadget, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
   EndProcedure 
   
   
