@@ -63,6 +63,7 @@ Module JSFileSystem
     
     script = "pbjsHandleFSResponse('" + EscapeJSON(response) + "');"
     Debug "SendResponse: Sending " + Str(Len(script)) + " bytes to Gadget " + Str(gadget) + " (ReqID: " + Str(requestId) + ")"
+    Debug "[FS-NATIVE] SendResponse Gadget: " + Str(gadget) + " ReqID: " + Str(requestId) + " Script: " + Left(script, 100) + "..."
     WebViewExecuteScript(gadget, script)
   EndProcedure
   
@@ -293,6 +294,7 @@ Module JSFileSystem
     Protected gadget.i
     
     Debug "HandleFS: " + jsonParameters
+    Debug "[FS-NATIVE] Received JSON: " + jsonParameters
     
     Dim parameters.s(0)
     ParseJSON(0, jsonParameters)
@@ -305,6 +307,7 @@ Module JSFileSystem
       requestId = GetJSONInteger(GetJSONMember(JSONValue(json), "requestId"))
       args = GetJSONMember(JSONValue(json), "args")
       
+      Debug "[FS-NATIVE] Processing Method: " + method + " RequestID: " + Str(requestId)
       Debug "Method: " + method + ", RequestID: " + Str(requestId)
       
       ; We need the gadget ID. 

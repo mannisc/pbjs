@@ -47,18 +47,23 @@
           log.error(method, error);
           reject(error);
         }
-      }, 30000);
+      }, 10000);
 
       try {
+        console.log(
+          `[FS-DEBUG] Sending ReqID: ${requestId} Method: ${method} Args:`,
+          args
+        );
         window.pbjsNativeFS(
           JSON.stringify({
             method: method,
             args: args,
             requestId: requestId,
-            contextId: window.pbjsFSContextId || ""
+            contextId: window.pbjsFSContextId || "",
           })
         );
       } catch (e) {
+        console.error(`[FS-DEBUG] Failed to send ReqID: ${requestId}`, e);
         pendingRequests.delete(requestId);
         reject(e);
       }
@@ -68,7 +73,12 @@
   // Handle responses from Native
   window.pbjsHandleFSResponse = function (responseJson) {
     try {
+      // console.log("pbjsHandleFSResponse raw:", responseJson);
       const response = JSON.parse(responseJson);
+      console.log(
+        `[FS-DEBUG] Received Response for ReqID: ${response.requestId}`,
+        response
+      );
       const pending = pendingRequests.get(response.requestId);
 
       if (pending) {

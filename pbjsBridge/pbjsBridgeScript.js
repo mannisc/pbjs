@@ -219,8 +219,9 @@
                   params
                 );
                 return new Promise((resolve) => {
-                  if (window.pbjsNativeOpenWindow) {
+                  if (window.pbjsNativeOpenWindow && param) {
                     const stringParam = String(param);
+
                     const paramJson = params
                       ? JSON.stringify(params)
                       : undefined;
@@ -266,9 +267,11 @@
               hide: function () {
                 const param = this.id || winObj.id || windowName;
                 return new Promise((resolve) => {
-                  if (window.pbjsNativeHideWindow) {
+                  if (window.pbjsNativeHideWindow && param) {
+                    const stringParam = String(param);
+
                     window
-                      .pbjsNativeHideWindow(param)
+                      .pbjsNativeHideWindow(stringParam)
                       .then((result) => {
                         if (!result) {
                           resolve(false);
@@ -294,8 +297,9 @@
                 const param = this.id || winObj.id;
                 return new Promise((resolve) => {
                   if (window.pbjsNativeCloseWindow && param) {
+                    const stringParam = String(param);
                     window
-                      .pbjsNativeCloseWindow(param)
+                      .pbjsNativeCloseWindow(stringParam)
                       .then((result) => {
                         if (!result) {
                           resolve(false);

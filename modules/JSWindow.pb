@@ -253,6 +253,7 @@ Module JSWindow
   
   
   Procedure JSHideWindow(JsonParameters.s)
+    
     Dim Parameters.s(0)
     Protected window.i, found.i
     
@@ -273,12 +274,13 @@ Module JSWindow
     If Not found
       window = Val(Param)
     EndIf
-    
-    *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-    If *Window
-      HideJSWindow(*Window, #False ) 
-      ProcedureReturn UTF8(~"{\"success\":true}")  
-    EndIf 
+    If IsWindow(window) 
+      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+      If *Window
+        HideJSWindow(*Window, #False ) 
+        ProcedureReturn UTF8(~"{\"success\":true}")  
+      EndIf 
+    EndIf
     ProcedureReturn UTF8(~"{\"error\":true}")
   EndProcedure
   
@@ -303,11 +305,12 @@ Module JSWindow
       If Not found
         window = Val(Param)
       EndIf
-
-      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-      If *Window
-        CloseJSWindow(*Window) 
-        ProcedureReturn UTF8(~"{\"success\":true}")  
+      If IsWindow(window) 
+        *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+        If *Window
+          CloseJSWindow(*Window) 
+          ProcedureReturn UTF8(~"{\"success\":true}")  
+        EndIf 
       EndIf 
     EndIf
     ProcedureReturn UTF8(~"{\"error\":true}")
@@ -1058,8 +1061,8 @@ Module JSWindow
   
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 302
-; FirstLine = 298
+; CursorPosition = 255
+; FirstLine = 251
 ; Folding = ---------
 ; EnableXP
 ; DPIAware
