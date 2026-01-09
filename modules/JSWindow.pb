@@ -730,7 +730,7 @@ Module JSWindow
       Protected hWnd = WindowID(window)
       
       SetWindowColor(window, themeBackgroundColor)
-      
+
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         SetWindowLongPtr_(WindowID(window), #GWL_STYLE, GetWindowLongPtr_(WindowID(window), #GWL_STYLE) | #WS_CLIPCHILDREN)
         ApplyThemeToWinHandle(hWnd)
@@ -998,7 +998,13 @@ Module JSWindow
        
        If InScope
           Debug "[CHECK_CLOSE_PROGRESS] InScope=True. Visible=" + Str(JSWindows()\Visible) + " BypassCloseCheck=" + Str(JSWindows()\BypassCloseCheck)
-          If IsWindow(JSWindows()\Window) And JSWindows()\Visible And Not JSWindows()\BypassCloseCheck
+
+          Protected *AppWin.AppWindow = 0
+          If IsWindow(JSWindows()\Window)
+             *AppWin = GetManagedWindowFromWindowHandle(WindowID(JSWindows()\Window))
+          EndIf
+          
+          If *AppWin And *AppWin\Open And JSWindows()\Visible And Not JSWindows()\BypassCloseCheck
              AllReady = #False 
              Debug "[CHECK_CLOSE_PROGRESS] AllReady=False, breaking"
              Break 
@@ -1034,7 +1040,12 @@ Module JSWindow
     Protected CheckStarted = #False 
     
     ForEach JSWindows()
-      If IsWindow(JSWindows()\Window) And JSWindows()\Visible 
+      Protected *AppWin.AppWindow = 0
+      If IsWindow(JSWindows()\Window)
+         *AppWin = GetManagedWindowFromWindowHandle(WindowID(JSWindows()\Window))
+      EndIf
+      
+      If *AppWin And *AppWin\Open And JSWindows()\Visible 
         
          Protected InScope = #False 
          
@@ -1321,8 +1332,8 @@ Module JSWindow
   
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 846
-; FirstLine = 842
+; CursorPosition = 731
+; FirstLine = 718
 ; Folding = ----------
 ; EnableXP
 ; DPIAware
