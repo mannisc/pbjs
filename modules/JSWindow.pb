@@ -62,7 +62,14 @@ DeclareModule JSWindow
   Global NewMap JSWindows.JSWindow()
   Global NewMap WindowsByName.i()
   
-  ReloadedJS = #False 
+  Global AppClosing = #False 
+  Global ClosingScope = 0 ; 0: None, -1: App, >0: WindowID
+  Global ReloadedJS = #False 
+  
+  Declare RequestClose(Scope)
+  Declare CheckCloseProgress()
+  Declare CancelClose(Reason.s="")
+  
 EndDeclareModule
 
 
@@ -867,6 +874,175 @@ Module JSWindow
     EndIf 
   EndProcedure
   
+  
+  ; ============================================================================
+  ; APP CLOSE HANDLING
+  ; ============================================================================
+  
+  Procedure ResetCloseChecks(Scope)
+     ForEach JSWindows()
+       Protected InScope = #False 
+       
+       If ClosingScope = -1
+         InScope = #True 
+       ElseIf IsWindow(JSWindows()\Window)
+         If JSWindows()\Window = Scope 
+           InScope = #True 
+         Else 
+            ; Check ancestry
+            Protected *Current.AppWindow = JSWindows()\Parent
+            While *Current
+              If *Current\Window = Scope 
+                 InScope = #True 
+                 Break 
+              EndIf 
+              ; Move up
+              If IsWindow(*Current\Window)
+                 Protected *PJS.JSWindow = JSWindows(Str(*Current\Window))
+                 If *PJS
+                   *Current = *PJS\Parent 
+                 Else
+                   Break 
+                 EndIf 
+              Else
+                Break 
+              EndIf 
+            Wend 
+         EndIf 
+       EndIf 
+       
+       If InScope
+         JSWindows()\BypassCloseCheck = #False 
+       EndIf 
+     Next 
+  EndProcedure
+
+  Procedure CancelClose(Reason.s="")
+     Debug "CANCEL CLOSE: " + Reason
+     ResetCloseChecks(ClosingScope)
+     ClosingScope = 0 
+  EndProcedure
+
+  Procedure CheckCloseProgress()
+    If ClosingScope = 0
+      ProcedureReturn 
+    EndIf 
+    
+    Protected AllReady = #True 
+    
+    ForEach JSWindows()
+       Protected InScope = #False 
+       If MapKey(JSWindows()) = "" : Continue : EndIf 
+       
+       If ClosingScope = -1
+         InScope = #True 
+       ElseIf IsWindow(JSWindows()\Window)
+         If JSWindows()\Window = ClosingScope
+           InScope = #True 
+         Else 
+            ; Check ancestry
+            Protected *Current.AppWindow = JSWindows()\Parent
+            While *Current
+              If *Current\Window = ClosingScope
+                 InScope = #True 
+                 Break 
+              EndIf 
+              If IsWindow(*Current\Window)
+                 Protected *PJS.JSWindow = JSWindows(Str(*Current\Window))
+                 If *PJS
+                   *Current = *PJS\Parent 
+                 Else
+                   Break 
+                 EndIf 
+              Else
+                Break 
+              EndIf 
+            Wend 
+         EndIf 
+       EndIf 
+       
+       If InScope
+          If IsWindow(JSWindows()\Window) And JSWindows()\Visible And Not JSWindows()\BypassCloseCheck
+             AllReady = #False 
+             Break 
+          EndIf 
+       EndIf
+    Next 
+    
+    If AllReady
+      If ClosingScope = -1
+        End 
+      Else
+        Protected *RootJS.JSWindow = JSWindows(Str(ClosingScope))
+        If *RootJS
+           *RootJS\BypassCloseCheck = #True 
+           PostEvent(#PB_Event_CloseWindow, ClosingScope, 0)
+        EndIf 
+        ClosingScope = 0
+      EndIf 
+    EndIf 
+    
+  EndProcedure
+
+  Procedure RequestClose(Scope)
+    
+    If ClosingScope <> 0
+       ProcedureReturn 0
+    EndIf
+    
+    ClosingScope = Scope
+    
+    Protected CheckStarted = #False 
+    
+    ForEach JSWindows()
+      If IsWindow(JSWindows()\Window) And JSWindows()\Visible 
+        
+         Protected InScope = #False 
+         
+         If ClosingScope = -1
+           InScope = #True 
+         Else
+           If JSWindows()\Window = Scope 
+             InScope = #True 
+           Else 
+              ; Check ancestry
+              Protected *Current.AppWindow = JSWindows()\Parent
+              While *Current
+                If *Current\Window = Scope 
+                   InScope = #True 
+                   Break 
+                EndIf 
+                If IsWindow(*Current\Window)
+                   Protected *PJS.JSWindow = JSWindows(Str(*Current\Window))
+                   If *PJS
+                     *Current = *PJS\Parent 
+                   Else
+                     Break 
+                   EndIf 
+                Else
+                  Break 
+                EndIf 
+              Wend 
+           EndIf 
+         EndIf 
+         
+         If InScope
+           If Not JSWindows()\BypassCloseCheck
+             JSBridge::SendCloseCheck(@JSWindows())
+             CheckStarted = #True 
+           EndIf 
+         EndIf 
+      EndIf 
+    Next 
+    
+    If Not CheckStarted
+      ProcedureReturn #True 
+    EndIf 
+    
+    ProcedureReturn #False 
+    
+  EndProcedure
+  
   CompilerIf #Debug_On
     
     Global DEBUGMODEoldLocation.s
@@ -905,6 +1081,21 @@ Module JSWindow
   CompilerEndIf
   
   
+  Procedure HideChildWindows(*ParentWindow.AppWindow)
+     ForEach JSWindows()
+       If JSWindows()\Parent = *ParentWindow
+         If IsWindow(JSWindows()\Window)
+           Protected *ChildAppWindow.AppWindow = WindowManager::GetManagedWindowFromWindowHandle(WindowID(JSWindows()\Window))
+           If *ChildAppWindow
+             HideChildWindows(*ChildAppWindow)
+             WindowManager::HideManagedWindow(*ChildAppWindow)
+             JSWindows()\Visible = #False 
+           EndIf 
+         EndIf 
+       EndIf 
+     Next 
+  EndProcedure
+
   Procedure.i HandleEvent(*Window.AppWindow,Event.i, Gadget.i, Type.i)
     
     
@@ -1013,8 +1204,20 @@ Module JSWindow
       ; --- INTERCEPT CLOSE ---
       If Not *JSWindow\BypassCloseCheck
         Debug "Check needed"
-        JSBridge::SendCloseCheck(*JSWindow)
-        ProcedureReturn #True ; Consume event, wait for reply
+        If RequestClose(*JSWindow\Window)
+           ; If returns true, no checks were needed (e.g. not visible or already bypassed? wait logic says if Request returns True it means we can proceed immediately?)
+           ; RequestClose will send checks and return False if checks are PENDING.
+           ; If it returns True, it means either no windows in scope or all already bypassed?
+           ; Actually, RequestClose sets ClosingScope. If it returns True, it means nothing to check.
+           ; But we should double check if we can close.
+           ; If RequestClose returns True, it means "Go ahead". But for normal close we usually consume the event.
+           
+           ; If this is a distinct event, let's allow it to fall through?
+           ; Wait, if RequestClose(ID) returns True, it means no children blocked us (or no children exist to check).
+           ; So we can proceed.
+        Else
+           ProcedureReturn #True ; Consume event, wait for reply
+        EndIf 
       EndIf
       ; -----------------------
       
@@ -1023,6 +1226,7 @@ Module JSWindow
         CloseManagedWindow(*Window)
       Else
         Debug "HIDE"
+        HideChildWindows(*Window)
         HideManagedWindow(*Window)
       EndIf 
     EndIf    

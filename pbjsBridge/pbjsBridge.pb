@@ -334,10 +334,24 @@ Module JSBridge
              EndIf
              FreeJSON(dataObj)
              
-             If success
+               If success
+
+                If JSWindow::ClosingScope <> 0
                *SourceJSWindow\BypassCloseCheck = #True
                ; Post a close event to retry closing
-               PostEvent(#PB_Event_CloseWindow, *SourceJSWindow\Window, 0)
+               ; PostEvent removed - let CheckCloseProgress handle it
+               
+               If JSWindow::ClosingScope <> 0
+                  JSWindow::CheckCloseProgress()
+                EndIf
+                EndIf 
+               
+             Else
+               
+               If JSWindow::ClosingScope <> 0
+                 JSWindow::CancelClose(*SourceJSWindow\Name + " refused to close")
+               EndIf 
+               
              EndIf
           EndIf
         EndIf
