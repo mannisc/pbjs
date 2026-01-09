@@ -551,7 +551,7 @@
       },
 
       onCloseWindow: function (handler) {
-        window.pbjs.handle(window.pbjs.windowName, "close-window", handler);
+        window.pbjs.handle("system", "close-window", handler);
       },
 
       handle: function (windowName, name, handler) {
