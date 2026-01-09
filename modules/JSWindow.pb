@@ -998,7 +998,13 @@ Module JSWindow
        
        If InScope
           Debug "[CHECK_CLOSE_PROGRESS] InScope=True. Visible=" + Str(JSWindows()\Visible) + " BypassCloseCheck=" + Str(JSWindows()\BypassCloseCheck)
-          If IsWindow(JSWindows()\Window) And JSWindows()\Visible And Not JSWindows()\BypassCloseCheck
+
+          Protected *AppWin.AppWindow = 0
+          If IsWindow(JSWindows()\Window)
+             *AppWin = GetManagedWindowFromWindowHandle(WindowID(JSWindows()\Window))
+          EndIf
+          
+          If *AppWin And *AppWin\Open And JSWindows()\Visible And Not JSWindows()\BypassCloseCheck
              AllReady = #False 
              Debug "[CHECK_CLOSE_PROGRESS] AllReady=False, breaking"
              Break 
@@ -1034,7 +1040,12 @@ Module JSWindow
     Protected CheckStarted = #False 
     
     ForEach JSWindows()
-      If IsWindow(JSWindows()\Window) And JSWindows()\Visible 
+      Protected *AppWin.AppWindow = 0
+      If IsWindow(JSWindows()\Window)
+         *AppWin = GetManagedWindowFromWindowHandle(WindowID(JSWindows()\Window))
+      EndIf
+      
+      If *AppWin And *AppWin\Open And JSWindows()\Visible 
         
          Protected InScope = #False 
          
