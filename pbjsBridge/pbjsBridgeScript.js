@@ -550,6 +550,10 @@
         });
       },
 
+      onCloseWindow: function (handler) {
+        window.pbjs.handle(window.pbjs.windowName, "close-window", handler);
+      },
+
       handle: function (windowName, name, handler) {
         if (!windowName || typeof windowName !== "string")
           throw new Error("windowName must be a non-empty string");
@@ -704,6 +708,26 @@
       const handler = handlers.get(key) || handlers.get(globalKey);
 
       if (!handler) {
+        // Fallback for close-window: if no handler, allow close (return true)
+        if (msg.name === "close-window" && msg.type === "get") {
+          console.log(
+            "[PBJS] No handler for close-window. Auto-approving close."
+          );
+          if (msg.requestId !== undefined && window.pbjsNativeReply) {
+            // Mimic what the event object does internally
+            window.pbjsNativeReply(
+              JSON.stringify({
+                requestId: msg.requestId,
+                toWindow: msg.fromWindow,
+                fromWindow: WINDOW_NAME,
+                data: JSON.stringify({ success: true }),
+                isGetAll: false,
+              })
+            );
+          }
+          return;
+        }
+
         unhandledMessages.push(msg);
         console.warn(
           "Buffered unhandled message: " + msg.name + " [" + msg.type + "]"

@@ -305,25 +305,66 @@ Module JSBridge
       dataJson = GetJSONString(GetJSONMember(JSONValue(json), "data"))
       isGetAll = GetJSONBoolean(GetJSONMember(JSONValue(json), "isGetAll"))
       
-      responseJson = ~"{\"requestId\":" + Str(requestId) + 
-                     ~",\"fromWindow\":\"" + fromWindow + 
-                     ~"\",\"data\":" + dataJson + 
-                     ~",\"isGetAll\":" + Str(isGetAll) + ~"}"
-      
-      Protected targetWindow.i = GetJSWindowByName(toWindow)
-      If targetWindow > -1
-        ForEach JSWindows()
-          If JSWindows()\Window = targetWindow
-            script = "pbjsHandleResponse('" + EscapeJSON(responseJson) + "');"
-            If JSWindows()\Ready
-               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
-            Else
-               AddElement(JSWindows()\PendingMessages())
-               JSWindows()\PendingMessages() = script
-            EndIf
-            Break
+      If toWindow = "system"
+        ; --- SYSTEM MESSAGE HANDLING (e.g. Close Check) ---
+        Protected *SourceJSWindow.JSWindow = 0
+        Protected sourceWindowID.i = GetJSWindowByName(fromWindow)
+        If sourceWindowID > -1
+           ForEach JSWindows()
+             If JSWindows()\Window = sourceWindowID
+               *SourceJSWindow = @JSWindows()
+               Break
+             EndIf
+           Next
+        EndIf
+        
+        If *SourceJSWindow
+          ; Check response data
+          ; dataJson is a JSON string of the object returned by JS
+          Protected dataObj = ParseJSON(#PB_Any, dataJson)
+          If dataObj
+             Protected success = #False
+             Protected val = JSONValue(dataObj)
+             If JSONType(val) = #PB_JSON_Boolean
+                success = GetJSONBoolean(val)
+             ElseIf JSONType(val) = #PB_JSON_Object
+                If GetJSONMember(val, "success")
+                   success = GetJSONBoolean(GetJSONMember(val, "success"))
+                EndIf 
+             EndIf
+             FreeJSON(dataObj)
+             
+             If success
+               *SourceJSWindow\BypassCloseCheck = #True
+               ; Post a close event to retry closing
+               PostEvent(#PB_Event_CloseWindow, *SourceJSWindow\Window, 0)
+             EndIf
           EndIf
-        Next
+        EndIf
+        ; -----------------------------------------------
+      Else
+      
+        responseJson = ~"{\"requestId\":" + Str(requestId) + 
+                       ~",\"fromWindow\":\"" + fromWindow + 
+                       ~"\",\"data\":" + dataJson + 
+                       ~",\"isGetAll\":" + Str(isGetAll) + ~"}"
+        
+        Protected targetWindow.i = GetJSWindowByName(toWindow)
+        If targetWindow > -1
+          ForEach JSWindows()
+            If JSWindows()\Window = targetWindow
+              script = "pbjsHandleResponse('" + EscapeJSON(responseJson) + "');"
+              If JSWindows()\Ready
+                 WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+              Else
+                 AddElement(JSWindows()\PendingMessages())
+                 JSWindows()\PendingMessages() = script
+              EndIf
+              Break
+            EndIf
+          Next
+        EndIf
+      
       EndIf
       
       FreeJSON(json)
@@ -364,6 +405,38 @@ Module JSBridge
       Else
          AddElement(*JSWindow\PendingMessages())
          *JSWindow\PendingMessages() = script
+      EndIf
+    EndIf
+  EndProcedure
+
+  Procedure SendCloseCheck(*JSWindow.JSWindow)
+    If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
+      ; We don't track Request ID yet, assuming 0/autogen is fine for now as we map by window name in reply
+      Protected requestId.i = ElapsedMilliseconds() 
+      
+      Protected messageJson.s
+      messageJson = ~"{\"type\":\"get\",\"fromWindow\":\"system\",\"name\":\"close-window\",\"params\":{},\"data\":{},\"requestId\":" + Str(requestId) + "}"
+      
+      Protected escapedJson.s
+      escapedJson = EscapeJSON(messageJson)
+      
+      Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + escapedJson + "');"
+      If *JSWindow\Ready
+         WebViewExecuteScript(*JSWindow\WebViewGadget, script)
+      Else
+         ; Window not ready, can't ask it. Assume close is allowed?
+         ; Or if not ready, maybe we just close it.
+         ; If not ready, JS probably isn't running well anyway.
+         *JSWindow\BypassCloseCheck = #True
+         JSWindow::CloseJSWindow(*JSWindow\Parent) ; Call close again? No, referencing *JSWindow logic
+         ; Actually CloseJSWindow receives *AppWindow.
+         ; We need to be careful. If we call SendCloseCheck, we expect a reply.
+         ; If not ready, we should probably just set Bypass=#True and call CloseJSWindow again immediately?
+         ; But SendCloseCheck is called FROM CloseJSWindow. 
+         ; The cleanest way is to just let the pending message sit? No, if it's not ready, it will never reply.
+         ; So we force close.
+         *JSWindow\BypassCloseCheck = #True
+         PostEvent(#PB_Event_CloseWindow, *JSWindow\Window, 0)
       EndIf
     EndIf
   EndProcedure

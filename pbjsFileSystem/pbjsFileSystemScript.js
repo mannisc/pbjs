@@ -1,6 +1,11 @@
 (function () {
   "use strict";
 
+  if (window.pbjsFileSystemReady) {
+    console.log("[JSFileSystem] Already initialized, skipping re-init.");
+    return;
+  }
+
   // Helper to generate unique request IDs
   let nextRequestId = 1;
   const pendingRequests = new Map();

@@ -39,6 +39,8 @@ DeclareModule JSWindow
     Open.b
     Visible.b
     
+    BypassCloseCheck.b ; Flag to indicate if we can skip the JS check
+    
     CloseBehaviour.i
     LastLocation.s
     
@@ -837,6 +839,8 @@ Module JSWindow
     Protected *JSWindow.JSWindow
     If IsWindow(*Window\Window)
       *JSWindow = JSWindows(Str(*Window\Window))
+      
+      
       If Not *Window\Closed 
         CloseManagedWindow(*Window)
       EndIf 
@@ -1005,6 +1009,15 @@ Module JSWindow
     
     If closeWindow
       Debug "CLOSE WINDOW"
+      
+      ; --- INTERCEPT CLOSE ---
+      If Not *JSWindow\BypassCloseCheck
+        Debug "Check needed"
+        JSBridge::SendCloseCheck(*JSWindow)
+        ProcedureReturn #True ; Consume event, wait for reply
+      EndIf
+      ; -----------------------
+      
       If *JSWindow\CloseBehaviour = #JSWindow_Behaviour_CloseWindow
         Debug "CLOSE"
         CloseManagedWindow(*Window)
@@ -1053,7 +1066,7 @@ Module JSWindow
   Procedure ForceContentVisible(window)
     Delay(600)
     If IsWindow(window)
-      If Not JSWindows(Str(window))\Ready Or Not JSWindows(Str(window))\Visible
+      If Not JSWindows(Str(window))\Ready 
         PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
       EndIf 
     EndIf 
