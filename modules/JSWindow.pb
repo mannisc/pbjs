@@ -844,7 +844,7 @@ Module JSWindow
   
   Procedure CloseJSWindow(*Window.AppWindow)
     Protected *JSWindow.JSWindow
-    If IsWindow(*Window\Window)
+    If *Window <> 0 And IsWindow(*Window\Window)
       *JSWindow = JSWindows(Str(*Window\Window))
       
       
@@ -880,10 +880,20 @@ Module JSWindow
   ; ============================================================================
   
   Procedure ResetCloseChecks(Scope)
+     Debug "[RESET_CLOSE_CHECKS] ENTER. Scope=" + Str(Scope)
+     Protected LoopCount = 0
      ForEach JSWindows()
+       LoopCount + 1
+       If LoopCount > 100
+         Debug "[RESET_CLOSE_CHECKS] FOREACH LOOP > 100, breaking!"
+         Break
+       EndIf
+       ; Skip empty key entries
+       If MapKey(JSWindows()) = "" : Continue : EndIf
        Protected InScope = #False 
+       Debug "[RESET_CLOSE_CHECKS] Checking window: " + JSWindows()\Name
        
-       If ClosingScope = -1
+       If Scope = -1
          InScope = #True 
        ElseIf IsWindow(JSWindows()\Window)
          If JSWindows()\Window = Scope 
@@ -891,30 +901,42 @@ Module JSWindow
          Else 
             ; Check ancestry
             Protected *Current.AppWindow = JSWindows()\Parent
+            Protected AncestryDepth = 0
             While *Current
+              AncestryDepth + 1
+              If AncestryDepth > 100
+                Debug "[RESET_CLOSE_CHECKS] ANCESTRY LOOP > 100, breaking!"
+                Break
+              EndIf
+              Debug "[RESET_CLOSE_CHECKS] Ancestry depth " + Str(AncestryDepth) + ": Window=" + Str(*Current\Window)
               If *Current\Window = Scope 
                  InScope = #True 
                  Break 
               EndIf 
-              ; Move up
-              If IsWindow(*Current\Window)
-                 Protected *PJS.JSWindow = JSWindows(Str(*Current\Window))
-                 If *PJS
-                   *Current = *PJS\Parent 
-                 Else
-                   Break 
-                 EndIf 
-              Else
-                Break 
-              EndIf 
+              ; Move up - save/restore map position to preserve ForEach iterator
+                If IsWindow(*Current\Window)
+                   PushMapPosition(JSWindows())
+                   If FindMapElement(JSWindows(), Str(*Current\Window))
+                     Protected *ParentRef.AppWindow = JSWindows()\Parent 
+                     PopMapPosition(JSWindows())
+                     *Current = *ParentRef
+                   Else
+                     PopMapPosition(JSWindows())
+                     Break 
+                   EndIf 
+                Else
+                 Break 
+               EndIf 
             Wend 
          EndIf 
        EndIf 
        
        If InScope
+         Debug "[RESET_CLOSE_CHECKS] InScope=True, resetting BypassCloseCheck"
          JSWindows()\BypassCloseCheck = #False 
        EndIf 
      Next 
+     Debug "[RESET_CLOSE_CHECKS] EXIT"
   EndProcedure
 
   Procedure CancelClose(Reason.s="")
@@ -924,6 +946,7 @@ Module JSWindow
   EndProcedure
 
   Procedure CheckCloseProgress()
+    Debug "[CHECK_CLOSE_PROGRESS] ENTER. ClosingScope=" + Str(ClosingScope)
     If ClosingScope = 0
       ProcedureReturn 
     EndIf 
@@ -933,6 +956,7 @@ Module JSWindow
     ForEach JSWindows()
        Protected InScope = #False 
        If MapKey(JSWindows()) = "" : Continue : EndIf 
+       Debug "[CHECK_CLOSE_PROGRESS] Checking window: " + JSWindows()\Name + " (ID=" + Str(JSWindows()\Window) + ")"
        
        If ClosingScope = -1
          InScope = #True 
@@ -942,32 +966,46 @@ Module JSWindow
          Else 
             ; Check ancestry
             Protected *Current.AppWindow = JSWindows()\Parent
+            Protected AncestryDepth = 0
             While *Current
-              If *Current\Window = ClosingScope
-                 InScope = #True 
+              AncestryDepth + 1
+              If AncestryDepth > 100
+                Debug "[CHECK_CLOSE_PROGRESS] INFINITE LOOP DETECTED at depth 100!"
+                Break
+              EndIf
+              Debug "[CHECK_CLOSE_PROGRESS] Ancestry depth " + Str(AncestryDepth) + ": Window=" + Str(*Current\Window)
+               If *Current\Window = ClosingScope
+                  InScope = #True 
+                  Break 
+               EndIf 
+               ; Move up - save/restore map position to preserve ForEach iterator
+               If IsWindow(*Current\Window)
+                  PushMapPosition(JSWindows())
+                  If FindMapElement(JSWindows(), Str(*Current\Window))
+                    Protected *ParentRef.AppWindow = JSWindows()\Parent 
+                    PopMapPosition(JSWindows())
+                    *Current = *ParentRef
+                  Else
+                    PopMapPosition(JSWindows())
+                    Break 
+                  EndIf 
+               Else
                  Break 
-              EndIf 
-              If IsWindow(*Current\Window)
-                 Protected *PJS.JSWindow = JSWindows(Str(*Current\Window))
-                 If *PJS
-                   *Current = *PJS\Parent 
-                 Else
-                   Break 
-                 EndIf 
-              Else
-                Break 
-              EndIf 
-            Wend 
+               EndIf 
+             Wend 
          EndIf 
        EndIf 
        
        If InScope
+          Debug "[CHECK_CLOSE_PROGRESS] InScope=True. Visible=" + Str(JSWindows()\Visible) + " BypassCloseCheck=" + Str(JSWindows()\BypassCloseCheck)
           If IsWindow(JSWindows()\Window) And JSWindows()\Visible And Not JSWindows()\BypassCloseCheck
              AllReady = #False 
+             Debug "[CHECK_CLOSE_PROGRESS] AllReady=False, breaking"
              Break 
           EndIf 
        EndIf
     Next 
+    Debug "[CHECK_CLOSE_PROGRESS] Loop finished. AllReady=" + Str(AllReady) 
     
     If AllReady
       If ClosingScope = -1
@@ -985,6 +1023,7 @@ Module JSWindow
   EndProcedure
 
   Procedure RequestClose(Scope)
+    Debug "[REQUEST_CLOSE] ENTER. Scope=" + Str(Scope) + " ClosingScope=" + Str(ClosingScope)
     
     If ClosingScope <> 0
        ProcedureReturn 0
@@ -1011,18 +1050,22 @@ Module JSWindow
                 If *Current\Window = Scope 
                    InScope = #True 
                    Break 
-                EndIf 
+                EndIf
                 If IsWindow(*Current\Window)
-                   Protected *PJS.JSWindow = JSWindows(Str(*Current\Window))
-                   If *PJS
-                     *Current = *PJS\Parent 
-                   Else
-                     Break 
-                   EndIf 
-                Else
-                  Break 
-                EndIf 
-              Wend 
+                     ; Save/restore map position to preserve ForEach iterator
+                     PushMapPosition(JSWindows())
+                     If FindMapElement(JSWindows(), Str(*Current\Window))
+                       Protected *ParentRef.AppWindow = JSWindows()\Parent 
+                       PopMapPosition(JSWindows())
+                       *Current = *ParentRef
+                     Else
+                       PopMapPosition(JSWindows())
+                       Break 
+                     EndIf 
+                  Else
+                   Break 
+                 EndIf 
+               Wend 
            EndIf 
          EndIf 
          
@@ -1278,8 +1321,8 @@ Module JSWindow
   
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 255
-; FirstLine = 251
-; Folding = ---------
+; CursorPosition = 846
+; FirstLine = 842
+; Folding = ----------
 ; EnableXP
 ; DPIAware

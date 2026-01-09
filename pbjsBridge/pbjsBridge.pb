@@ -424,8 +424,8 @@ Module JSBridge
   EndProcedure
 
   Procedure SendCloseCheck(*JSWindow.JSWindow)
+    Debug "[SEND_CLOSE_CHECK] ENTER. Window=" + *JSWindow\Name
     If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
-      ; We don't track Request ID yet, assuming 0/autogen is fine for now as we map by window name in reply
       Protected requestId.i = ElapsedMilliseconds() 
       
       Protected messageJson.s
@@ -438,19 +438,9 @@ Module JSBridge
       If *JSWindow\Ready
          WebViewExecuteScript(*JSWindow\WebViewGadget, script)
       Else
-         ; Window not ready, can't ask it. Assume close is allowed?
-         ; Or if not ready, maybe we just close it.
-         ; If not ready, JS probably isn't running well anyway.
+         ; Window not ready - auto-approve since JS cannot respond
          *JSWindow\BypassCloseCheck = #True
-         JSWindow::CloseJSWindow(*JSWindow\Parent) ; Call close again? No, referencing *JSWindow logic
-         ; Actually CloseJSWindow receives *AppWindow.
-         ; We need to be careful. If we call SendCloseCheck, we expect a reply.
-         ; If not ready, we should probably just set Bypass=#True and call CloseJSWindow again immediately?
-         ; But SendCloseCheck is called FROM CloseJSWindow. 
-         ; The cleanest way is to just let the pending message sit? No, if it's not ready, it will never reply.
-         ; So we force close.
-         *JSWindow\BypassCloseCheck = #True
-         PostEvent(#PB_Event_CloseWindow, *JSWindow\Window, 0)
+         JSWindow::CheckCloseProgress()
       EndIf
     EndIf
   EndProcedure

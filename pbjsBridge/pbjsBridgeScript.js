@@ -604,14 +604,21 @@
 
   // --- INTERNAL MESSAGE HANDLING (Needs to be global) ---
 
+  // Timeout for buffered messages - handlers should register at module load,
+  // so this is just a safety net. Keep short since normal flow is immediate.
+  const MESSAGE_TIMEOUT_MS = 3000;
+
   function replayUnhandledMessages() {
     if (unhandledMessages.length === 0) return;
     console.log(
       "[PBJS] Replaying " + unhandledMessages.length + " unhandled messages..."
     );
 
+    const now = Date.now();
     for (let i = 0; i < unhandledMessages.length; i++) {
       const msg = unhandledMessages[i];
+      const messageAge = now - (msg._bufferedAt || 0);
+
       const key = msg.fromWindow + ":" + msg.name;
       const globalKey = "*:" + msg.name;
       const handler = handlers.get(key) || handlers.get(globalKey);
@@ -623,6 +630,9 @@
       }
     }
   }
+
+  // Note: No polling interval needed - handlers register synchronously at module load.
+  // replayUnhandledMessages() is called when new handlers register.
 
   function dispatchMessage(msg, handler) {
     log.handler(msg.fromWindow, msg.name, msg.type);
@@ -708,26 +718,10 @@
       const handler = handlers.get(key) || handlers.get(globalKey);
 
       if (!handler) {
-        // Fallback for close-window: if no handler, allow close (return true)
-        if (msg.name === "close-window" && msg.type === "get") {
-          console.log(
-            "[PBJS] No handler for close-window. Auto-approving close."
-          );
-          if (msg.requestId !== undefined && window.pbjsNativeReply) {
-            // Mimic what the event object does internally
-            window.pbjsNativeReply(
-              JSON.stringify({
-                requestId: msg.requestId,
-                toWindow: msg.fromWindow,
-                fromWindow: WINDOW_NAME,
-                data: JSON.stringify({ success: true }),
-                isGetAll: false,
-              })
-            );
-          }
-          return;
-        }
-
+        // Buffer all unhandled messages including close-window
+        // The handler should register soon and the message will replay
+        // Add timestamp so we can discard stale messages after timeout
+        msg._bufferedAt = Date.now();
         unhandledMessages.push(msg);
         console.warn(
           "Buffered unhandled message: " + msg.name + " [" + msg.type + "]"
