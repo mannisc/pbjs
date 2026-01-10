@@ -380,42 +380,10 @@
 
           const check = () => {
             // getWindow is now async
-            this.getWindow(windowName).then((win) => {
-              if (!win) {
-                // win is null/undefined if not found
-                // reject(new Error("Window '" + windowName + "' does not exist"));
-                // Wait, original logic rejected immediately if null?
-                // "Explicit non-existence" - usually getWindow returns null if window is CLOSED/MISSING
-                // Let's assume we keep retrying if it might appear?
-                // Original code: if (win === null) reject...
-                // But getWindow returns undefined on error...
-                // Let's stick to original logic: if explicitly missing, fail?
-                // Actually, waitForWindow usually waits for creation.
-                // If getWindow returns undefined, it might not be created yet.
-                // Let's Retry if undefined.
-
-                if (attempts < maxAttempts) {
-                  attempts++;
-                  setTimeout(check, 100);
-                } else {
-                  reject(
-                    new Error(
-                      "Window '" +
-                        windowName +
-                        "' not found after " +
-                        timeout +
-                        "ms"
-                    )
-                  );
-                }
-                return;
-              }
-
-              // Check ready state
-              this.isWindowReady(windowName).then((isReady) => {
-                if (isReady) {
-                  resolve(win);
-                } else {
+            this.getWindow(windowName)
+              .then((win) => {
+                if (!win) {
+                  // win is null/undefined if not found
                   if (attempts < maxAttempts) {
                     attempts++;
                     setTimeout(check, 100);
@@ -424,15 +392,64 @@
                       new Error(
                         "Window '" +
                           windowName +
-                          "' not ready after " +
+                          "' not found after " +
                           timeout +
                           "ms"
                       )
                     );
                   }
+                  return;
+                }
+
+                // Check ready state
+                this.isWindowReady(windowName)
+                  .then((isReady) => {
+                    if (isReady) {
+                      console.log(
+                        "[PBJS] waitForWindow resolving for " + windowName,
+                        win
+                      );
+                      resolve(win);
+                    } else {
+                      if (attempts < maxAttempts) {
+                        attempts++;
+                        setTimeout(check, 100);
+                      } else {
+                        reject(
+                          new Error(
+                            "Window '" +
+                              windowName +
+                              "' not ready after " +
+                              timeout +
+                              "ms"
+                          )
+                        );
+                      }
+                    }
+                  })
+                  .catch((err) => {
+                    console.error(
+                      "[PBJS] isWindowReady error for " + windowName,
+                      err
+                    );
+                    // Treat check error as not ready -> retry?
+                    if (attempts < maxAttempts) {
+                      attempts++;
+                      setTimeout(check, 100);
+                    } else {
+                      reject(err);
+                    }
+                  });
+              })
+              .catch((err) => {
+                console.error("[PBJS] getWindow error for " + windowName, err);
+                if (attempts < maxAttempts) {
+                  attempts++;
+                  setTimeout(check, 100);
+                } else {
+                  reject(err);
                 }
               });
-            });
           };
           check();
         });
