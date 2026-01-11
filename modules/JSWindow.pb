@@ -892,20 +892,30 @@ Module JSWindow
         CocoaMessage(0, WinID, "orderBack:", #Null)
         
       CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
-        ; Use layered window with minimal alpha AND off-screen
+        ; FIRST: Set alpha to 0 before ANY showing to prevent flash
+        Debug "[PrepareJSWindow] Win: Setting alpha to 0, moving off-screen, showing"
         Protected currentStyle = GetWindowLongPtr_(WinID, #GWL_EXSTYLE)
         SetWindowLongPtr_(WinID, #GWL_EXSTYLE, currentStyle | #WS_EX_LAYERED)
-        SetLayeredWindowAttributes_(WinID, 0, 1, #LWA_ALPHA)
+        SetLayeredWindowAttributes_(WinID, 0, 0, #LWA_ALPHA)  ; Alpha 0 = invisible
+        
+        ; Move off-screen
         ResizeWindow(*Window\Window, minValue, minValue, #PB_Ignore, #PB_Ignore)
+        
+        ; Now show window (it's invisible because alpha=0)
         HideWindow(*Window\Window, #False)
         
       CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
-        ; Linux: use opacity 0 AND off-screen
+        ; FIRST: Set opacity to 0 before ANY showing to prevent flash
+        Debug "[PrepareJSWindow] Linux: Setting opacity to 0, moving off-screen, showing"
         Protected *GtkWidget = WinID
         If *GtkWidget
           gtk_widget_set_opacity_(*GtkWidget, 0.0)
         EndIf
+        
+        ; Move off-screen
         ResizeWindow(*Window\Window, minValue, minValue, #PB_Ignore, #PB_Ignore)
+        
+        ; Now show window (it's invisible because opacity=0)
         HideWindow(*Window\Window, #False)
       CompilerEndIf
       
