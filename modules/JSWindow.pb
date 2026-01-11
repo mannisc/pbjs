@@ -12,6 +12,7 @@ DeclareModule JSWindow
   Enumeration #PB_Event_FirstCustomValue
     #Event_Loaded_Html
     #Event_Content_Ready
+    #Event_Prepare_Complete
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -19,6 +20,7 @@ DeclareModule JSWindow
   EndEnumeration
   
   Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  Declare PrepareJSWindow(*Window.AppWindow)
   Declare OpenJSWindow(*Window.AppWindow )    
   Declare HideJSWindow(*Window.AppWindow, FromManagedWindow)
   Declare CloseJSWindow(*Window.AppWindow)
@@ -56,6 +58,9 @@ DeclareModule JSWindow
     *WindowReadyProc.ProtoWindowReady
     *ResizeProc.ResizeCallback  ; Optional callback for resize/move events
     
+    ; Prepare window state
+    PrepareOriginalX.i
+    PrepareOriginalY.i
     
   EndStructure 
   
@@ -95,7 +100,7 @@ Module JSWindow
     CompilerIf #PB_Compiler_OS = #PB_OS_Linux
       Delay(100) 
     CompilerElseIf #PB_Compiler_OS = #PB_OS_MacOS
-      Delay(100)  
+      Delay(16)  
     CompilerElse 
       Delay(100)  
     CompilerEndIf
@@ -794,27 +799,122 @@ Module JSWindow
   
   Procedure OpenJSWindow(*Window.AppWindow )  
     Protected manualOpen
+    Protected startTime = ElapsedMilliseconds()
+    Debug "[OpenJSWindow] START at " + Str(startTime)
     If IsWindow(*Window\Window)
       *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+      Debug "[OpenJSWindow] *JSWindow\Visible = " + Str(*JSWindow\Visible) + ", *JSWindow\Ready = " + Str(*JSWindow\Ready)
       If *JSWindow\Visible
         manualOpen = #False
+        Debug "[OpenJSWindow] Taking FAST path (manualOpen = #False)"
       Else
         CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
           manualOpen = #True
+          Debug "[OpenJSWindow] Taking SLOW path (manualOpen = #True, Mac)"
         CompilerElse
           manualOpen = #False
+          Debug "[OpenJSWindow] Taking path (manualOpen = #False, non-Mac)"
         CompilerEndIf 
       EndIf 
       *JSWindow\Open = #True
       *JSWindow\Visible = Bool(Not manualOpen)
       *JSWindow\OpenTime = ElapsedMilliseconds()
+      Debug "[OpenJSWindow] Calling OpenManagedWindow at " + Str(ElapsedMilliseconds() - startTime) + "ms"
       OpenManagedWindow(*Window,manualOpen)
+      Debug "[OpenJSWindow] OpenManagedWindow returned at " + Str(ElapsedMilliseconds() - startTime) + "ms"
       If Not *JSWindow\Visible
+        Debug "[OpenJSWindow] Creating ForceContentVisible thread (this adds 600ms delay!)"
         CreateThread(@ForceContentVisible(),*Window\Window)
+      Else
+        Debug "[OpenJSWindow] Skipping ForceContentVisible (already visible)"
       EndIf 
     EndIf 
+    Debug "[OpenJSWindow] END at " + Str(ElapsedMilliseconds() - startTime) + "ms"
   EndProcedure
   
+  ; Thread procedure for non-blocking prepare
+  Procedure PrepareJSWindowThread(windowHandle.i)
+    Protected *JSWindow.JSWindow = JSWindows(Str(windowHandle))
+    If *JSWindow = 0
+      Debug "[PrepareJSWindowThread] JSWindow not found for handle: " + Str(windowHandle)
+      ProcedureReturn
+    EndIf
+    
+    Debug "[PrepareJSWindowThread] Waiting for Ready..."
+    
+    ; Wait for content to be ready (max 2 seconds)
+    Protected i, maxWait = 200
+    For i = 0 To maxWait
+      If *JSWindow\Ready
+        Debug "[PrepareJSWindowThread] Ready after " + Str(i * 10) + "ms"
+        Break
+      EndIf
+      Delay(10)
+    Next
+    
+    ; Mark as visible-ready so OpenJSWindow skips ForceContentVisible delay
+    Debug "[PrepareJSWindowThread] Setting Visible = #True"
+    *JSWindow\Visible = #True
+    
+    ; Post event to main thread to hide window
+    PostEvent(#CustomWindowEvent, windowHandle, 0, #Event_Prepare_Complete)
+    
+    Debug "[PrepareJSWindowThread] END"
+  EndProcedure
+  
+  Procedure PrepareJSWindow(*Window.AppWindow)  
+    Debug "[PrepareJSWindow] START (non-blocking)"
+    If IsWindow(*Window\Window)
+      Protected WinID = WindowID(*Window\Window)
+      Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+      Protected windowHandle = *Window\Window
+      
+      ; Save original position
+      Protected originalX = WindowX(*Window\Window)
+      Protected originalY = WindowY(*Window\Window)
+      *JSWindow\PrepareOriginalX = originalX
+      *JSWindow\PrepareOriginalY = originalY
+      
+      Protected minValue = -10000 ; Off-screen position
+      
+      Debug "[PrepareJSWindow] Initial state: Visible=" + Str(*JSWindow\Visible) + ", Ready=" + Str(*JSWindow\Ready)
+      
+      CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+        ; FIRST: Set alpha to 0 before ANY showing to prevent flash
+        Debug "[PrepareJSWindow] Mac: Setting alpha to 0, moving off-screen, orderBack"
+        Protected alpha.d = 0.0
+        CocoaMessage(0, WinID, "setAlphaValue:@", @alpha)
+        
+        ; Move window off-screen as extra safety
+        ResizeWindow(*Window\Window, minValue, minValue, #PB_Ignore, #PB_Ignore)
+        
+        ; Now show window behind others (it's invisible because alpha=0)
+        CocoaMessage(0, WinID, "orderBack:", #Null)
+        
+      CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
+        ; Use layered window with minimal alpha AND off-screen
+        Protected currentStyle = GetWindowLongPtr_(WinID, #GWL_EXSTYLE)
+        SetWindowLongPtr_(WinID, #GWL_EXSTYLE, currentStyle | #WS_EX_LAYERED)
+        SetLayeredWindowAttributes_(WinID, 0, 1, #LWA_ALPHA)
+        ResizeWindow(*Window\Window, minValue, minValue, #PB_Ignore, #PB_Ignore)
+        HideWindow(*Window\Window, #False)
+        
+      CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
+        ; Linux: use opacity 0 AND off-screen
+        Protected *GtkWidget = WinID
+        If *GtkWidget
+          gtk_widget_set_opacity_(*GtkWidget, 0.0)
+        EndIf
+        ResizeWindow(*Window\Window, minValue, minValue, #PB_Ignore, #PB_Ignore)
+        HideWindow(*Window\Window, #False)
+      CompilerEndIf
+      
+      ; Start background thread to wait for Ready
+      CreateThread(@PrepareJSWindowThread(), windowHandle)
+      
+      Debug "[PrepareJSWindow] Thread started, returning immediately"
+    EndIf 
+  EndProcedure
   
   
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
@@ -1248,6 +1348,32 @@ Module JSWindow
                 CallFunctionFast(*JSWindow\WindowReadyProc, *Window , *JSWindow)
               EndIf 
             EndIf 
+            
+          Case #Event_Prepare_Complete
+            Debug "[Event_Prepare_Complete] Hiding and restoring position for " + *JSWindow\Name
+            
+            Protected PrepWinID = WindowID(*JSWindow\Window)
+            
+            CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+              ; Use Cocoa to hide - orderOut removes from screen without affecting PB state
+              CocoaMessage(0, PrepWinID, "orderOut:", #Null)
+              
+              ; Restore alpha to 1.0
+              Protected restoreAlpha.d = 1.0
+              CocoaMessage(0, PrepWinID, "setAlphaValue:@", @restoreAlpha)
+            CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
+              HideWindow(*JSWindow\Window, #True)
+              SetLayeredWindowAttributes_(PrepWinID, 0, 255, #LWA_ALPHA)
+            CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
+              HideWindow(*JSWindow\Window, #True)
+              gtk_widget_set_opacity_(PrepWinID, 1.0)
+            CompilerEndIf
+            
+            ; Restore original position
+            ResizeWindow(*JSWindow\Window, *JSWindow\PrepareOriginalX, *JSWindow\PrepareOriginalY, #PB_Ignore, #PB_Ignore)
+            
+            Debug "[Event_Prepare_Complete] Done for " + *JSWindow\Name
+            
         EndSelect 
         
     EndSelect
@@ -1332,8 +1458,8 @@ Module JSWindow
   
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 731
-; FirstLine = 718
+; CursorPosition = 102
+; FirstLine = 97
 ; Folding = ----------
 ; EnableXP
 ; DPIAware
