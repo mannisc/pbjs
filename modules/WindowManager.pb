@@ -29,6 +29,9 @@ DeclareModule WindowManager
     WasOpen.b
   EndStructure
   
+  Prototype.i OnWindowRemoved(*Window.AppWindow)
+  Declare SetOnWindowRemovedCallback(*proc.OnWindowRemoved)
+  
   Declare InitWindowManager()
   Declare AddManagedWindow(Title.s, window, *HandleProc,*HideProc = 0, *CloseProc = 0, *CleanupProc = 0)
   Declare OpenManagedWindow(*Window.AppWindow,manualOpen=#False)
@@ -58,6 +61,7 @@ Module WindowManager
   
   
   #Timer_CheckDesktop = 1
+  Global *OnWindowRemoved.OnWindowRemoved = 0
   
   Structure HandleInfo
     *Window
@@ -210,12 +214,25 @@ Module WindowManager
         EndIf
       EndIf
       ForEach ManagedWindows()
+        
         If ManagedWindows()\HandleProc
           
           If Event = #CustomWindowEvent Or ManagedWindows()\Open     
-            If EventWindow = ManagedWindows()\Window And 
-               KeepWindow = CallFunctionFast(ManagedWindows()\HandleProc, @ManagedWindows(), Event,EventGadget,EventType)
+            If EventWindow = ManagedWindows()\Window
+              ; Capture handle key while window is still valid (HandleProc may close it and invalidate WindowID())
+              Protected closedHnd.s = Str(WindowID(ManagedWindows()\Window))
+              KeepWindow = CallFunctionFast(ManagedWindows()\HandleProc, @ManagedWindows(), Event,EventGadget,EventType)
               If Not KeepWindow
+                ; Notify app so it can clear globals that point at this list element (e.g. *AgentWindow)
+                If *OnWindowRemoved
+                  CallFunctionFast(*OnWindowRemoved, @ManagedWindows())
+                EndIf
+                ; Remove handle map entry before deleting list element to avoid dangling pointer
+                If FindMapElement(ManagedWindowsHandles(), closedHnd)
+                  DeleteMapElement(ManagedWindowsHandles(), closedHnd)
+                EndIf
+                ;Main Loop
+               
                 DeleteElement(ManagedWindows())
                 Break
               EndIf
@@ -240,10 +257,11 @@ Module WindowManager
         EventWindow = EventWindow()
         EventGadget = EventGadget()
         EventType = EventType()
-        If *HandleMainEvent = 0 Or *HandleMainEvent( Event, EventWindow, EventGadget, EventType) = 0
+        If IsWindow(EventWindow) And (*HandleMainEvent = 0 Or *HandleMainEvent( Event, EventWindow, EventGadget, EventType) = 0)
           HandleWindowEvent(Event, EventWindow, EventGadget,EventType)   
         EndIf 
       EndIf 
+
       OpenedWindowExists = #False
       
       If *ShouldKeepRunning <> 0
@@ -267,6 +285,10 @@ Module WindowManager
   EndProcedure
   
   
+  
+  Procedure SetOnWindowRemovedCallback(*proc.OnWindowRemoved)
+    *OnWindowRemoved = *proc
+  EndProcedure
   
   Procedure GetManagedWindowFromWindowHandle(hWnd)
     If FindMapElement(ManagedWindowsHandles(),Str(hwnd))
@@ -309,3 +331,9 @@ Module WindowManager
     Next 
   EndProcedure 
 EndModule
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 234
+; FirstLine = 215
+; Folding = ---
+; EnableXP
+; DPIAware

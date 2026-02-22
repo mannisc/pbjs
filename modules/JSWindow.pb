@@ -13,6 +13,8 @@ DeclareModule JSWindow
     #Event_Loaded_Html
     #Event_Content_Ready
     #Event_Prepare_Complete
+    #Event_Close_JSDelayed
+    #Event_FinalizeClose  ; macOS: run CloseWindow on main thread after delay so webview callbacks can drain
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -64,12 +66,18 @@ DeclareModule JSWindow
     
   EndStructure 
   
+  Structure ShowGadgetParams
+    window.i
+    gadget.i
+  EndStructure
+  
   Global NewMap JSWindows.JSWindow()
   Global NewMap WindowsByName.i()
   
   Global AppClosing = #False 
   Global ClosingScope = 0 ; 0: None, -1: App, >0: WindowID
   Global ReloadedJS = #False 
+  Global JSWindowMutex = CreateMutex()
   
   Declare RequestClose(Scope)
   Declare CheckCloseProgress()
@@ -154,21 +162,23 @@ Module JSWindow
     If window <> 0
       *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
       
-      If Not JSWindows(Str(window))\Ready
-        LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
-      Else
-        LogToDebugFile("JSReadyState: Subsequent Ready (Reload) for window " + Str(window))
-      EndIf
+      LockMutex(JSWindowMutex)
+      If FindMapElement(JSWindows(), Str(window))
+        If Not JSWindows()\Ready
+          LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
+        Else
+          LogToDebugFile("JSReadyState: Subsequent Ready (Reload) for window " + Str(window))
+        EndIf
+        
+        JSWindows()\Ready = #True
+        CreateThread(@MakeContentVisible(), window)
+        ; FLUSH PENDING MESSAGES
+        JSBridge::FlushPendingMessages(@JSWindows()) 
+      EndIf 
+      UnlockMutex(JSWindowMutex)
       
-      JSWindows(Str(window))\Ready = #True
-      CreateThread(@MakeContentVisible(),window)
       ReloadedJS = #True
-    Else
-      LogToDebugFile("ERROR: Invalid Window ID (0)")
     EndIf
-    
-    ; FLUSH PENDING MESSAGES
-    JSBridge::FlushPendingMessages(@JSWindows(Str(window))) 
     
     ProcedureReturn UTF8(~"{\"success\":true}")
   EndProcedure
@@ -189,14 +199,21 @@ Module JSWindow
     Debug "Looking for: " + windowName
     Debug "Total Windows in Map: " + Str(MapSize(JSWindows()))
     
+    LockMutex(JSWindowMutex)
     ForEach JSWindows()
       Debug " - Map Entry: " + JSWindows()\Name + " -> " + Str(JSWindows()\Window)
       If Trim(JSWindows()\Name)=Trim(windowName)
         Debug "MATCH FOUND!"
-        ProcedureReturn UTF8(~"{\"id\":"+Str(JSWindows()\Window)+"}")
+        *FoundWinId = JSWindows()\Window
+        found = #True
         Break 
       EndIf 
     Next 
+    UnlockMutex(JSWindowMutex)
+    
+    If found
+      ProcedureReturn UTF8(~"{\"id\":"+Str(*FoundWinId)+"}")
+    EndIf
     
     Debug "NO MATCH FOUND for " + windowName
     
@@ -242,10 +259,14 @@ Module JSWindow
             WindowParameters.s = Parameters(1)
             If WindowParameters <> ""
               ; Find JSWindow
-              *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
-              If *JSWindow 
-                JSBridge::SendParameters(*JSWindow, WindowParameters)
+              LockMutex(JSWindowMutex)
+              If FindMapElement(JSWindows(), Str(*Window\Window))
+                Protected *JSWindow.JSWindow = @JSWindows()
+                If *JSWindow 
+                  JSBridge::SendParameters(*JSWindow, WindowParameters)
+                EndIf
               EndIf
+              UnlockMutex(JSWindowMutex)
             EndIf
           EndIf
           
@@ -322,7 +343,8 @@ Module JSWindow
       If IsWindow(window) 
         *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
         If *Window
-          CloseJSWindow(*Window) 
+          ; Defer closing to allow the procedure to return safely to the webview
+          PostEvent(#CustomWindowEvent, window, 0, #Event_Close_JSDelayed)
           ProcedureReturn UTF8(~"{\"success\":true}")  
         EndIf 
       EndIf 
@@ -342,6 +364,7 @@ Module JSWindow
       FreeJSON(json)
       
       ; Try to find by Name first
+      LockMutex(JSWindowMutex)
       ForEach JSWindows()
         If Trim(JSWindows()\Name) = Trim(Param)
           If IsWindow(JSWindows()\Window)
@@ -351,6 +374,7 @@ Module JSWindow
           EndIf
         EndIf
       Next
+      UnlockMutex(JSWindowMutex)
       
       ; If not found by name, try ID
       If Not found
@@ -435,9 +459,10 @@ Module JSWindow
     EndProcedure
     
     
-    Procedure ShowGadgetThread(gadget)
+    Procedure ShowGadgetThread(*params.ShowGadgetParams)
       Delay(200)
-      HideGadget(gadget,#False)
+      PostEvent(#PB_Event_Gadget, *params\window, *params\gadget, #PB_EventType_FirstCustomValue + 100)
+      FreeMemory(*params)
     EndProcedure 
     
     
@@ -452,7 +477,15 @@ Module JSWindow
           Protected *State.MacOSResizeState = @MacOSResizeStates()
           
           
-          *JSWindow.JSWIndow = JSWindows(Str(MacOSResizeStates()\Window\Window))
+          LockMutex(JSWindowMutex)
+          If FindMapElement(JSWindows(), Str(MacOSResizeStates()\Window\Window))
+            *JSWindow.JSWindow = @JSWindows()
+          Else
+            UnlockMutex(JSWindowMutex)
+            UnlockMutex(MacOSResizeMonitorMutex)
+            ProcedureReturn
+          EndIf
+          UnlockMutex(JSWindowMutex)
           
           webViewGadget = *JSWindow\WebViewGadget
           
@@ -476,14 +509,20 @@ Module JSWindow
             HideGadget(webViewGadget,#True)
             CocoaMessage(0, WindowID(MacOSResizeStates()\Window\Window), "display")
             
-            CreateThread(@ShowGadgetThread(),webViewGadget)
+            Protected *params.ShowGadgetParams = AllocateMemory(SizeOf(ShowGadgetParams))
+            *params\window = MacOSResizeStates()\Window\Window
+            *params\gadget = webViewGadget
+            CreateThread(@ShowGadgetThread(), *params)
           ElseIf MacOSResizeStates()\isFulscreen 
             MacOSResizeStates()\isFulscreen = #False
             
             HideGadget(webViewGadget,#True)
             CocoaMessage(0, WindowID(MacOSResizeStates()\Window\Window), "display")
             
-            CreateThread(@ShowGadgetThread(),webViewGadget)
+            Protected *params2.ShowGadgetParams = AllocateMemory(SizeOf(ShowGadgetParams))
+            *params2\window = MacOSResizeStates()\Window\Window
+            *params2\gadget = webViewGadget
+            CreateThread(@ShowGadgetThread(), *params2)
           EndIf 
           
           Protected currentW.i = WindowWidth(*State\Window\Window)
@@ -697,9 +736,14 @@ Module JSWindow
   
   
   Procedure LoadHtml(window)
-    html.s = PeekS(JSWindows(Str(window))\HtmlStart,JSWindows(Str(window))\HtmlEnd-JSWindows(Str(window))\HtmlStart, #PB_UTF8|#PB_ByteLength  )
-    JSWindows(Str(window))\Html.s = html
-    PostEvent(#CustomWindowEvent, window, 0,#Event_Loaded_Html)
+    LockMutex(JSWindowMutex)
+    If FindMapElement(JSWindows(), Str(window))
+      Protected *JSWin.JSWindow = @JSWindows()
+      Protected html.s = PeekS(*JSWin\HtmlStart, *JSWin\HtmlEnd - *JSWin\HtmlStart, #PB_UTF8|#PB_ByteLength)
+      *JSWin\Html = html
+      PostEvent(#CustomWindowEvent, window, 0, #Event_Loaded_Html)
+    EndIf 
+    UnlockMutex(JSWindowMutex)
   EndProcedure 
   
   
@@ -753,7 +797,9 @@ Module JSWindow
       
       BindWebviewEvents(webViewGadget)
       
-      *JSWindow.JSWindow = JSWindows(Str(window)) 
+      LockMutex(JSWindowMutex)
+      *JSWindow.JSWindow = @JSWindows(Str(window))
+      UnlockMutex(JSWindowMutex) 
       
       *JSWindow\Window = window
       *JSWindow\Name = windowName
@@ -788,7 +834,7 @@ Module JSWindow
       
       ProcedureReturn *Window
     EndIf 
-    ProcedureReturn -1
+    ProcedureReturn 0
   EndProcedure 
   
   
@@ -801,8 +847,22 @@ Module JSWindow
     Protected manualOpen
     Protected startTime = ElapsedMilliseconds()
     Debug "[OpenJSWindow] START at " + Str(startTime)
+    
+    If *Window = 0
+      Debug "[OpenJSWindow] ERROR: *Window is null"
+      ProcedureReturn
+    EndIf
+    
     If IsWindow(*Window\Window)
-      *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+      LockMutex(JSWindowMutex)
+      If FindMapElement(JSWindows(), Str(*Window\Window))
+        *JSWindow.JSWindow = @JSWindows()
+      Else
+        UnlockMutex(JSWindowMutex)
+        ProcedureReturn
+      EndIf
+      UnlockMutex(JSWindowMutex)
+      
       Debug "[OpenJSWindow] *JSWindow\Visible = " + Str(*JSWindow\Visible) + ", *JSWindow\Ready = " + Str(*JSWindow\Ready)
       If *JSWindow\Visible
         manualOpen = #False
@@ -834,29 +894,32 @@ Module JSWindow
   
   ; Thread procedure for non-blocking prepare
   Procedure PrepareJSWindowThread(windowHandle.i)
-    Protected *JSWindow.JSWindow = JSWindows(Str(windowHandle))
-    If *JSWindow = 0
-      Debug "[PrepareJSWindowThread] JSWindow not found for handle: " + Str(windowHandle)
-      ProcedureReturn
-    EndIf
+    Protected ready = #False
     
     Debug "[PrepareJSWindowThread] Waiting for Ready..."
     
     ; Wait for content to be ready (max 2 seconds)
     Protected i, maxWait = 200
     For i = 0 To maxWait
-      If *JSWindow\Ready
-        Debug "[PrepareJSWindowThread] Ready after " + Str(i * 10) + "ms"
-        Break
+      LockMutex(JSWindowMutex)
+      If FindMapElement(JSWindows(), Str(windowHandle))
+        If JSWindows()\Ready
+          ready = #True
+        EndIf
+      Else
+        ; Window gone!
+        UnlockMutex(JSWindowMutex)
+        ProcedureReturn
       EndIf
+      UnlockMutex(JSWindowMutex)
+      
+      If ready: Break: EndIf
       Delay(10)
     Next
     
-    ; Mark as visible-ready so OpenJSWindow skips ForceContentVisible delay
-    Debug "[PrepareJSWindowThread] Setting Visible = #True"
-    *JSWindow\Visible = #True
+    Debug "[PrepareJSWindowThread] Posting Event_Prepare_Complete"
     
-    ; Post event to main thread to hide window
+    ; Post event to main thread to hide window and set states
     PostEvent(#CustomWindowEvent, windowHandle, 0, #Event_Prepare_Complete)
     
     Debug "[PrepareJSWindowThread] END"
@@ -864,9 +927,23 @@ Module JSWindow
   
   Procedure PrepareJSWindow(*Window.AppWindow)  
     Debug "[PrepareJSWindow] START (non-blocking)"
+    
+    If *Window = 0
+      Debug "[PrepareJSWindow] ERROR: *Window is null"
+      ProcedureReturn
+    EndIf
+    
     If IsWindow(*Window\Window)
       Protected WinID = WindowID(*Window\Window)
-      Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+      LockMutex(JSWindowMutex)
+      If FindMapElement(JSWindows(), Str(*Window\Window))
+        Protected *JSWindow.JSWindow = @JSWindows()
+      Else
+        UnlockMutex(JSWindowMutex)
+        ProcedureReturn
+      EndIf
+      UnlockMutex(JSWindowMutex)
+      
       Protected windowHandle = *Window\Window
       
       ; Save original position
@@ -928,6 +1005,7 @@ Module JSWindow
   
   
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
+    If *Window = 0 : ProcedureReturn : EndIf
     If IsWindow(*Window\Window)
       Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
       
@@ -952,33 +1030,82 @@ Module JSWindow
   EndProcedure
   
   
+
+  
+  CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+    ; Post CloseWindow to main thread after delay so webview dispatch_impl callbacks can drain (avoids EXC_BAD_ACCESS in cocoa_wkwebview_engine).
+    Procedure MacPostFinalizeClose(windowNum.i)
+      Delay(1000)
+      PostEvent(#CustomWindowEvent, windowNum, 0, #Event_FinalizeClose)
+    EndProcedure
+  CompilerEndIf
+  
   Procedure CloseJSWindow(*Window.AppWindow)
+    If *Window = 0 : ProcedureReturn : EndIf
+    
     Protected *JSWindow.JSWindow
-    If *Window <> 0 And IsWindow(*Window\Window)
-      *JSWindow = JSWindows(Str(*Window\Window))
+    Protected *Parent.AppWindow = 0
+    Protected WindowName.s = "Unknown"
+    Protected WindowID = *Window\Window
+    
+    Debug "[CloseJSWindow] ENTER for Window ID: " + Str(WindowID)
+    
+    If *Window <> 0 And IsWindow(WindowID)
       
+      LockMutex(JSWindowMutex)
+      If FindMapElement(JSWindows(), Str(WindowID))
+        *JSWindow = @JSWindows()
+        WindowName = *JSWindow\Name
+        Debug "[CloseJSWindow] Found JSWindow record: " + WindowName
+      Else
+        Debug "[CloseJSWindow] WARNING: JSWindow record not found for ID: " + Str(WindowID)
+        *JSWindow = 0
+      EndIf
+      UnlockMutex(JSWindowMutex)
       
-      If Not *Window\Closed 
-        CloseManagedWindow(*Window)
+      If *JSWindow 
+        *Parent = *JSWindow\Parent
       EndIf 
+      
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+        Debug "[CloseJSWindow] Unregistering MacOS resize notifications"
         MacOSUnregisterResizeNotifications(*Window)
       CompilerEndIf
-      If IsWindow(*Window\Window)
-        DeleteMapElement(JSWindows(), Str(*Window\Window))
-        CloseWindow(*Window\Window)
+      
+      If Not *Window\Closed 
+        Debug "[CloseJSWindow] Calling CloseManagedWindow"
+        CloseManagedWindow(*Window)
+      EndIf 
+     
+      If IsWindow(WindowID)
+        Debug "[CloseJSWindow] Deleting Map Element, hiding window; native close deferred (macOS)"
+        DeleteMapElement(JSWindows(), Str(WindowID))
+        
+        CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+          HideWindow(WindowID, #True)
+          CreateThread(@MacPostFinalizeClose(), WindowID)
+        CompilerElse
+          CloseWindow(WindowID)
+        CompilerEndIf
       EndIf 
       
-      If *JSWindow And *JSWindow\Parent
-        If IsWindow(*JSWindow\Parent\Window)
-          SetActiveWindow(*JSWindow\Parent\Window)
+      If *Parent
+        If IsWindow(*Parent\Window)
+          Debug "[CloseJSWindow] Activating Parent Window: " + Str(*Parent\Window)
+          SetActiveWindow(*Parent\Window)
         EndIf
       EndIf
+      
+      Debug "[CloseJSWindow] SUCCESS for " + WindowName + " (" + Str(WindowID) + ")"
+    Else
+      Debug "[CloseJSWindow] ABORT: Window ID " + Str(WindowID) + " is invalid or *Window is 0"
     EndIf 
+
   EndProcedure
   
   
   Procedure ResizeJSWindow(*Window.AppWindow, x, y, w, h)
+    If *Window = 0 : ProcedureReturn : EndIf
     If IsWindow(*Window\Window)
       ResizeWindow( *Window\Window,x, y, w, h)
     EndIf 
@@ -992,6 +1119,7 @@ Module JSWindow
   Procedure ResetCloseChecks(Scope)
      Debug "[RESET_CLOSE_CHECKS] ENTER. Scope=" + Str(Scope)
      Protected LoopCount = 0
+     LockMutex(JSWindowMutex)
      ForEach JSWindows()
        LoopCount + 1
        If LoopCount > 100
@@ -1045,8 +1173,9 @@ Module JSWindow
          Debug "[RESET_CLOSE_CHECKS] InScope=True, resetting BypassCloseCheck"
          JSWindows()\BypassCloseCheck = #False 
        EndIf 
-     Next 
-     Debug "[RESET_CLOSE_CHECKS] EXIT"
+         Next 
+    UnlockMutex(JSWindowMutex)
+    Debug "[RESET_CLOSE_CHECKS] EXIT"
   EndProcedure
 
   Procedure CancelClose(Reason.s="")
@@ -1063,6 +1192,7 @@ Module JSWindow
     
     Protected AllReady = #True 
     
+    LockMutex(JSWindowMutex)
     ForEach JSWindows()
        Protected InScope = #False 
        If MapKey(JSWindows()) = "" : Continue : EndIf 
@@ -1125,16 +1255,17 @@ Module JSWindow
     
     If AllReady
       If ClosingScope = -1
+        UnlockMutex(JSWindowMutex)
         End 
       Else
-        Protected *RootJS.JSWindow = JSWindows(Str(ClosingScope))
-        If *RootJS
-           *RootJS\BypassCloseCheck = #True 
+        If FindMapElement(JSWindows(), Str(ClosingScope))
+           JSWindows()\BypassCloseCheck = #True 
            PostEvent(#PB_Event_CloseWindow, ClosingScope, 0)
         EndIf 
         ClosingScope = 0
       EndIf 
     EndIf 
+    UnlockMutex(JSWindowMutex)
     
   EndProcedure
 
@@ -1263,7 +1394,14 @@ Module JSWindow
   Procedure.i HandleEvent(*Window.AppWindow,Event.i, Gadget.i, Type.i)
     
     
-    *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+       LockMutex(JSWindowMutex)
+    If FindMapElement(JSWindows(), Str(*Window\Window))
+      *JSWindow.JSWindow = @JSWindows()
+    Else
+      UnlockMutex(JSWindowMutex)
+      ProcedureReturn #True
+    EndIf
+    UnlockMutex(JSWindowMutex)
     
     CompilerIf #Debug_On
       webViewGadget = *JSWindow\WebViewGadget
@@ -1296,8 +1434,14 @@ Module JSWindow
       Case #PB_Event_CloseWindow
         closeWindow = #True
       Case #PB_Event_Gadget
-        Select Gadget
-        EndSelect
+        If Type = #PB_EventType_FirstCustomValue + 100
+           If IsGadget(Gadget)
+             HideGadget(Gadget, #False)
+           EndIf 
+        Else
+          Select Gadget
+          EndSelect
+        EndIf 
         
       Case #PB_Event_SizeWindow
         
@@ -1382,7 +1526,14 @@ Module JSWindow
             ; Restore original position
             ResizeWindow(*JSWindow\Window, *JSWindow\PrepareOriginalX, *JSWindow\PrepareOriginalY, #PB_Ignore, #PB_Ignore)
             
+            *JSWindow\Visible = #True
             Debug "[Event_Prepare_Complete] Done for " + *JSWindow\Name
+            
+          Case #Event_Close_JSDelayed
+            Debug "[Event_Close_JSDelayed] Closing " + *JSWindow\Name
+            *JSWindow\BypassCloseCheck = #True
+             CloseManagedWindow(*Window)
+             ProcedureReturn #False
             
         EndSelect 
         
@@ -1414,6 +1565,7 @@ Module JSWindow
       If *JSWindow\CloseBehaviour = #JSWindow_Behaviour_CloseWindow
         Debug "CLOSE"
         CloseManagedWindow(*Window)
+        ProcedureReturn #False
       Else
         Debug "HIDE"
         HideChildWindows(*Window)
@@ -1445,9 +1597,16 @@ Module JSWindow
       Select uMsg
           
         Case #WM_SIZE , #WM_SIZING
-          w = WindowWidth(*Window\Window)
-          h = WindowHeight(*Window\Window)
-          UpdateWebViewScale(JSWindows(Str(*Window\Window)), w, h)  
+          Protected webviewGadget = 0
+          LockMutex(JSWindowMutex)
+          If FindMapElement(JSWindows(), Str(*Window\Window))
+            webviewGadget = JSWindows()\WebViewGadget
+            Protected *JSWinLookup.JSWindow = @JSWindows()
+            w = WindowWidth(*Window\Window)
+            h = WindowHeight(*Window\Window)
+            UpdateWebViewScale(*JSWinLookup, w, h)  
+          EndIf
+          UnlockMutex(JSWindowMutex)
           ProcedureReturn #True
           
       EndSelect
@@ -1458,9 +1617,15 @@ Module JSWindow
   
   
   Procedure ForceContentVisible(window)
-    Delay(600)
+    Delay(300)
     If IsWindow(window)
-      If Not JSWindows(Str(window))\Ready 
+      LockMutex(JSWindowMutex)
+      Protected isReady = #False
+      If FindMapElement(JSWindows(), Str(window))
+        isReady = JSWindows()\Ready
+      EndIf
+      UnlockMutex(JSWindowMutex)
+      If Not isReady 
         PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
       EndIf 
     EndIf 
@@ -1468,8 +1633,8 @@ Module JSWindow
   
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 102
-; FirstLine = 97
+; CursorPosition = 1076
+; FirstLine = 1072
 ; Folding = ----------
 ; EnableXP
 ; DPIAware

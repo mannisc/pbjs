@@ -44,7 +44,7 @@
             level: level,
             message: message,
             window: WINDOW_NAME,
-          })
+          }),
         );
       } catch (err) {
         // Avoid infinite loops
@@ -72,7 +72,7 @@
         "color: #2196F3; font-weight: bold",
         "color: #FF9800; font-weight: bold",
         "color: #9E9E9E",
-        { params: params, data: data }
+        { params: params, data: data },
       );
     },
     response: (fromWindow, name, response, isError) => {
@@ -82,7 +82,7 @@
           "color: #F44336; font-weight: bold",
           "color: #FF9800; font-weight: bold",
           "color: #9E9E9E",
-          response
+          response,
         );
       } else {
         console.log(
@@ -91,7 +91,7 @@
           "color: #FF9800; font-weight: bold",
           "color: #9E9E9E",
           "color: #4CAF50",
-          response
+          response,
         );
       }
     },
@@ -101,7 +101,7 @@
         "color: #9C27B0; font-weight: bold",
         "color: #FF9800; font-weight: bold",
         "color: #9E9E9E",
-        "color: #607D8B; font-size: 0.9em"
+        "color: #607D8B; font-size: 0.9em",
       );
     },
     error: (context, error) => {
@@ -109,7 +109,7 @@
         "%c✗ ERROR %c" + context,
         "color: #F44336; font-weight: bold",
         "color: #9E9E9E",
-        error
+        error,
       );
     },
   };
@@ -189,7 +189,7 @@
           .then((winData) => {
             console.log(
               "pbjs.getWindow(" + windowName + ") raw data:",
-              winData
+              winData,
             );
 
             if (!winData) return undefined;
@@ -216,7 +216,7 @@
                   "[PBJS] open called for:",
                   param,
                   "with params:",
-                  params
+                  params,
                 );
                 return new Promise((resolve) => {
                   if (window.pbjsNativeOpenWindow && param) {
@@ -229,7 +229,7 @@
                     console.log(
                       "[PBJS] calling pbjsNativeOpenWindow with:",
                       stringParam,
-                      paramJson
+                      paramJson,
                     );
 
                     const promise = paramJson
@@ -394,8 +394,8 @@
                           windowName +
                           "' not found after " +
                           timeout +
-                          "ms"
-                      )
+                          "ms",
+                      ),
                     );
                   }
                   return;
@@ -407,7 +407,7 @@
                     if (isReady) {
                       console.log(
                         "[PBJS] waitForWindow resolving for " + windowName,
-                        win
+                        win,
                       );
                       resolve(win);
                     } else {
@@ -421,8 +421,8 @@
                               windowName +
                               "' not ready after " +
                               timeout +
-                              "ms"
-                          )
+                              "ms",
+                          ),
                         );
                       }
                     }
@@ -430,7 +430,7 @@
                   .catch((err) => {
                     console.error(
                       "[PBJS] isWindowReady error for " + windowName,
-                      err
+                      err,
                     );
                     // Treat check error as not ready -> retry?
                     if (attempts < maxAttempts) {
@@ -493,7 +493,7 @@
                 if (pendingRequests.has(requestId)) {
                   pendingRequests.delete(requestId);
                   const error = new Error(
-                    "Request timeout for " + name + " to " + windowName
+                    "Request timeout for " + name + " to " + windowName,
                   );
                   log.error("invoke timeout", error);
                   reject(error);
@@ -509,7 +509,7 @@
                   params: JSON.stringify(params || {}),
                   data: JSON.stringify(data || {}),
                   requestId: requestId,
-                })
+                }),
               );
             });
           })
@@ -547,7 +547,7 @@
           });
 
           setTimeout(() => {
-            if (getAllPendingRequests.has(requestId)) {
+            if (getAllPendingRequests.get(requestId)) {
               const pending = getAllPendingRequests.get(requestId);
               getAllPendingRequests.delete(requestId);
               resolve(pending.responses);
@@ -562,9 +562,59 @@
               params: JSON.stringify(params || {}),
               data: JSON.stringify(data || {}),
               requestId: requestId,
-            })
+            }),
           );
         });
+      },
+
+      send: function (windowName, name, params, data) {
+        if (!windowName || typeof windowName !== "string") {
+          const error = new Error("windowName must be a non-empty string");
+          log.error("send", error);
+          return;
+        }
+        if (!name || typeof name !== "string") {
+          const error = new Error("name must be a non-empty string");
+          log.error("send", error);
+          return;
+        }
+
+        log.invoke(windowName, name, params, data);
+
+        if (window.pbjsNativeSend) {
+          window.pbjsNativeSend(
+            JSON.stringify({
+              type: "send",
+              fromWindow: WINDOW_NAME,
+              toWindow: windowName,
+              name: name,
+              params: JSON.stringify(params || {}),
+              data: JSON.stringify(data || {}),
+            }),
+          );
+        }
+      },
+
+      sendAll: function (name, params, data) {
+        if (!name || typeof name !== "string") {
+          const error = new Error("name must be a non-empty string");
+          log.error("sendAll", error);
+          return;
+        }
+
+        log.invoke("ALL WINDOWS", name, params, data);
+
+        if (window.pbjsNativeSendAll) {
+          window.pbjsNativeSendAll(
+            JSON.stringify({
+              type: "sendAll",
+              fromWindow: WINDOW_NAME,
+              name: name,
+              params: JSON.stringify(params || {}),
+              data: JSON.stringify(data || {}),
+            }),
+          );
+        }
       },
 
       onCloseWindow: function (handler) {
@@ -614,7 +664,7 @@
     console.log(
       "%c✓ PBJS Bridge Ready %c" + WINDOW_NAME,
       "color: #4CAF50; font-weight: bold; font-size: 1.1em",
-      "color: #2196F3; font-weight: bold"
+      "color: #2196F3; font-weight: bold",
     );
     window.dispatchEvent(new Event("pbjs-ready"));
   })();
@@ -626,7 +676,7 @@
   function replayUnhandledMessages() {
     if (unhandledMessages.length === 0) return;
     console.log(
-      "[PBJS] Replaying " + unhandledMessages.length + " unhandled messages..."
+      "[PBJS] Replaying " + unhandledMessages.length + " unhandled messages...",
     );
 
     const now = Date.now();
@@ -676,7 +726,7 @@
               fromWindow: WINDOW_NAME,
               data: JSON.stringify(responseData),
               isGetAll: msg.type === "getAll",
-            })
+            }),
           );
         }
       },
@@ -741,7 +791,7 @@
         // Do NOT buffer them, as they will hang if no handler exists.
         if (msg.name === "close-window") {
           console.warn(
-            "[PBJS] Ignored unhandled close-window message (will not buffer)"
+            "[PBJS] Ignored unhandled close-window message (will not buffer)",
           );
           return;
         }
@@ -751,7 +801,7 @@
         msg._bufferedAt = Date.now();
         unhandledMessages.push(msg);
         console.warn(
-          "Buffered unhandled message: " + msg.name + " [" + msg.type + "]"
+          "Buffered unhandled message: " + msg.name + " [" + msg.type + "]",
         );
         return;
       }
@@ -772,7 +822,7 @@
             response.fromWindow,
             pending.name,
             response.data,
-            response.data && response.data.error
+            response.data && response.data.error,
           );
           pending.responses.push({
             windowName: response.fromWindow,
@@ -796,7 +846,7 @@
             response.fromWindow,
             pending.name,
             response.data,
-            hasError
+            hasError,
           );
           if (hasError) {
             const errMsg =
