@@ -721,7 +721,7 @@ Module JSWindow
       parentWindowID = WindowID(*Parent\Window)
     EndIf
     
-    window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags| #PB_Window_Invisible, parentWindowID)
+    window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags| #PB_Window_Invisible,parentWindowID)
     
     If window
       webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
@@ -1280,7 +1280,7 @@ Module JSWindow
       If  ElapsedMilliseconds() - DEBUGMODEexecuteLocationScriptTime > 500
         DEBUGMODEexecuteLocationScriptTime = ElapsedMilliseconds() 
         BindWebViewCallback(webViewGadget, "callbackLocation", @CallbackLocation())      
-        WebViewExecuteScript(webViewGadget, ~"callbackLocation("+Str(*Window\Window)+", document.location.href);")
+        WebViewExecuteScript(webViewGadget, ~"callbackLocation('"+Str(*Window\Window)+"', '"+ ~"'+document.location.href+'" +~"');")
         
         w = WindowWidth(*JSWindow\Window)
         h = WindowHeight(*JSWindow\Window)

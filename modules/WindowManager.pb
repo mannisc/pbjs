@@ -12,9 +12,10 @@ DeclareModule WindowManager
   Prototype.i ProtoHandleEvent(Event.i, Window.i, Gadget.i, Type.i)
   Prototype.i ProtoCloseWindow(Window.i)
   Prototype.i ProtoCleanupWindow()
-  
+
   Prototype.i ShouldKeepRunning()
-  
+  Prototype.i HandleNetworkEvent(netEvent.i, netClient.i)
+
   Structure AppWindow
     Title.s
     Window.i
@@ -34,7 +35,7 @@ DeclareModule WindowManager
   Declare OpenManagedWindow(*Window.AppWindow,manualOpen=#False)
   Declare HideManagedWindow(*Window.AppWindow)
   Declare CloseManagedWindow(*Window.AppWindow)
-  Declare RunEventLoop(*HandleMainEvent.HandleMainEvent,*ShouldKeepRunning.ShouldKeepRunning = 0)
+  Declare RunEventLoop(*HandleMainEvent.HandleMainEvent, *HandleNetworkEvent.HandleNetworkEvent = 0, *ShouldKeepRunning.ShouldKeepRunning = 0)
   Declare CleanupManagedWindows()
   Declare CloseManagedWindows()
   Declare GetManagedWindowFromWindowHandle(hWnd)
@@ -171,13 +172,17 @@ Module WindowManager
   Procedure CleanupManagedWindows()
     NewList Windows()
     ForEach ManagedWindows()
-      If ManagedWindows()\Open 
+      If ManagedWindows()\Open
         AddElement(Windows())
         Windows() = ManagedWindows()\Window
-        
+
         If ManagedWindows()\CloseProc
           CallFunctionFast(ManagedWindows()\CloseProc, ManagedWindows()\Window)
-        EndIf 
+        EndIf
+      ElseIf Not ManagedWindows()\Closed
+        ; Window was hidden (not destroyed) — add for explicit CloseWindow() to free WebViewGadget/WKWebView
+        AddElement(Windows())
+        Windows() = ManagedWindows()\Window
       EndIf
       If ManagedWindows()\CleanupProc
         CallFunctionFast( ManagedWindows()\CleanupProc)
@@ -187,16 +192,21 @@ Module WindowManager
     endTime = ElapsedMilliseconds()
     Repeat
       Delay(10)
-      windowExists = #False 
-      ForEach Windows() 
+      ForEach Windows()
         If IsWindow(Windows())
           CloseWindow(Windows())
+        EndIf
+      Next
+      windowExists = #False
+      ForEach Windows()
+        If IsWindow(Windows())
           windowExists = #True
-        EndIf 
+          Break
+        EndIf
       Next
       If windowExists
         WindowEvent()
-      EndIf 
+      EndIf
     Until Not windowExists Or ElapsedMilliseconds()-endTime > 250
     
     
@@ -224,18 +234,30 @@ Module WindowManager
         EndIf
       Next 
       
-    EndIf 
+    EndIf
   EndProcedure
-  
-  Procedure RunEventLoop(*HandleMainEvent.HandleMainEvent,*ShouldKeepRunning.ShouldKeepRunning = 0)
+
+  Procedure RunEventLoop(*HandleMainEvent.HandleMainEvent, *HandleNetworkEvent.HandleNetworkEvent = 0, *ShouldKeepRunning.ShouldKeepRunning = 0)
     Protected Event.i
     Protected EventWindow.i
     Protected EventGadget.i
     Protected KeepRunning.i = #True
     Protected KeepWindow.i
-    Protected OpenedWindowExists.i 
+    Protected OpenedWindowExists.i
+    Protected netEvent.i
+    Protected netClient.i
     While KeepRunning
       Event = WaitWindowEvent(16)
+
+      ; Dispatch network events — see Execute::HandleNetworkEvent in main.pb
+      netEvent = NetworkServerEvent()
+      If netEvent <> 0
+        netClient = EventClient()
+        If *HandleNetworkEvent <> 0
+          CallFunctionFast(*HandleNetworkEvent, netEvent, netClient)
+        EndIf
+      EndIf
+
       If Event <> 0
         EventWindow = EventWindow()
         EventGadget = EventGadget()
@@ -309,3 +331,9 @@ Module WindowManager
     Next 
   EndProcedure 
 EndModule
+
+; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
+; CursorPosition = 4
+; Folding = ---
+; EnableXP
+; DPIAware
