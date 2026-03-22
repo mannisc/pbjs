@@ -133,6 +133,7 @@ Module JSBridge
   
   Procedure HandleGet(jsonParameters.s)
     Protected json.i, fromWindow.s, toWindow.s, name.s, paramsJson.s, dataJson.s, requestId.i, script.s, messageJson.s
+    Protected windowNotOpen.b
     
     Dim parameters.s(0)
     ParseJSON(0, jsonParameters)
@@ -157,26 +158,42 @@ Module JSBridge
       If targetWindow > -1
         ForEach JSWindows()
           If JSWindows()\Window = targetWindow
-            script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
-            If JSWindows()\Ready
-               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            If Not JSWindows()\Open
+              ; Window is registered but currently closed.
+              ; Set flag and break — error response is sent below.
+              windowNotOpen = #True
             Else
-               AddElement(JSWindows()\PendingMessages())
-               JSWindows()\PendingMessages() = script
+              script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
+              If JSWindows()\Ready
+                 WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+              Else
+                 AddElement(JSWindows()\PendingMessages())
+                 JSWindows()\PendingMessages() = script
+              EndIf
             EndIf
             Break
           EndIf
         Next
-      Else
+      EndIf
+      
+      ; Send immediate error back to caller when target window is not found or not open.
+      ; Both cases use the same response path so the caller's .catch() fires right away
+      ; instead of waiting for the 30s pending-request timeout.
+      If targetWindow = -1 Or windowNotOpen
+        Protected errorMsg.s
+        If windowNotOpen
+          errorMsg = "Window not open: " + toWindow
+        Else
+          errorMsg = "Window not found: " + toWindow
+        EndIf
+        
         Protected sourceWindow.i = GetJSWindowByName(fromWindow)
         If sourceWindow > -1
           ForEach JSWindows()
             If JSWindows()\Window = sourceWindow
               script = "pbjsHandleResponse('" + EscapeJSON(~"{\"requestId\":" + Str(requestId) + 
                                                            ~",\"fromWindow\":\"" + toWindow + 
-                                                           ~"\",\"data\":{\"error\":\"Window not found: " + toWindow + ~"\"}}") + "');"
-              
-              
+                                                           ~"\",\"data\":{\"error\":\"" + errorMsg + ~"\"}}") + "');"
                If JSWindows()\Ready
                  WebViewExecuteScript(JSWindows()\WebViewGadget, script)
                Else

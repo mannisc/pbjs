@@ -1268,9 +1268,10 @@ Module JSWindow
     CompilerIf #Debug_On
       webViewGadget = *JSWindow\WebViewGadget
       If (Not *JSWindow\Ready Or DEBUGMODEinjectStartupOnce) And ElapsedMilliseconds() - DEBUGMODEcheckTime > 300
-        DEBUGMODEinjectStartupOnce = #False 
+        DEBUGMODEinjectStartupOnce = #False
         BindWebviewEvents(webViewGadget)
-        DEBUGMODEcheckTime =  ElapsedMilliseconds() 
+        DEBUGMODEcheckTime =  ElapsedMilliseconds()
+        WebViewExecuteScript(webViewGadget, "window.__pbjsAdded = false;")
         WebViewExecuteScript(webViewGadget, *JSWindow\StartupJS)
         WebViewExecuteScript(webViewGadget, *JSWindow\WindowJS )
         WebViewExecuteScript(webViewGadget, JSBridge::GetStartUpJS(*JSWindow\Name))
