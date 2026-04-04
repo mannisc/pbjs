@@ -931,9 +931,9 @@ Module JSWindow
     If IsWindow(*Window\Window)
       Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
       
-      If *Window\Open 
-        HideWindow(*Window\Window,#True)
-        
+      HideWindow(*Window\Window,#True)
+      
+      If *Window\Open
         If *JSWindow\Parent
           If IsWindow(*JSWindow\Parent\Window)
             SetActiveWindow(*JSWindow\Parent\Window)
@@ -943,10 +943,7 @@ Module JSWindow
       
       If Not FromManagedWindow
         HideManagedWindow(*Window)
-      EndIf 
-      
-      
-      
+      EndIf
       
     EndIf 
   EndProcedure
