@@ -571,6 +571,47 @@
         window.pbjs.handle("system", "close-window", handler);
       },
 
+      // Open a multi-instance window from a registered template.
+      // - templateName: opaque string matching a JSWindow::RegisterTemplate call.
+      // - instanceKey:  opaque caller string for dedupe. Empty string disables
+      //                 dedupe (every call opens a new window).
+      // - params:       JSON-serializable payload, delivered to the target
+      //                 window as a "handleParameters" message.
+      // Resolves to { success, name, id } or { error }.
+      openInstance: function (templateName, instanceKey, params) {
+        return new Promise((resolve, reject) => {
+          if (!window.pbjsNativeOpenInstance) {
+            reject(new Error("pbjsNativeOpenInstance not available"));
+            return;
+          }
+          const paramJson = params !== undefined ? JSON.stringify(params) : "";
+          window
+            .pbjsNativeOpenInstance(
+              String(templateName),
+              String(instanceKey || ""),
+              paramJson
+            )
+            .then((result) => {
+              if (!result) {
+                resolve({ success: false });
+                return;
+              }
+              try {
+                const json =
+                  typeof result === "string" ? JSON.parse(result) : result;
+                resolve(json);
+              } catch (e) {
+                console.error("[PBJS] openInstance parse error:", e);
+                resolve({ success: false });
+              }
+            })
+            .catch((err) => {
+              console.error("[PBJS] openInstance native error:", err);
+              reject(err);
+            });
+        });
+      },
+
       handle: function (windowName, name, handler) {
         if (!windowName || typeof windowName !== "string")
           throw new Error("windowName must be a non-empty string");

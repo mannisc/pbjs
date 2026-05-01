@@ -13,6 +13,7 @@ DeclareModule JSWindow
     #Event_Loaded_Html
     #Event_Content_Ready
     #Event_Prepare_Complete
+    #Event_Pool_Refill
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -27,54 +28,99 @@ DeclareModule JSWindow
   Declare ResizeJSWindow(*Window.AppWindow, x, y, w, h)
   Declare GetWebView(*Window.AppWindow)
   
+  ; Multi-instance template metadata. A template is a recipe for
+  ; building real JSWindow instances on demand (no PB window of its own).
+  ; Pointer stability: entries are never deleted during an app run, so
+  ; *JSWindow\OwningTemplate raw pointers stay valid.
+  Structure JSWindowTemplate
+    Name.s
+    *HtmlStart
+    *HtmlEnd
+    X.l
+    Y.l
+    W.l
+    H.l
+    Title.s
+    Flags.l
+    *Parent.AppWindow
+    *WindowReadyCallback
+    *ResizeCallback.ResizeCallback
+    DebugUrl.s
+    PoolTargetSize.i
+    NextSeq.i
+    List PoolHandles.i()        ; PB window handles of warm spares
+  EndStructure
+
   Structure JSWindow
     Name.s
     *Parent.AppWindow
-    
+
     Window.i
     WebViewGadget.i
-    
+
     ;Stages
     OpenTime.i
     LoadedCode.b
     Ready.b
     Open.b
     Visible.b
-    
+
     BypassCloseCheck.b ; Flag to indicate if we can skip the JS check
-    
+
     CloseBehaviour.i
     LastLocation.s
-    
+
     Html.s
-    
+
     StartupJS.s
     WindowJS.s
-    
+
     List PendingMessages.s()
-    
+
     *HtmlStart
     *HtmlEnd
     *WindowReadyProc.ProtoWindowReady
     *ResizeProc.ResizeCallback  ; Optional callback for resize/move events
-    
+
     ; Prepare window state
     PrepareOriginalX.i
     PrepareOriginalY.i
-    
-  EndStructure 
+
+    ; Multi-instance support (#Null / 0 / "" for non-template windows)
+    *OwningTemplate.JSWindowTemplate
+    IsPoolSpare.b
+    InstanceKey.s              ; opaque caller string; "" for spares
+
+  EndStructure
   
   Global NewMap JSWindows.JSWindow()
   Global NewMap WindowsByName.i()
-  
-  Global AppClosing = #False 
+
+  ; Multi-instance support — see Structure JSWindowTemplate above.
+  Global NewMap JSTemplates.JSWindowTemplate()
+  ; Per-(template, instanceKey) -> PB window handle.
+  ; Key format: templateName + ":" + instanceKey
+  Global NewMap TemplateInstances.i()
+  ; Async pool refill — RefillPoolAsync enqueues, HandlePoolRefillEvent drains.
+  Global NewList PoolRefillQueue.i()
+  Global PoolRefillMutex = CreateMutex()
+
+  Global AppClosing = #False
   Global ClosingScope = 0 ; 0: None, -1: App, >0: WindowID
-  Global ReloadedJS = #False 
-  
+  Global ReloadedJS = #False
+
   Declare RequestClose(Scope)
   Declare CheckCloseProgress()
   Declare CancelClose(Reason.s="")
-  
+
+  ; Multi-instance public API. See plan iplan/agent-window-multi-instance/plan.md.
+  Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1)
+  Declare.i FindTemplate(templateName.s)
+  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s)
+  Declare RefillPoolAsync(*Template.JSWindowTemplate)
+  Declare HandlePoolRefillEvent(Event.i)
+  Declare FocusInstance(*Window.AppWindow)
+
 EndDeclareModule
 
 
@@ -86,6 +132,8 @@ Module JSWindow
   Declare HandleEvent(*Window.AppWindow, Event.i, Gadget.i, Type.i)
   Declare ForceContentVisible(window)
   Declare JSIsWindowOpen(JsonParameters.s)
+  Declare.i CreateAndPrepareSpare(*T.JSWindowTemplate)
+  Declare JSOpenInstance(JsonParameters.s)
   
   
   ; For Windows
@@ -707,6 +755,7 @@ Module JSWindow
     BindWebViewCallback(webViewGadget, "callbackReadyState", @JSReadyState())
     BindWebViewCallback(webViewGadget, "pbjsNativeGetWindow", @JSGetWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeOpenWindow", @JSOpenWindow())
+    BindWebViewCallback(webViewGadget, "pbjsNativeOpenInstance", @JSOpenInstance())
     BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
@@ -923,10 +972,257 @@ Module JSWindow
       CreateThread(@PrepareJSWindowThread(), windowHandle)
       
       Debug "[PrepareJSWindow] Thread started, returning immediately"
-    EndIf 
+    EndIf
   EndProcedure
-  
-  
+
+
+  ; ============================================================================
+  ;- TEMPLATES & INSTANCES (multi-instance window support)
+  ; ============================================================================
+  ;
+  ; A template is a metadata record (no PB window of its own) describing how
+  ; to build instances. Real instances are JSWindow records with unique
+  ; runtime names like "<templateName>-<seq>". OpenInstance dedupes by an
+  ; opaque caller-supplied instanceKey; calling it twice for the same key
+  ; just focuses the existing window. A pool of pre-warmed spares keeps
+  ; first-click latency low.
+  ;
+  ; JSWindow stays domain-agnostic: templateName / instanceKey / paramsJson
+  ; are all opaque strings as far as this module is concerned.
+
+  Procedure FocusInstance(*Window.AppWindow)
+    If Not (*Window And IsWindow(*Window\Window))
+      ProcedureReturn
+    EndIf
+    HideWindow(*Window\Window, #False)
+    CompilerSelect #PB_Compiler_OS
+      CompilerCase #PB_OS_MacOS
+        Protected nsApp = CocoaMessage(0, 0, "NSApplication sharedApplication")
+        CocoaMessage(0, nsApp, "activateIgnoringOtherApps:", #True)
+        CocoaMessage(0, WindowID(*Window\Window), "makeKeyAndOrderFront:", #Null)
+      CompilerCase #PB_OS_Windows
+        Protected hwnd = WindowID(*Window\Window)
+        If IsIconic_(hwnd)
+          ShowWindow_(hwnd, #SW_RESTORE)
+        EndIf
+        ShowWindow_(hwnd, 9)        ; SW_SHOWNORMAL
+        SetForegroundWindow_(hwnd)
+      CompilerDefault
+        SetActiveWindow(*Window\Window)
+    CompilerEndSelect
+  EndProcedure
+
+
+  Procedure.i FindTemplate(templateName.s)
+    If FindMapElement(JSTemplates(), templateName)
+      ProcedureReturn @JSTemplates()
+    EndIf
+    ProcedureReturn 0
+  EndProcedure
+
+
+  Procedure.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1)
+    AddMapElement(JSTemplates(), templateName)
+    Protected *T.JSWindowTemplate = @JSTemplates()
+    *T\Name = templateName
+    *T\HtmlStart = *htmlStart
+    *T\HtmlEnd = *htmlStop
+    *T\X = x
+    *T\Y = y
+    *T\W = w
+    *T\H = h
+    *T\Title = title
+    *T\Flags = flags
+    *T\Parent = *Parent
+    *T\WindowReadyCallback = *WindowReadyCallback
+    *T\ResizeCallback = *ResizeCallback
+    *T\DebugUrl = debugUrl
+    *T\PoolTargetSize = poolTargetSize
+    *T\NextSeq = 1
+    Debug "[RegisterTemplate] Registered '" + templateName + "' poolTargetSize=" + Str(poolTargetSize)
+    ProcedureReturn *T
+  EndProcedure
+
+
+  Procedure.i CreateAndPrepareSpare(*T.JSWindowTemplate)
+    If Not *T : ProcedureReturn 0 : EndIf
+
+    Protected instanceName.s = *T\Name + "-" + Str(*T\NextSeq)
+    *T\NextSeq + 1
+
+    Debug "[CreateAndPrepareSpare] Creating '" + instanceName + "'"
+
+    Protected *Window.AppWindow = CreateJSWindow(instanceName, *T\X, *T\Y, *T\W, *T\H, *T\Title, *T\Flags, *T\HtmlStart, *T\HtmlEnd, *T\Parent, #JSWindow_Behaviour_CloseWindow, *T\WindowReadyCallback, *T\ResizeCallback, *T\DebugUrl)
+
+    If *Window = 0 Or *Window = -1
+      Debug "[CreateAndPrepareSpare] CreateJSWindow failed for '" + instanceName + "'"
+      ProcedureReturn 0
+    EndIf
+
+    Protected *JS.JSWindow = JSWindows(Str(*Window\Window))
+    If *JS
+      *JS\OwningTemplate = *T
+      *JS\IsPoolSpare    = #True
+      *JS\InstanceKey    = ""
+    EndIf
+
+    AddElement(*T\PoolHandles())
+    *T\PoolHandles() = *Window\Window
+
+    PrepareJSWindow(*Window)
+    ProcedureReturn *Window\Window
+  EndProcedure
+
+
+  Procedure RefillPoolAsync(*Template.JSWindowTemplate)
+    If Not *Template : ProcedureReturn : EndIf
+    Protected need = *Template\PoolTargetSize - ListSize(*Template\PoolHandles())
+    If need <= 0 : ProcedureReturn : EndIf
+
+    LockMutex(PoolRefillMutex)
+    While need > 0
+      AddElement(PoolRefillQueue())
+      PoolRefillQueue() = *Template
+      need - 1
+    Wend
+    UnlockMutex(PoolRefillMutex)
+
+    ; Wake the main loop. 4-arg PostEvent — matches the existing
+    ; #Event_Loaded_Html / #Event_Content_Ready / #Event_Prepare_Complete shape.
+    PostEvent(#CustomWindowEvent, 0, 0, #Event_Pool_Refill)
+  EndProcedure
+
+
+  Procedure HandlePoolRefillEvent(Event.i)
+    ; Dispatched once per main-loop tick from main.pb's HandleMainEvent,
+    ; mirroring how Ptym::PtymHandleEvent(Event) is wired up.
+    If Event <> #CustomWindowEvent : ProcedureReturn : EndIf
+    If EventType() <> #Event_Pool_Refill : ProcedureReturn : EndIf
+    If AppClosing : ProcedureReturn : EndIf
+
+    LockMutex(PoolRefillMutex)
+    Protected *T.JSWindowTemplate = 0
+    If ListSize(PoolRefillQueue()) > 0
+      FirstElement(PoolRefillQueue())
+      *T = PoolRefillQueue()
+      DeleteElement(PoolRefillQueue())
+    EndIf
+    UnlockMutex(PoolRefillMutex)
+
+    If *T And ListSize(*T\PoolHandles()) < *T\PoolTargetSize
+      CreateAndPrepareSpare(*T)
+    EndIf
+  EndProcedure
+
+
+  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s)
+    If Not FindMapElement(JSTemplates(), templateName)
+      Debug "[OpenInstance] Unknown template: " + templateName
+      ProcedureReturn 0
+    EndIf
+    Protected *T.JSWindowTemplate = @JSTemplates()
+
+    ; --- 1. Dedupe by caller-supplied opaque key. Empty key disables dedupe. ---
+    Protected lookupKey.s = templateName + ":" + instanceKey
+    If instanceKey <> "" And FindMapElement(TemplateInstances(), lookupKey)
+      Protected existingHandle.i = TemplateInstances()
+      If IsWindow(existingHandle) And FindMapElement(JSWindows(), Str(existingHandle))
+        Protected *Existing.AppWindow = GetManagedWindowFromWindowHandle(WindowID(existingHandle))
+        If *Existing
+          Debug "[OpenInstance] Re-focus existing instance for key '" + instanceKey + "'"
+          If paramsJson <> ""
+            JSBridge::SendParameters(@JSWindows(), paramsJson)
+          EndIf
+          FocusInstance(*Existing)
+          ProcedureReturn existingHandle
+        EndIf
+      EndIf
+      ; Stale entry — drop it and fall through to open a new window.
+      Debug "[OpenInstance] Stale TemplateInstances entry for '" + lookupKey + "', dropping"
+      DeleteMapElement(TemplateInstances(), lookupKey)
+    EndIf
+
+    ; --- 2. Try to take a Ready spare from the pool. ---
+    Protected *Window.AppWindow = 0
+    Protected handle.i
+    ForEach *T\PoolHandles()
+      handle = *T\PoolHandles()
+      If FindMapElement(JSWindows(), Str(handle)) And JSWindows()\Ready
+        *Window = GetManagedWindowFromWindowHandle(WindowID(handle))
+        DeleteElement(*T\PoolHandles())
+        Debug "[OpenInstance] Claimed warm spare handle=" + Str(handle)
+        Break
+      EndIf
+    Next
+
+    ; --- 3. Cold path: pool empty or no Ready spare. ---
+    If *Window = 0
+      Debug "[OpenInstance] Cold path — creating spare synchronously"
+      Protected createdHandle.i = CreateAndPrepareSpare(*T)
+      If createdHandle = 0 : ProcedureReturn 0 : EndIf
+      *Window = GetManagedWindowFromWindowHandle(WindowID(createdHandle))
+      ; Remove from pool list — we're using it directly.
+      ForEach *T\PoolHandles()
+        If *T\PoolHandles() = createdHandle
+          DeleteElement(*T\PoolHandles())
+          Break
+        EndIf
+      Next
+    EndIf
+
+    If *Window = 0 : ProcedureReturn 0 : EndIf
+
+    ; --- 4. Claim and open. ---
+    Protected *JS.JSWindow = JSWindows(Str(*Window\Window))
+    If *JS
+      *JS\IsPoolSpare = #False
+      *JS\InstanceKey = instanceKey
+    EndIf
+    If instanceKey <> ""
+      TemplateInstances(lookupKey) = *Window\Window
+    EndIf
+
+    If paramsJson <> "" And *JS
+      JSBridge::SendParameters(*JS, paramsJson)
+    EndIf
+    OpenJSWindow(*Window)
+
+    ; --- 5. Refill in the background. ---
+    RefillPoolAsync(*T)
+
+    ProcedureReturn *Window\Window
+  EndProcedure
+
+
+  Procedure JSOpenInstance(JsonParameters.s)
+    Dim Parameters.s(0)
+    Debug "JSOpenInstance CALLED with: " + JsonParameters
+
+    If ParseJSON(0, JsonParameters) = 0
+      ProcedureReturn UTF8(~"{\"error\":\"ParseJSON failed\"}")
+    EndIf
+    ExtractJSONArray(JSONValue(0), Parameters())
+
+    Protected templateName.s = ""
+    Protected instanceKey.s = ""
+    Protected paramsJson.s = ""
+    If ArraySize(Parameters()) >= 0 : templateName = Parameters(0) : EndIf
+    If ArraySize(Parameters()) >= 1 : instanceKey = Parameters(1) : EndIf
+    If ArraySize(Parameters()) >= 2 : paramsJson = Parameters(2) : EndIf
+
+    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson)
+    If handle = 0
+      ProcedureReturn UTF8(~"{\"error\":\"OpenInstance failed\"}")
+    EndIf
+
+    Protected resultName.s = ""
+    If FindMapElement(JSWindows(), Str(handle))
+      resultName = JSWindows()\Name
+    EndIf
+    ProcedureReturn UTF8(~"{\"success\":true,\"name\":\"" + resultName + ~"\",\"id\":" + Str(handle) + "}")
+  EndProcedure
+
+
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
     If IsWindow(*Window\Window)
       Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
@@ -951,27 +1247,44 @@ Module JSWindow
   
   Procedure CloseJSWindow(*Window.AppWindow)
     Protected *JSWindow.JSWindow
+    ; Capture template/instanceKey BEFORE the JSWindows() entry is deleted.
+    Protected *T.JSWindowTemplate = 0
+    Protected instanceKey.s = ""
     If *Window <> 0 And IsWindow(*Window\Window)
       *JSWindow = JSWindows(Str(*Window\Window))
-      
-      
-      If Not *Window\Closed 
+      If *JSWindow
+        *T          = *JSWindow\OwningTemplate
+        instanceKey = *JSWindow\InstanceKey
+      EndIf
+
+      If Not *Window\Closed
         CloseManagedWindow(*Window)
-      EndIf 
+      EndIf
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
         MacOSUnregisterResizeNotifications(*Window)
       CompilerEndIf
       If IsWindow(*Window\Window)
         DeleteMapElement(JSWindows(), Str(*Window\Window))
         CloseWindow(*Window\Window)
-      EndIf 
-      
+      EndIf
+
       If *JSWindow And *JSWindow\Parent
         If IsWindow(*JSWindow\Parent\Window)
           SetActiveWindow(*JSWindow\Parent\Window)
         EndIf
       EndIf
-    EndIf 
+    EndIf
+
+    ; Multi-instance cleanup: drop the dedupe entry and refill the pool.
+    If *T
+      If instanceKey <> ""
+        Protected lookupKey.s = *T\Name + ":" + instanceKey
+        If FindMapElement(TemplateInstances(), lookupKey)
+          DeleteMapElement(TemplateInstances(), lookupKey)
+        EndIf
+      EndIf
+      RefillPoolAsync(*T)
+    EndIf
   EndProcedure
   
   
