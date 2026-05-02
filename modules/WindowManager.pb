@@ -140,21 +140,22 @@ Module WindowManager
   EndProcedure
   
   Procedure HideManagedWindow(*Window.AppWindow)
-    Debug "HideManagedWindow"
+    Debug "[WM] HideManagedWindow: title='" + *Window\Title + "' Open=" + Str(*Window\Open)
     If *Window\Window
       If *Window\HideProc
         CallFunctionFast(*Window\HideProc, *Window, #True )
-        *Window\Open = #False    
-        
+        *Window\Open = #False
+
       EndIf
     EndIf
   EndProcedure
-  
-  
+
+
   Procedure CloseManagedWindow(*Window.AppWindow)
+    Debug "[WM] CloseManagedWindow: title='" + *Window\Title + "' Open=" + Str(*Window\Open)
     If *Window\Window
-      *Window\Open = #False     
-      *Window\Closed = #True 
+      *Window\Open = #False
+      *Window\Closed = #True
       If *Window\CloseProc
         CallFunctionFast(*Window\CloseProc, *Window)
       EndIf
@@ -219,21 +220,28 @@ Module WindowManager
           WindowMaxSizeChanged()
         EndIf
       EndIf
+      If Event = #PB_Event_CloseWindow
+        Debug "[WM] HandleWindowEvent: CLOSE for EventWindow=" + Str(EventWindow)
+      EndIf
       ForEach ManagedWindows()
         If ManagedWindows()\HandleProc
-          
-          If Event = #CustomWindowEvent Or ManagedWindows()\Open     
-            If EventWindow = ManagedWindows()\Window And 
+
+          If Event = #CustomWindowEvent Or ManagedWindows()\Open
+            If EventWindow = ManagedWindows()\Window And
                KeepWindow = CallFunctionFast(ManagedWindows()\HandleProc, @ManagedWindows(), Event,EventGadget,EventType)
+              If Event = #PB_Event_CloseWindow
+                Debug "[WM] HandleWindowEvent: dispatched close to '" + ManagedWindows()\Title + "' KeepWindow=" + Str(KeepWindow)
+              EndIf
               If Not KeepWindow
+                Debug "[WM] HandleWindowEvent: DeleteElement for '" + ManagedWindows()\Title + "'"
                 DeleteElement(ManagedWindows())
                 Break
               EndIf
             EndIf
-          EndIf 
+          EndIf
         EndIf
-      Next 
-      
+      Next
+
     EndIf
   EndProcedure
 
@@ -279,6 +287,10 @@ Module WindowManager
           EndIf
         Next 
         If Not OpenedWindowExists Or ListSize(ManagedWindows()) = 0
+          Debug "[WM] RunEventLoop EXIT: OpenedWindowExists=" + Str(OpenedWindowExists) + " ListSize=" + Str(ListSize(ManagedWindows()))
+          ForEach ManagedWindows()
+            Debug "[WM]   window='" + ManagedWindows()\Title + "' Open=" + Str(ManagedWindows()\Open) + " Closed=" + Str(ManagedWindows()\Closed)
+          Next
           KeepRunning = #False
         EndIf
       EndIf 

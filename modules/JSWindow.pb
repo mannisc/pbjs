@@ -14,6 +14,7 @@ DeclareModule JSWindow
     #Event_Content_Ready
     #Event_Prepare_Complete
     #Event_Pool_Refill
+    #Event_Deferred_Close
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -106,6 +107,12 @@ DeclareModule JSWindow
   Global PoolRefillMutex = CreateMutex()
 
   Global AppClosing = #False
+
+  CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+    ; Handles whose CloseWindow() must be deferred to the next event-loop tick.
+    ; Calling CloseWindow() from inside WaitWindowEvent's call stack crashes on macOS.
+    Global NewList DeferredCloseHandles.i()
+  CompilerEndIf
   Global ClosingScope = 0 ; 0: None, -1: App, >0: WindowID
   Global ReloadedJS = #False
 
@@ -119,6 +126,7 @@ DeclareModule JSWindow
   Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s)
   Declare RefillPoolAsync(*Template.JSWindowTemplate)
   Declare HandlePoolRefillEvent(Event.i)
+  Declare HandleDeferredCloseEvent(Event.i)
   Declare FocusInstance(*Window.AppWindow)
 
 EndDeclareModule
@@ -876,7 +884,15 @@ Module JSWindow
         CreateThread(@ForceContentVisible(),*Window\Window)
       Else
         Debug "[OpenJSWindow] Skipping ForceContentVisible (already visible)"
-      EndIf 
+        ; Mac: HideWindow() shows the window but does not activate it or raise it
+        ; above other windows. Call makeKeyAndOrderFront: explicitly so the first
+        ; click brings the window to front without needing a second click.
+        CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+          Protected openNsApp = CocoaMessage(0, 0, "NSApplication sharedApplication")
+          CocoaMessage(0, openNsApp, "activateIgnoringOtherApps:", #True)
+          CocoaMessage(0, WindowID(*Window\Window), "makeKeyAndOrderFront:", #Null)
+        CompilerEndIf
+      EndIf
     EndIf 
     Debug "[OpenJSWindow] END at " + Str(ElapsedMilliseconds() - startTime) + "ms"
   EndProcedure
@@ -1115,6 +1131,29 @@ Module JSWindow
   EndProcedure
 
 
+  CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+  Procedure HandleDeferredCloseEvent(Event.i)
+    ; Drain the deferred-close list. Must be called from HandleMainEvent so that
+    ; CloseWindow() runs at the top of the event loop, not inside WaitWindowEvent's stack.
+    If Event <> #CustomWindowEvent : ProcedureReturn : EndIf
+    If EventType() <> #Event_Deferred_Close : ProcedureReturn : EndIf
+    While ListSize(DeferredCloseHandles()) > 0
+      FirstElement(DeferredCloseHandles())
+      Protected handle.i = DeferredCloseHandles()
+      DeleteElement(DeferredCloseHandles())
+      If IsWindow(handle)
+        Debug "[HandleDeferredCloseEvent] CloseWindow handle=" + Str(handle)
+        CloseWindow(handle)
+      EndIf
+    Wend
+  EndProcedure
+  CompilerElse
+  Procedure HandleDeferredCloseEvent(Event.i)
+    ; No-op on non-macOS: CloseWindow is called synchronously there.
+  EndProcedure
+  CompilerEndIf
+
+
   Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s)
     If Not FindMapElement(JSTemplates(), templateName)
       Debug "[OpenInstance] Unknown template: " + templateName
@@ -1265,7 +1304,16 @@ Module JSWindow
       CompilerEndIf
       If IsWindow(*Window\Window)
         DeleteMapElement(JSWindows(), Str(*Window\Window))
-        CloseWindow(*Window\Window)
+        CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+          ; Defer CloseWindow to the next event-loop tick. Calling it from inside
+          ; WaitWindowEvent's call stack (HandleWindowEvent → HandleEvent → here)
+          ; corrupts PureBasic's native window state and crashes WaitWindowEvent.
+          AddElement(DeferredCloseHandles())
+          DeferredCloseHandles() = *Window\Window
+          PostEvent(#CustomWindowEvent, 0, 0, #Event_Deferred_Close)
+        CompilerElse
+          CloseWindow(*Window\Window)
+        CompilerEndIf
       EndIf
 
       If *JSWindow And *JSWindow\Parent
@@ -1672,27 +1720,54 @@ Module JSWindow
             
           Case #Event_Prepare_Complete
             Debug "[Event_Prepare_Complete] Hiding and restoring position for " + *JSWindow\Name
-            
+
             Protected PrepWinID = WindowID(*JSWindow\Window)
-            
+
+            ; Race guard: if OpenInstance claimed this spare before the event was
+            ; processed, IsPoolSpare is already #False and the window is open.
+            ; In that case skip orderOut (the window should stay visible) but still
+            ; restore alpha and position — they were left in the "hiding" state
+            ; (alpha 0, off-screen) when the spare was created.
+            Protected claimedAndOpen.b = #False
+            If Not *JSWindow\IsPoolSpare And *JSWindow\Open
+              claimedAndOpen = #True
+            EndIf
+
             CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-              ; Use Cocoa to hide - orderOut removes from screen without affecting PB state
-              CocoaMessage(0, PrepWinID, "orderOut:", #Null)
-              
+              If Not claimedAndOpen
+                ; Use Cocoa to hide - orderOut removes from screen without affecting PB state
+                CocoaMessage(0, PrepWinID, "orderOut:", #Null)
+              EndIf
               ; Restore alpha to 1.0
               Protected restoreAlpha.d = 1.0
               CocoaMessage(0, PrepWinID, "setAlphaValue:@", @restoreAlpha)
             CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
-              HideWindow(*JSWindow\Window, #True)
+              If Not claimedAndOpen
+                HideWindow(*JSWindow\Window, #True)
+              EndIf
               SetLayeredWindowAttributes_(PrepWinID, 0, 255, #LWA_ALPHA)
             CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
-              HideWindow(*JSWindow\Window, #True)
+              If Not claimedAndOpen
+                HideWindow(*JSWindow\Window, #True)
+              EndIf
               gtk_widget_set_opacity_(PrepWinID, 1.0)
             CompilerEndIf
-            
-            ; Restore original position
+
+            ; Restore original position (needed in both paths — the window was
+            ; moved off-screen during preparation).
             ResizeWindow(*JSWindow\Window, *JSWindow\PrepareOriginalX, *JSWindow\PrepareOriginalY, #PB_Ignore, #PB_Ignore)
-            
+
+            ; If the race fired (window was opened while still being prepared),
+            ; now that alpha and position are correct, raise the window to front.
+            If claimedAndOpen
+              Debug "[Event_Prepare_Complete] Race: window was claimed mid-prepare — raising to front"
+              CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+                Protected raceNsApp = CocoaMessage(0, 0, "NSApplication sharedApplication")
+                CocoaMessage(0, raceNsApp, "activateIgnoringOtherApps:", #True)
+                CocoaMessage(0, PrepWinID, "makeKeyAndOrderFront:", #Null)
+              CompilerEndIf
+            EndIf
+
             Debug "[Event_Prepare_Complete] Done for " + *JSWindow\Name
             
         EndSelect 
@@ -1700,8 +1775,8 @@ Module JSWindow
     EndSelect
     
     If closeWindow
-      Debug "CLOSE WINDOW"
-      
+      Debug "[JSWindow] HandleEvent CLOSE: window='" + *JSWindow\Name + "' BypassCloseCheck=" + Str(*JSWindow\BypassCloseCheck) + " Behaviour=" + Str(*JSWindow\CloseBehaviour) + " Open=" + Str(*Window\Open)
+
       ; --- INTERCEPT CLOSE ---
       If Not *JSWindow\BypassCloseCheck
         Debug "Check needed"
