@@ -92,6 +92,10 @@ DeclareModule JSWindow
     IsPoolSpare.b
     InstanceKey.s              ; opaque caller string; "" for spares
 
+    ; Recycle-to-pool flags (see CloseJSWindow / OpenInstance)
+    NeedsReload.b     ; #True = recycled without reload; invisible to reloadOnReuse=True callers
+    ReloadOnRecycle.b ; stored at claim time: #True = reload HTML when this instance is recycled
+
   EndStructure
   
   Global NewMap JSWindows.JSWindow()
@@ -123,7 +127,7 @@ DeclareModule JSWindow
   ; Multi-instance public API. See plan iplan/agent-window-multi-instance/plan.md.
   Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1)
   Declare.i FindTemplate(templateName.s)
-  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s)
+  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False)
   Declare RefillPoolAsync(*Template.JSWindowTemplate)
   Declare HandlePoolRefillEvent(Event.i)
   Declare HandleDeferredCloseEvent(Event.i)
@@ -217,6 +221,7 @@ Module JSWindow
       EndIf
       
       JSWindows(Str(window))\Ready = #True
+      JSWindows(Str(window))\NeedsReload = #False  ; content freshly loaded (initial or after reload)
       CreateThread(@MakeContentVisible(),window)
       ReloadedJS = #True
     Else
@@ -784,7 +789,10 @@ Module JSWindow
       webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
       
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-        CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0) 
+        CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0)
+        ; Disable window show/hide animation (NSWindowAnimationBehaviorNone = 2).
+        ; Without this, every makeKeyAndOrderFront: call adds ~150-200ms of zoom animation.
+        CocoaMessage(0, WindowID(window), "setAnimationBehavior:", 2)
       CompilerEndIf
       
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
@@ -866,13 +874,18 @@ Module JSWindow
         Debug "[OpenJSWindow] Taking FAST path (manualOpen = #False)"
       Else
         CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+          ; For cold/mid-prepare windows on Mac: do NOT call HideWindow or makeKeyAndOrderFront
+          ; yet. The window is off-screen at alpha=0 (PrepareJSWindow state). Calling
+          ; makeKeyAndOrderFront on an unready WKWebView triggers expensive compositor/display-
+          ; server work that blocks for seconds. Let Event_Prepare_Complete handle the first
+          ; show once content is ready and the window is in its correct state.
           manualOpen = #True
-          Debug "[OpenJSWindow] Taking SLOW path (manualOpen = #True, Mac)"
+          Debug "[OpenJSWindow] Taking SLOW path (manualOpen = #True, Mac unready)"
         CompilerElse
           manualOpen = #False
           Debug "[OpenJSWindow] Taking path (manualOpen = #False, non-Mac)"
-        CompilerEndIf 
-      EndIf 
+        CompilerEndIf
+      EndIf
       *JSWindow\Open = #True
       *JSWindow\Visible = Bool(Not manualOpen)
       *JSWindow\OpenTime = ElapsedMilliseconds()
@@ -1077,9 +1090,11 @@ Module JSWindow
 
     Protected *JS.JSWindow = JSWindows(Str(*Window\Window))
     If *JS
-      *JS\OwningTemplate = *T
-      *JS\IsPoolSpare    = #True
-      *JS\InstanceKey    = ""
+      *JS\OwningTemplate  = *T
+      *JS\IsPoolSpare     = #True
+      *JS\InstanceKey     = ""
+      *JS\NeedsReload     = #False  ; freshly prepared content
+      *JS\ReloadOnRecycle = #True   ; conservative default until a caller sets it
     EndIf
 
     AddElement(*T\PoolHandles())
@@ -1154,7 +1169,7 @@ Module JSWindow
   CompilerEndIf
 
 
-  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s)
+  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False)
     If Not FindMapElement(JSTemplates(), templateName)
       Debug "[OpenInstance] Unknown template: " + templateName
       ProcedureReturn 0
@@ -1186,11 +1201,15 @@ Module JSWindow
     Protected handle.i
     ForEach *T\PoolHandles()
       handle = *T\PoolHandles()
-      If FindMapElement(JSWindows(), Str(handle)) And JSWindows()\Ready
-        *Window = GetManagedWindowFromWindowHandle(WindowID(handle))
-        DeleteElement(*T\PoolHandles())
-        Debug "[OpenInstance] Claimed warm spare handle=" + Str(handle)
-        Break
+      If FindMapElement(JSWindows(), Str(handle)) And JSWindows()\Ready And JSWindows()\Visible
+        ; reloadOnReuse=True  → only claim spares with NeedsReload=False (fresh / already reloaded)
+        ; reloadOnReuse=False → accept any Ready+Visible spare, including recycled-no-reload ones
+        If reloadOnReuse = #False Or JSWindows()\NeedsReload = #False
+          *Window = GetManagedWindowFromWindowHandle(WindowID(handle))
+          DeleteElement(*T\PoolHandles())
+          Debug "[OpenInstance] Claimed spare handle=" + Str(handle) + " NeedsReload=" + Str(JSWindows()\NeedsReload) + " reloadOnReuse=" + Str(reloadOnReuse)
+          Break
+        EndIf
       EndIf
     Next
 
@@ -1214,8 +1233,9 @@ Module JSWindow
     ; --- 4. Claim and open. ---
     Protected *JS.JSWindow = JSWindows(Str(*Window\Window))
     If *JS
-      *JS\IsPoolSpare = #False
-      *JS\InstanceKey = instanceKey
+      *JS\IsPoolSpare     = #False
+      *JS\InstanceKey     = instanceKey
+      *JS\ReloadOnRecycle = reloadOnReuse  ; store preference for use at close/recycle time
     EndIf
     If instanceKey <> ""
       TemplateInstances(lookupKey) = *Window\Window
@@ -1245,11 +1265,15 @@ Module JSWindow
     Protected templateName.s = ""
     Protected instanceKey.s = ""
     Protected paramsJson.s = ""
+    Protected reloadOnReuse.b = #False
     If ArraySize(Parameters()) >= 0 : templateName = Parameters(0) : EndIf
     If ArraySize(Parameters()) >= 1 : instanceKey = Parameters(1) : EndIf
     If ArraySize(Parameters()) >= 2 : paramsJson = Parameters(2) : EndIf
+    If ArraySize(Parameters()) >= 3
+      If Parameters(3) = "1" : reloadOnReuse = #True : EndIf
+    EndIf
 
-    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson)
+    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson, reloadOnReuse)
     If handle = 0
       ProcedureReturn UTF8(~"{\"error\":\"OpenInstance failed\"}")
     EndIf
@@ -1290,6 +1314,7 @@ Module JSWindow
     Protected *T.JSWindowTemplate = 0
     Protected instanceKey.s = ""
     Protected *Parent.AppWindow = 0
+    Protected lookupKey.s = ""
     If *Window <> 0 And IsWindow(*Window\Window)
       *JSWindow = JSWindows(Str(*Window\Window))
       If *JSWindow
@@ -1297,6 +1322,56 @@ Module JSWindow
         instanceKey = *JSWindow\InstanceKey
         *Parent     = *JSWindow\Parent  ; capture before DeleteMapElement frees *JSWindow
       EndIf
+
+      ; ---- RECYCLE PATH: active template instance → hide and return to pool ----
+      ; Instead of tearing the window down, recycle it as a warm pool spare.
+      ; This mirrors terminal-window behaviour: WebView content stays loaded and
+      ; Visible stays True, so the next OpenInstance claim is instant — no WKWebView
+      ; reload or ForceContentVisible delay.
+      If *T And instanceKey <> ""
+        If *JSWindow
+          If *JSWindow\ReloadOnRecycle
+            ; Reload path: page will be replaced — no need to blank body first.
+            ; Reset state so pool check blocks callers until reload finishes.
+            *JSWindow\Ready = #False
+            *JSWindow\Visible = #False
+            *JSWindow\NeedsReload = #False  ; cleared again by JSReadyState after reload completes
+            CompilerIf #Debug_On
+              If IsGadget(*JSWindow\WebViewGadget)
+                WebViewExecuteScript(*JSWindow\WebViewGadget, "window.location.reload();")
+              EndIf
+            CompilerElse
+              CreateThread(@LoadHtml(), *Window\Window)
+            CompilerEndIf
+          Else
+            ; Fast recycle (no reload): blank body so next user doesn't see stale agent content.
+            ; AgentWindow.tsx re-adds 'pbjs-document-ready' after handleParameters fires.
+            *JSWindow\NeedsReload = #True
+            If IsGadget(*JSWindow\WebViewGadget)
+              WebViewExecuteScript(*JSWindow\WebViewGadget, "document.body.classList.remove('pbjs-document-ready');")
+            EndIf
+            ; Visible stays #True: WebView is live and ready for instant reuse.
+          EndIf
+          *JSWindow\IsPoolSpare = #True
+          *JSWindow\InstanceKey = ""
+          *JSWindow\Open = #False
+        EndIf
+        HideWindow(*Window\Window, #True)
+        *Window\Open = #False
+        ; Do NOT set Closed=True — CleanupManagedWindows will close it at app exit.
+        lookupKey = *T\Name + ":" + instanceKey
+        If FindMapElement(TemplateInstances(), lookupKey)
+          DeleteMapElement(TemplateInstances(), lookupKey)
+        EndIf
+        AddElement(*T\PoolHandles())
+        *T\PoolHandles() = *Window\Window
+        Debug "[CloseJSWindow] Recycled '" + instanceKey + "' → pool (size=" + Str(ListSize(*T\PoolHandles())) + ")"
+        If *Parent And IsWindow(*Parent\Window)
+          SetActiveWindow(*Parent\Window)
+        EndIf
+        ProcedureReturn
+      EndIf
+      ; ---- END RECYCLE PATH ----
 
       If Not *Window\Closed
         CloseManagedWindow(*Window)
@@ -1323,9 +1398,11 @@ Module JSWindow
     EndIf
 
     ; Multi-instance cleanup: drop the dedupe entry and refill the pool.
+    ; (Only reached for pool spares and non-template windows — active instances
+    ;  return early via the recycle path above.)
     If *T
       If instanceKey <> ""
-        Protected lookupKey.s = *T\Name + ":" + instanceKey
+        lookupKey = *T\Name + ":" + instanceKey
         If FindMapElement(TemplateInstances(), lookupKey)
           DeleteMapElement(TemplateInstances(), lookupKey)
         EndIf
