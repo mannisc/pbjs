@@ -1344,8 +1344,8 @@ Module JSWindow
               CreateThread(@LoadHtml(), *Window\Window)
             CompilerEndIf
           Else
-            ; Fast recycle (no reload): blank body so next user doesn't see stale agent content.
-            ; AgentWindow.tsx re-adds 'pbjs-document-ready' after handleParameters fires.
+            ; Fast recycle (no reload): blank body so next user doesn't see stale content.
+            ; SendParameters re-adds 'pbjs-document-ready' via rAF when the instance is next claimed.
             *JSWindow\NeedsReload = #True
             If IsGadget(*JSWindow\WebViewGadget)
               WebViewExecuteScript(*JSWindow\WebViewGadget, "document.body.classList.remove('pbjs-document-ready');")

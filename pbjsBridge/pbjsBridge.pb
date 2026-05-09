@@ -426,11 +426,16 @@ Module JSBridge
     If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
       Protected messageJson.s
       messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"system\",\"name\":\"handleParameters\",\"params\":" + paramsJson + ~",\"data\":{}}"
-      
+
       Protected escapedJson.s
       escapedJson = EscapeJSON(messageJson)
-      
-      Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + escapedJson + "');"
+
+      ; Combine handleParameters dispatch with body-visibility restore in one script.
+      ; On recycle the bridge removes 'pbjs-document-ready' to blank stale content;
+      ; the rAF re-adds it after the handler fires so every instance window fades in
+      ; correctly without needing per-window React code.
+      Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + escapedJson + "');" +
+                           "requestAnimationFrame(function(){document.body.classList.add('pbjs-document-ready');});"
       If *JSWindow\Ready
          WebViewExecuteScript(*JSWindow\WebViewGadget, script)
       Else
