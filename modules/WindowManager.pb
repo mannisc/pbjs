@@ -184,6 +184,13 @@ Module WindowManager
         ; Window was hidden (not destroyed) — add for explicit CloseWindow() to free WebViewGadget/WKWebView
         AddElement(Windows())
         Windows() = ManagedWindows()\Window
+      Else
+        ; Closed=True but window handle still valid: macOS deferred-close path hides instead
+        ; of calling CloseWindow() during the event loop. Destroy it now (we're outside the loop).
+        If IsWindow(ManagedWindows()\Window)
+          AddElement(Windows())
+          Windows() = ManagedWindows()\Window
+        EndIf
       EndIf
       If ManagedWindows()\CleanupProc
         CallFunctionFast( ManagedWindows()\CleanupProc)

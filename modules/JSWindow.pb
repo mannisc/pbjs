@@ -1286,14 +1286,16 @@ Module JSWindow
   
   Procedure CloseJSWindow(*Window.AppWindow)
     Protected *JSWindow.JSWindow
-    ; Capture template/instanceKey BEFORE the JSWindows() entry is deleted.
+    ; Capture template/instanceKey/parent BEFORE the JSWindows() entry is deleted.
     Protected *T.JSWindowTemplate = 0
     Protected instanceKey.s = ""
+    Protected *Parent.AppWindow = 0
     If *Window <> 0 And IsWindow(*Window\Window)
       *JSWindow = JSWindows(Str(*Window\Window))
       If *JSWindow
         *T          = *JSWindow\OwningTemplate
         instanceKey = *JSWindow\InstanceKey
+        *Parent     = *JSWindow\Parent  ; capture before DeleteMapElement frees *JSWindow
       EndIf
 
       If Not *Window\Closed
@@ -1305,21 +1307,18 @@ Module JSWindow
       If IsWindow(*Window\Window)
         DeleteMapElement(JSWindows(), Str(*Window\Window))
         CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-          ; Defer CloseWindow to the next event-loop tick. Calling it from inside
-          ; WaitWindowEvent's call stack (HandleWindowEvent → HandleEvent → here)
-          ; corrupts PureBasic's native window state and crashes WaitWindowEvent.
-          AddElement(DeferredCloseHandles())
-          DeferredCloseHandles() = *Window\Window
-          PostEvent(#CustomWindowEvent, 0, 0, #Event_Deferred_Close)
+          ; CloseWindow() cannot be safely called from any event-dispatch context on macOS —
+          ; even from HandleMainEvent (after WaitWindowEvent returns) PureBasic/Cocoa state
+          ; is still mid-dispatch and CloseWindow corrupts it, crashing the next WaitWindowEvent.
+          ; Hide the window now; CleanupManagedWindows calls CloseWindow at app exit (outside the loop).
+          HideWindow(*Window\Window, #True)
         CompilerElse
           CloseWindow(*Window\Window)
         CompilerEndIf
       EndIf
 
-      If *JSWindow And *JSWindow\Parent
-        If IsWindow(*JSWindow\Parent\Window)
-          SetActiveWindow(*JSWindow\Parent\Window)
-        EndIf
+      If *Parent And IsWindow(*Parent\Window)
+        SetActiveWindow(*Parent\Window)
       EndIf
     EndIf
 
