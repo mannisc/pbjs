@@ -96,6 +96,12 @@ DeclareModule JSWindow
     NeedsReload.b     ; #True = recycled without reload; invisible to reloadOnReuse=True callers
     ReloadOnRecycle.b ; stored at claim time: #True = reload HTML when this instance is recycled
 
+    ; Cascade position — set by OpenInstance when smartPosition is requested.
+    ; Event_Prepare_Complete uses this instead of PrepareOriginalX/Y when set.
+    HasCascadePosition.b
+    CascadeX.i
+    CascadeY.i
+
   EndStructure
   
   Global NewMap JSWindows.JSWindow()
@@ -127,7 +133,7 @@ DeclareModule JSWindow
   ; Multi-instance public API. See plan iplan/agent-window-multi-instance/plan.md.
   Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1)
   Declare.i FindTemplate(templateName.s)
-  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False)
+  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "")
   Declare RefillPoolAsync(*Template.JSWindowTemplate)
   Declare HandlePoolRefillEvent(Event.i)
   Declare HandleDeferredCloseEvent(Event.i)
@@ -1169,7 +1175,7 @@ Module JSWindow
   CompilerEndIf
 
 
-  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False)
+  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "")
     If Not FindMapElement(JSTemplates(), templateName)
       Debug "[OpenInstance] Unknown template: " + templateName
       ProcedureReturn 0
@@ -1244,6 +1250,49 @@ Module JSWindow
     If paramsJson <> "" And *JS
       JSBridge::SendParameters(*JS, paramsJson)
     EndIf
+
+    ; --- Smart cascade: position new instance relative to the caller window,
+    ;     before making it visible so there is no flicker. ---
+    If callerWindowName <> ""
+      Protected callerHandle.i = 0
+      ForEach JSWindows()
+        If JSWindows()\Name = callerWindowName
+          callerHandle = Val(MapKey(JSWindows()))
+          Break
+        EndIf
+      Next
+      If callerHandle <> 0 And IsWindow(callerHandle)
+        Protected callerX.i  = WindowX(callerHandle)
+        Protected callerY.i  = WindowY(callerHandle)
+        Protected offsetPx.i = Round(10.0 * WindowManager::DPI_Scale, #PB_Round_Nearest)
+        Protected newX.i     = callerX + offsetPx
+        Protected newY.i     = callerY + offsetPx
+        Protected newWinW.i  = WindowWidth(*Window\Window)
+        Protected newWinH.i  = WindowHeight(*Window\Window)
+        Protected desktopCount.i = ExamineDesktops()
+        Protected di.i
+        For di = 0 To desktopCount - 1
+          If callerX >= DesktopX(di) And callerX < DesktopX(di) + DesktopWidth(di) And
+             callerY >= DesktopY(di) And callerY < DesktopY(di) + DesktopHeight(di)
+            If newX + newWinW > DesktopX(di) + DesktopWidth(di)
+              newX = DesktopX(di) + DesktopWidth(di) - newWinW
+            EndIf
+            If newY + newWinH > DesktopY(di) + DesktopHeight(di)
+              newY = DesktopY(di) + DesktopHeight(di) - newWinH
+            EndIf
+            If newX < DesktopX(di) : newX = DesktopX(di) : EndIf
+            If newY < DesktopY(di) : newY = DesktopY(di) : EndIf
+            Break
+          EndIf
+        Next
+        ResizeWindow(*Window\Window, newX, newY, #PB_Ignore, #PB_Ignore)
+        ; Persist so Event_Prepare_Complete restores here, not to PrepareOriginalX/Y.
+        JSWindows(Str(*Window\Window))\HasCascadePosition = #True
+        JSWindows(Str(*Window\Window))\CascadeX = newX
+        JSWindows(Str(*Window\Window))\CascadeY = newY
+      EndIf
+    EndIf
+
     OpenJSWindow(*Window)
 
     ; --- 5. Refill in the background. ---
@@ -1273,7 +1322,10 @@ Module JSWindow
       If Parameters(3) = "1" : reloadOnReuse = #True : EndIf
     EndIf
 
-    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson, reloadOnReuse)
+    Protected callerWindowName.s = ""
+    If ArraySize(Parameters()) >= 4 : callerWindowName = Parameters(4) : EndIf
+
+    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson, reloadOnReuse, callerWindowName)
     If handle = 0
       ProcedureReturn UTF8(~"{\"error\":\"OpenInstance failed\"}")
     EndIf
@@ -1829,9 +1881,13 @@ Module JSWindow
               gtk_widget_set_opacity_(PrepWinID, 1.0)
             CompilerEndIf
 
-            ; Restore original position (needed in both paths — the window was
-            ; moved off-screen during preparation).
-            ResizeWindow(*JSWindow\Window, *JSWindow\PrepareOriginalX, *JSWindow\PrepareOriginalY, #PB_Ignore, #PB_Ignore)
+            ; Restore position — use cascade target if OpenInstance set one, otherwise
+            ; the pre-prepare origin (the window was moved off-screen during preparation).
+            If *JSWindow\HasCascadePosition
+              ResizeWindow(*JSWindow\Window, *JSWindow\CascadeX, *JSWindow\CascadeY, #PB_Ignore, #PB_Ignore)
+            Else
+              ResizeWindow(*JSWindow\Window, *JSWindow\PrepareOriginalX, *JSWindow\PrepareOriginalY, #PB_Ignore, #PB_Ignore)
+            EndIf
 
             ; If the race fired (window was opened while still being prepared),
             ; now that alpha and position are correct, raise the window to front.

@@ -578,7 +578,7 @@
       // - params:       JSON-serializable payload, delivered to the target
       //                 window as a "handleParameters" message.
       // Resolves to { success, name, id } or { error }.
-      openInstance: function (templateName, instanceKey, params, reloadOnReuse) {
+      openInstance: function (templateName, instanceKey, params, reloadOnReuse, options) {
         return new Promise((resolve, reject) => {
           if (!window.pbjsNativeOpenInstance) {
             reject(new Error("pbjsNativeOpenInstance not available"));
@@ -586,12 +586,16 @@
           }
           const paramJson = params !== undefined ? JSON.stringify(params) : "";
           const reloadParam = reloadOnReuse === true ? "1" : "0";
+          const callerName = (options && options.smartPosition)
+            ? String(window.pbjs.windowName || "")
+            : "";
           window
             .pbjsNativeOpenInstance(
               String(templateName),
               String(instanceKey || ""),
               paramJson,
-              reloadParam
+              reloadParam,
+              callerName
             )
             .then((result) => {
               if (!result) {
