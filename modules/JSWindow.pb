@@ -430,6 +430,41 @@ Module JSWindow
   
   
   
+  Procedure JSSetWindowTitle(JsonParameters.s)
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ReDim Parameters(1)
+      ExtractJSONArray(JSONValue(json), Parameters())
+      FreeJSON(json)
+
+      Protected targetName.s = Trim(Parameters(0))
+      Protected newTitle.s    = Parameters(1)
+
+      ForEach JSWindows()
+        If Trim(JSWindows()\Name) = targetName
+          window = JSWindows()\Window
+          found = #True
+          Break
+        EndIf
+      Next
+
+      If Not found
+        window = Val(targetName)
+      EndIf
+
+      If IsWindow(window)
+        SetWindowTitle(window, newTitle)
+        ProcedureReturn UTF8(~"{\"success\":true}")
+      EndIf
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
+  EndProcedure
+
+
+
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
     
     Protected script$ = "if(window.pbjsUpdateScale) window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
@@ -767,6 +802,7 @@ Module JSWindow
     BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
+    BindWebViewCallback(webViewGadget, "pbjsNativeSetWindowTitle", @JSSetWindowTitle())
   EndProcedure 
   
   
