@@ -770,6 +770,28 @@ Module JSWindow
   EndProcedure 
   
   
+  Procedure JSSetWindowTitle(JsonParameters.s)
+    Dim Parameters.s(0)
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ExtractJSONArray(JSONValue(json), Parameters())
+      If ArraySize(Parameters()) < 1
+        FreeJSON(json)
+        ProcedureReturn UTF8(~"{\"error\":\"Missing parameters\"}")
+      EndIf
+      Protected windowName.s = Parameters(0)
+      Protected newTitle.s    = Parameters(1)
+      FreeJSON(json)
+      ForEach JSWindows()
+        If Trim(JSWindows()\Name) = Trim(windowName) And IsWindow(JSWindows()\Window)
+          SetWindowTitle(JSWindows()\Window, newTitle)
+          ProcedureReturn UTF8(~"{\"success\":true}")
+        EndIf
+      Next
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
+  EndProcedure
+
   Procedure BindWebviewEvents(webViewGadget)
     BindWebViewCallback(webViewGadget, "callbackReadyState", @JSReadyState())
     BindWebViewCallback(webViewGadget, "pbjsNativeGetWindow", @JSGetWindow())
@@ -778,7 +800,8 @@ Module JSWindow
     BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
-  EndProcedure 
+    BindWebViewCallback(webViewGadget, "pbjsNativeSetWindowTitle", @JSSetWindowTitle())
+  EndProcedure
   
   
   
