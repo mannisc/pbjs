@@ -41,6 +41,13 @@ Module JSFileSystem
   ; HELPER FUNCTIONS
   ; ============================================================================
   
+  ; Escapes a string so it is a valid JSON value (RFC 8259). Note: a single
+  ; quote (') is NOT a JSON escape — \' is invalid JSON and makes JSON.parse
+  ; throw "Bad escaped character". Single-quote escaping is needed ONLY when
+  ; embedding the result inside a JS single-quoted string literal (the
+  ; pbjsHandleFSResponse('...') injection in SendResponse), and is applied there
+  ; separately. Do not add ' -> \' here, or any file content containing a quote
+  ; (e.g. a graph command `echo 'hi'`) becomes unreadable on read-back.
   Procedure.s EscapeJSON(text.s)
     Protected result.s
     result = ReplaceString(text, Chr(92), Chr(92)+Chr(92))
@@ -48,7 +55,6 @@ Module JSFileSystem
     result = ReplaceString(result, Chr(13), Chr(92)+"r")
     result = ReplaceString(result, Chr(10), Chr(92)+"n")
     result = ReplaceString(result, Chr(9), Chr(92)+"t")
-    result = ReplaceString(result, Chr(39), Chr(92)+Chr(39)) ; Escape single quote
     ProcedureReturn result
   EndProcedure
   
@@ -61,7 +67,11 @@ Module JSFileSystem
       response = ~"{\"requestId\":" + Str(requestId) + ~",\"data\":" + dataJson + ~"}"
     EndIf
     
-    script = "pbjsHandleFSResponse('" + EscapeJSON(response) + "');"
+    ; The response is a JSON string. Embedding it in a JS single-quoted literal
+    ; requires escaping single quotes here (\') — this is a JS-literal concern,
+    ; not a JSON one, so it is done at the injection layer rather than in
+    ; EscapeJSON (see note there).
+    script = "pbjsHandleFSResponse('" + ReplaceString(EscapeJSON(response), Chr(39), Chr(92)+Chr(39)) + "');"
     Debug "SendResponse: Sending " + Str(Len(script)) + " bytes to Gadget " + Str(gadget) + " (ReqID: " + Str(requestId) + ")"
     Debug "[FS-NATIVE] SendResponse Gadget: " + Str(gadget) + " ReqID: " + Str(requestId) + " Script: " + Left(script, 100) + "..."
     WebViewExecuteScript(gadget, script)
