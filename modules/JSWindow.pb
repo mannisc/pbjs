@@ -129,6 +129,13 @@ DeclareModule JSWindow
   Declare HandleDeferredCloseEvent(Event.i)
   Declare FocusInstance(*Window.AppWindow)
 
+  ; Register a hook called repeatedly *during* an OS modal resize/move loop
+  ; (Windows). pbjs owns the window proc — the only callback Windows invokes
+  ; while the modal loop blocks PB's event loop — so anything that must stay live
+  ; mid-drag (e.g. draining a PTY output queue) plugs in here. Generic: pbjs has
+  ; no knowledge of the hook's owner. Pass 0 to clear. No-op off Windows.
+  Declare SetResizeDrainHook(*proc)
+
 EndDeclareModule
 
 
@@ -148,7 +155,19 @@ Module JSWindow
   CompilerIf #PB_Compiler_OS = #PB_OS_Windows
     Declare WindowCallback(hWnd, uMsg, WParam, LParam)
   CompilerEndIf
-  
+
+  ; Resize-drain hook (see SetResizeDrainHook). Called from WindowCallback while
+  ; the OS modal resize/move loop is running so subscribers stay live mid-drag.
+  Global ResizeDrainHook.i = 0
+  CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+    #JSWIN_RESIZE_DRAIN_TIMER    = 47011
+    #JSWIN_RESIZE_DRAIN_INTERVAL = 16   ; ms — drains while the mouse is held still
+  CompilerEndIf
+
+  Procedure SetResizeDrainHook(*proc)
+    ResizeDrainHook = *proc
+  EndProcedure
+
   Prototype.i ProtoWindowReady(*Window, *JSWindow)
   
   Procedure MakeContentVisible(window)
@@ -1865,16 +1884,37 @@ Module JSWindow
       EndIf 
       
       Select uMsg
-          
+
         Case #WM_SIZE , #WM_SIZING
           w = WindowWidth(*Window\Window)
           h = WindowHeight(*Window\Window)
-          UpdateWebViewScale(JSWindows(Str(*Window\Window)), w, h)  
+          UpdateWebViewScale(JSWindows(Str(*Window\Window)), w, h)
+          ; Live-drain subscribers (e.g. PTY output) on every size step so terminal
+          ; content tracks the drag instead of flooding in on mouse-up. This proc
+          ; is invoked by Windows directly during the modal loop, so the hook runs
+          ; even though PB's own event loop is suspended.
+          If ResizeDrainHook : CallFunctionFast(ResizeDrainHook) : EndIf
           ProcedureReturn #True
-          
+
+        Case $0231 ; WM_ENTERSIZEMOVE — modal loop begins
+          Debug "[JSWIN-CB] WM_ENTERSIZEMOVE hwnd=" + Str(hWnd) + " t=" + Str(ElapsedMilliseconds())
+          ; Cover the held-still case (no WM_SIZE): WM_TIMER is the only message
+          ; this proc receives during an otherwise idle modal loop.
+          SetTimer_(hWnd, #JSWIN_RESIZE_DRAIN_TIMER, #JSWIN_RESIZE_DRAIN_INTERVAL, #Null)
+
+        Case #WM_TIMER
+          If WParam = #JSWIN_RESIZE_DRAIN_TIMER And ResizeDrainHook
+            CallFunctionFast(ResizeDrainHook)
+          EndIf
+
+        Case $0232 ; WM_EXITSIZEMOVE — modal loop ends
+          Debug "[JSWIN-CB] WM_EXITSIZEMOVE hwnd=" + Str(hWnd) + " t=" + Str(ElapsedMilliseconds())
+          KillTimer_(hWnd, #JSWIN_RESIZE_DRAIN_TIMER)
+          If ResizeDrainHook : CallFunctionFast(ResizeDrainHook) : EndIf
+
       EndSelect
-      
-      ProcedureReturn #PB_ProcessPureBasicEvents 
+
+      ProcedureReturn #PB_ProcessPureBasicEvents
     EndProcedure
   CompilerEndIf
   
