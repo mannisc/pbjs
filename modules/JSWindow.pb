@@ -23,6 +23,7 @@ DeclareModule JSWindow
   EndEnumeration
   
   Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  Declare RegisterWindowClosingObserver(*callback)
   Declare PrepareJSWindow(*Window.AppWindow)
   Declare OpenJSWindow(*Window.AppWindow )    
   Declare HideJSWindow(*Window.AppWindow, FromManagedWindow)
@@ -97,6 +98,13 @@ DeclareModule JSWindow
   
   Global NewMap JSWindows.JSWindow()
   Global NewMap WindowsByName.i()
+
+  ; Generic window-close observers. Mirrors the *WindowReadyCallback hook in the
+  ; opposite direction: callbacks are invoked as (*Window, *JSWindow) just before
+  ; a window's webview is torn down. pbjs stays domain-agnostic — it has no idea
+  ; what observers do; the application layer (main.pb) registers them (e.g. to
+  ; deregister a closed webview from ptym). See Prototype ProtoWindowReady.
+  Global NewList WindowClosingObservers.i()
 
   ; Multi-instance support — see Structure JSWindowTemplate above.
   Global NewMap JSTemplates.JSWindowTemplate()
@@ -488,6 +496,44 @@ Module JSWindow
     ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
   EndProcedure
 
+  ; Bring a window to the foreground by its runtime name. Reuses the same
+  ; name->window resolution as JSSetWindowTitle and the cross-platform
+  ; FocusInstance used by OpenInstance's re-focus path. Used by the JS
+  ; cross-window singleton agent-tab logic (pbjs.focusWindow).
+  Procedure JSFocusWindow(JsonParameters.s)
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ExtractJSONArray(JSONValue(json), Parameters())
+      FreeJSON(json)
+
+      Protected targetName.s = Trim(Parameters(0))
+
+      ForEach JSWindows()
+        If Trim(JSWindows()\Name) = targetName
+          window = JSWindows()\Window
+          found = #True
+          Break
+        EndIf
+      Next
+
+      If Not found
+        window = Val(targetName)
+      EndIf
+
+      If IsWindow(window)
+        Protected *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+        If *Window
+          FocusInstance(*Window)
+          ProcedureReturn UTF8(~"{\"success\":true}")
+        EndIf
+      EndIf
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
+  EndProcedure
+
 
 
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
@@ -828,7 +874,8 @@ Module JSWindow
     BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
     BindWebViewCallback(webViewGadget, "pbjsNativeSetWindowTitle", @JSSetWindowTitle())
-  EndProcedure 
+    BindWebViewCallback(webViewGadget, "pbjsNativeFocusWindow", @JSFocusWindow())
+  EndProcedure
   
   
   
@@ -1411,6 +1458,15 @@ Module JSWindow
   EndProcedure
   
   
+  ; Register a generic close observer, invoked as (*Window, *JSWindow) just
+  ; before a window's webview is torn down (see CloseJSWindow). Domain-agnostic.
+  Procedure RegisterWindowClosingObserver(*callback)
+    If *callback
+      AddElement(WindowClosingObservers())
+      WindowClosingObservers() = *callback
+    EndIf
+  EndProcedure
+
   Procedure CloseJSWindow(*Window.AppWindow)
     Protected *JSWindow.JSWindow
     ; Capture template/instanceKey BEFORE the JSWindows() entry is deleted.
@@ -1433,6 +1489,15 @@ Module JSWindow
         If Not FindMapElement(JSWindows(), Str(*Window\Window))
           ProcedureReturn
         EndIf
+      EndIf
+
+      ; Notify close observers while *JSWindow and its webview gadget are still
+      ; valid (runs once, in the cleanup path — the outer call returned above).
+      ; Generic hook: pbjs doesn't know or care what observers do.
+      If *JSWindow
+        ForEach WindowClosingObservers()
+          CallFunctionFast(WindowClosingObservers(), *Window, *JSWindow)
+        Next
       EndIf
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
         MacOSUnregisterResizeNotifications(*Window)
