@@ -71,6 +71,15 @@ Module JSBridge
     result = ReplaceString(result, Chr(13), Chr(92)+"r")
     result = ReplaceString(result, Chr(10), Chr(92)+"n")
     result = ReplaceString(result, Chr(9), Chr(92)+"t")
+    ; Escape single quotes LAST (after the backslash pass above, so the
+    ; backslash we introduce here is not doubled). Every caller wraps the
+    ; result in a single-quoted JS string literal — pbjsHandleMessage('...') —
+    ; so an unescaped apostrophe in any payload (e.g. "Tim's shell") would
+    ; terminate the literal and throw a SyntaxError, silently dropping the
+    ; message. `\'` is a valid escape inside single-quoted JS strings and the
+    ; inner JSON stays intact after JS un-escapes it. (Same pattern already
+    ; used in pbjsFileSystem.pb.)
+    result = ReplaceString(result, Chr(39), Chr(92)+Chr(39))
     ProcedureReturn result
   EndProcedure
   
@@ -231,9 +240,11 @@ Module JSBridge
                     ~",\"data\":" + dataJson + ~"}"
       
       script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
-      
+
       ForEach JSWindows()
-        If JSWindows()\Name <> fromWindow
+        ; Skip pool spares: they are dormant, off-screen template windows that
+        ; are not assigned to any caller and should not receive broadcasts.
+        If JSWindows()\Name <> fromWindow And Not JSWindows()\IsPoolSpare
           If JSWindows()\Ready
             WebViewExecuteScript(JSWindows()\WebViewGadget, script)
           Else
@@ -265,9 +276,13 @@ Module JSBridge
       dataJson = GetJSONString(GetJSONMember(JSONValue(json), "data"))
       requestId = GetJSONInteger(GetJSONMember(JSONValue(json), "requestId"))
       
+      ; Count broadcast targets. Must use the SAME predicate as the multicast
+      ; loop below, or expectedCount won't match the windows that can reply.
+      ; Pool spares are excluded: a warming spare never registers the handler,
+      ; so it would never reply and invokeAll would hang to the 30s timeout.
       count = 0
       ForEach JSWindows()
-        If JSWindows()\Name <> fromWindow
+        If JSWindows()\Name <> fromWindow And Not JSWindows()\IsPoolSpare
           count + 1
         EndIf
       Next
@@ -293,7 +308,8 @@ Module JSBridge
         script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
         
         ForEach JSWindows()
-          If JSWindows()\Name <> fromWindow
+          ; Same predicate as the count loop above (excludes pool spares).
+          If JSWindows()\Name <> fromWindow And Not JSWindows()\IsPoolSpare
             If IsGadget(JSWindows()\WebViewGadget)
               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
             EndIf
