@@ -15,6 +15,7 @@ DeclareModule JSWindow
     #Event_Prepare_Complete
     #Event_Pool_Refill
     #Event_Deferred_Close
+    #Event_Deferred_Release
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -112,6 +113,10 @@ DeclareModule JSWindow
     ; Handles whose CloseWindow() must be deferred to the next event-loop tick.
     ; Calling CloseWindow() from inside WaitWindowEvent's call stack crashes on macOS.
     Global NewList DeferredCloseHandles.i()
+    ; WKWebViews retained before CloseWindow and released one tick later via
+    ; #Event_Deferred_Release, keeping WKUserContentController alive so any
+    ; pending XPC postMessage deliveries land on removed (silent) handlers.
+    Global NewList WKWebViewsToRelease.i()
   CompilerEndIf
   Global ClosingScope = 0 ; 0: None, -1: App, >0: WindowID
   Global ReloadedJS = #False
@@ -127,6 +132,7 @@ DeclareModule JSWindow
   Declare RefillPoolAsync(*Template.JSWindowTemplate)
   Declare HandlePoolRefillEvent(Event.i)
   Declare HandleDeferredCloseEvent(Event.i)
+  Declare HandleDeferredReleaseEvent(Event.i)
   Declare FocusInstance(*Window.AppWindow)
 
   ; Register a hook called repeatedly *during* an OS modal resize/move loop
@@ -1188,8 +1194,9 @@ Module JSWindow
 
   CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
   Procedure HandleDeferredCloseEvent(Event.i)
-    ; Drain the deferred-close list. Must be called from HandleMainEvent so that
-    ; CloseWindow() runs at the top of the event loop, not inside WaitWindowEvent's stack.
+    ; Legacy drain path. Window close now goes through ScheduleGCDClose (GCD main
+    ; queue), so this list is normally empty; kept as a safety drain in case any
+    ; handle is ever enqueued here.
     If Event <> #CustomWindowEvent : ProcedureReturn : EndIf
     If EventType() <> #Event_Deferred_Close : ProcedureReturn : EndIf
     While ListSize(DeferredCloseHandles()) > 0
@@ -1197,15 +1204,80 @@ Module JSWindow
       Protected handle.i = DeferredCloseHandles()
       DeleteElement(DeferredCloseHandles())
       If IsWindow(handle)
-        Debug "[HandleDeferredCloseEvent] CloseWindow handle=" + Str(handle)
         CloseWindow(handle)
       EndIf
     Wend
+  EndProcedure
+
+  Procedure HandleDeferredReleaseEvent(Event.i)
+    ; Retired: the retain/release scheme it served was replaced by GCD-ordered
+    ; close (ScheduleGCDClose). Kept as a no-op so HandleMainEvent wiring stays valid.
   EndProcedure
   CompilerElse
   Procedure HandleDeferredCloseEvent(Event.i)
     ; No-op on non-macOS: CloseWindow is called synchronously there.
   EndProcedure
+  Procedure HandleDeferredReleaseEvent(Event.i)
+  EndProcedure
+  CompilerEndIf
+
+
+  CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+    ; ---------------------------------------------------------------------------
+    ; GCD-ordered window close (macOS).
+    ;
+    ; PureBasic's WebViewGadget is built on the webview.h C++ library. When JS
+    ; invokes a native binding, webview enqueues a `resolve` block onto the main
+    ; GCD queue (libdispatch) to deliver the result. The close handshake itself
+    ; triggers such a binding (system:close-window), so a `resolve` block that
+    ; captures the C++ engine `this` is in flight at close time.
+    ;
+    ; If we destroy the window (and thus the webview engine) before that block
+    ; runs, the next run-loop iteration drains the queue, the block fires, and it
+    ; dereferences the freed engine -> EXC_BAD_ACCESS in
+    ; webview::detail::engine_base::resolve (confirmed via symbolicated crash
+    ; report). Retaining the WKWebView/NSWindow does NOT help -- the dangling
+    ; pointer is the webview.h engine, a layer below Apple's objects.
+    ;
+    ; Fix: enqueue CloseWindow onto the SAME main GCD queue via dispatch_async_f.
+    ; GCD is strict FIFO, so the already-queued `resolve` block runs first (engine
+    ; alive), then our block destroys the window. No block is left referencing a
+    ; freed engine. This also runs CloseWindow at the top of a clean run-loop
+    ; iteration (not nested in WaitWindowEvent's call stack).
+    ;
+    ; dispatch_async_f schedules a C callback on a GCD queue. _dispatch_main_q is
+    ; the main-queue object; its ADDRESS is the queue handle (what the inline
+    ; dispatch_get_main_queue() macro returns).
+    ; Import only the function. PureBasic's ImportC parameter list does not take
+    ; type suffixes — all args are integer/pointer-width.
+    ImportC ""
+      dispatch_async_f(gcdQueue, gcdContext, gcdWork)
+    EndImport
+
+    Procedure GCDCloseCallback(handle.i)
+      ; Runs on the main thread (GCD main queue). `handle` is the PB window id,
+      ; passed through dispatch_async_f's context slot.
+      If IsWindow(handle)
+        Debug "[GCDCloseCallback] CloseWindow handle=" + Str(handle)
+        CloseWindow(handle)
+      EndIf
+    EndProcedure
+
+    Procedure ScheduleGCDClose(handle.i)
+      Protected cb.i = @GCDCloseCallback()
+      ; The main-queue handle is the ADDRESS of libdispatch's _dispatch_main_q
+      ; symbol (what the dispatch_get_main_queue() macro returns). Resolve it via
+      ; inline C in the C backend; declare the extern so the C compiler accepts it.
+      Protected q.i = 0
+      ! extern char _dispatch_main_q[];
+      ! v_q = (long)&_dispatch_main_q;
+      If q And cb
+        dispatch_async_f(q, handle, cb)
+      Else
+        ; Fallback: should never happen, but don't leak the window.
+        If IsWindow(handle) : CloseWindow(handle) : EndIf
+      EndIf
+    EndProcedure
   CompilerEndIf
 
 
@@ -1353,19 +1425,76 @@ Module JSWindow
 
       If Not *Window\Closed
         CloseManagedWindow(*Window)
+        ; CloseManagedWindow calls CloseProc = CloseJSWindow recursively (with
+        ; *Window\Closed already True). That inner call runs all cleanup below with
+        ; a valid *JSWindow pointer and defers CloseWindow. By the time we return
+        ; here, the JSWindows map entry is gone and *JSWindow is dangling — bail out
+        ; so the outer call doesn't re-execute cleanup with a stale pointer.
+        If Not FindMapElement(JSWindows(), Str(*Window\Window))
+          ProcedureReturn
+        EndIf
       EndIf
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
         MacOSUnregisterResizeNotifications(*Window)
+        ; Stop the WebView and remove all script message handlers before deferring
+        ; CloseWindow. Pending WKScriptMessage deliveries from the web content
+        ; process arrive via the Cocoa run loop — if the webview is already freed
+        ; when they land, the next WaitWindowEvent crashes with an invalid memory
+        ; access. Removing the handlers makes those deliveries silent no-ops.
+        ; GadgetID returns a container NSView, not the WKWebView itself — search
+        ; subviews for the actual WKWebView.
+        If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
+          Protected macGadgetView.i = GadgetID(*JSWindow\WebViewGadget)
+          Protected macWKClass.i = objc_getClass_("WKWebView")
+          Protected macWv.i = 0
+          ; Search up to 3 levels deep — GadgetID returns a container NSView, not
+          ; WKWebView itself. Depth varies across PureBasic versions/macOS versions.
+          If macGadgetView And macWKClass
+            Protected macSearchQueue.i = CocoaMessage(0, 0, "NSMutableArray array")
+            CocoaMessage(0, macSearchQueue, "addObject:", macGadgetView)
+            Protected macSearchDepth.i = 0
+            While macWv = 0 And CocoaMessage(0, macSearchQueue, "count") > 0 And macSearchDepth < 3
+              Protected macNextLevel.i = CocoaMessage(0, 0, "NSMutableArray array")
+              Protected macQLvlCount.i = CocoaMessage(0, macSearchQueue, "count")
+              Protected macQIdx.i
+              For macQIdx = 0 To macQLvlCount - 1
+                Protected macQView.i = CocoaMessage(0, macSearchQueue, "objectAtIndex:", macQIdx)
+                If CocoaMessage(0, macQView, "isKindOfClass:", macWKClass)
+                  macWv = macQView
+                  Break
+                EndIf
+                Protected macQSubs.i = CocoaMessage(0, macQView, "subviews")
+                CocoaMessage(0, macNextLevel, "addObjectsFromArray:", macQSubs)
+              Next
+              macSearchQueue = macNextLevel
+              macSearchDepth + 1
+            Wend
+          EndIf
+          Debug "[CloseJSWindow] macWv=" + Str(macWv)
+          If macWv
+            CocoaMessage(0, macWv, "stopLoading")
+            ; Nil the delegates so the WKWebView won't call into PureBasic's
+            ; delegate objects after CloseWindow frees them. These are weak
+            ; properties — nil-ing does NOT extend any object's lifetime.
+            CocoaMessage(0, macWv, "setNavigationDelegate:", 0)
+            CocoaMessage(0, macWv, "setUIDelegate:", 0)
+            Protected macUcc.i = CocoaMessage(0, CocoaMessage(0, macWv, "configuration"), "userContentController")
+            If macUcc : CocoaMessage(0, macUcc, "removeAllScriptMessageHandlers") : EndIf
+          EndIf
+          ; NOTE: do NOT retain the WKWebView/NSWindow past CloseWindow. Doing so
+          ; kept a half-torn-down object alive that the run loop then touched,
+          ; turning an occasional crash into a deterministic one. Letting them
+          ; deallocate naturally during CloseWindow is strictly better here.
+        EndIf
       CompilerEndIf
       If IsWindow(*Window\Window)
         DeleteMapElement(JSWindows(), Str(*Window\Window))
         CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-          ; Defer CloseWindow to the next event-loop tick. Calling it from inside
-          ; WaitWindowEvent's call stack (HandleWindowEvent → HandleEvent → here)
-          ; corrupts PureBasic's native window state and crashes WaitWindowEvent.
-          AddElement(DeferredCloseHandles())
-          DeferredCloseHandles() = *Window\Window
-          PostEvent(#CustomWindowEvent, 0, 0, #Event_Deferred_Close)
+          ; Enqueue CloseWindow on the main GCD queue so it runs AFTER any
+          ; in-flight webview.h `resolve` block (FIFO ordering). See the comment
+          ; on ScheduleGCDClose above for the full rationale. This also avoids
+          ; calling CloseWindow from inside WaitWindowEvent's call stack.
+          ScheduleGCDClose(*Window\Window)
         CompilerElse
           CloseWindow(*Window\Window)
         CompilerEndIf
