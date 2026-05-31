@@ -567,6 +567,61 @@
         });
       },
 
+      // Fire-and-forget message to a single window. No requestId, no pending
+      // entry, no Promise, no 30s timer — the receiver's handle()/handleAll()
+      // fires but is not expected to reply. If the target exists but isn't
+      // ready yet, native buffers it (PendingMessages); if it doesn't exist,
+      // native drops it silently. Use invoke() when you need a response.
+      send: function (windowName, name, params, data) {
+        if (!windowName || typeof windowName !== "string") {
+          log.error("send", new Error("windowName must be a non-empty string"));
+          return;
+        }
+        if (!name || typeof name !== "string") {
+          log.error("send", new Error("name must be a non-empty string"));
+          return;
+        }
+        if (!window.pbjsNativeSend) {
+          log.error("send", new Error("Native bridge not available"));
+          return;
+        }
+        log.invoke(windowName, name, params, data);
+        window.pbjsNativeSend(
+          JSON.stringify({
+            type: "send",
+            fromWindow: WINDOW_NAME,
+            toWindow: windowName,
+            name: name,
+            params: JSON.stringify(params || {}),
+            data: JSON.stringify(data || {}),
+          })
+        );
+      },
+
+      // Fire-and-forget broadcast to every window except the sender. Same
+      // no-reply semantics as send(). This is the cheap primitive for events,
+      // presence, and store-sync patches (see iplan/pbjszustand.md).
+      sendAll: function (name, params, data) {
+        if (!name || typeof name !== "string") {
+          log.error("sendAll", new Error("name must be a non-empty string"));
+          return;
+        }
+        if (!window.pbjsNativeSendAll) {
+          log.error("sendAll", new Error("Native bridge not available"));
+          return;
+        }
+        log.invoke("ALL WINDOWS", name, params, data);
+        window.pbjsNativeSendAll(
+          JSON.stringify({
+            type: "sendAll",
+            fromWindow: WINDOW_NAME,
+            name: name,
+            params: JSON.stringify(params || {}),
+            data: JSON.stringify(data || {}),
+          })
+        );
+      },
+
       onCloseWindow: function (handler) {
         window.pbjs.handle("system", "close-window", handler);
       },
