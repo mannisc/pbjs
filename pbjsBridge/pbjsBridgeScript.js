@@ -15,6 +15,10 @@
   const getAllPendingRequests = new Map();
   let nextRequestId = 1;
   const unhandledMessages = [];
+  // Cap the inbound buffer so a window that never registers a handler can't
+  // accumulate messages unboundedly; drop oldest and count drops. (P2 / §5.3.)
+  const MAX_UNHANDLED_MESSAGES = 500;
+  let droppedUnhandledCount = 0;
 
   // Window names we've proven are ready. While a name is in this set,
   // invoke()/send() skip the waitForWindow() probe (two native round-trips).
@@ -32,32 +36,46 @@
     error: console.error,
   };
 
-  function sendToNativeLog(level, args) {
-    if (window.pbjsNativeLog) {
-      try {
-        const message = args
-          .map((arg) => {
-            if (typeof arg === "object") {
-              try {
-                return JSON.stringify(arg);
-              } catch (e) {
-                return String(arg);
-              }
-            }
-            return String(arg);
-          })
-          .join(" ");
+  // Native-log level gate (F11). Forwarding every console.* call to native
+  // competes with real IPC on the main loop, especially under store-sync
+  // traffic. Levels below the threshold are not forwarded. Override at runtime:
+  //   window.pbjsLogLevel = "INFO" | "WARN" | "ERROR" | "OFF"
+  // Default "INFO" preserves the previous behavior for ordinary app logs; the
+  // high-frequency IPC *traces* are handled separately (see `log` below).
+  const LOG_PRIORITY = { INFO: 20, WARN: 30, ERROR: 40, OFF: 100 };
+  function nativeLogThreshold() {
+    const lvl = String(window.pbjsLogLevel || "INFO").toUpperCase();
+    return LOG_PRIORITY[lvl] !== undefined
+      ? LOG_PRIORITY[lvl]
+      : LOG_PRIORITY.INFO;
+  }
 
-        window.pbjsNativeLog(
-          JSON.stringify({
-            level: level,
-            message: message,
-            window: WINDOW_NAME,
-          })
-        );
-      } catch (err) {
-        // Avoid infinite loops
-      }
+  function sendToNativeLog(level, args) {
+    if (!window.pbjsNativeLog) return;
+    if ((LOG_PRIORITY[level] || 0) < nativeLogThreshold()) return;
+    try {
+      const message = args
+        .map((arg) => {
+          if (typeof arg === "object") {
+            try {
+              return JSON.stringify(arg);
+            } catch (e) {
+              return String(arg);
+            }
+          }
+          return String(arg);
+        })
+        .join(" ");
+
+      window.pbjsNativeLog(
+        JSON.stringify({
+          level: level,
+          message: message,
+          window: WINDOW_NAME,
+        })
+      );
+    } catch (err) {
+      // Avoid infinite loops
     }
   }
 
@@ -74,9 +92,16 @@
     sendToNativeLog("ERROR", args);
   };
 
+  // High-frequency IPC trace logs. These print to devtools via the *original*
+  // console (captured above) so they are NOT forwarded to native — every
+  // invoke/response/handler would otherwise ship a log over the bridge and
+  // compete with real IPC on the main loop, especially under store-sync traffic
+  // (F11). Full devtools richness is kept; only the native forward is dropped.
+  // log.error (below) still forwards: bridge errors are rare and worth seeing in
+  // the native terminal.
   const log = {
     invoke: (targetWindow, name, params, data) => {
-      console.log(
+      originalConsole.log(
         "%c→ INVOKE %c" + name + " %c→ " + targetWindow,
         "color: #2196F3; font-weight: bold",
         "color: #FF9800; font-weight: bold",
@@ -86,7 +111,7 @@
     },
     response: (fromWindow, name, response, isError) => {
       if (isError) {
-        console.error(
+        originalConsole.error(
           "%c← RESPONSE %c" + name + " %c← " + fromWindow,
           "color: #F44336; font-weight: bold",
           "color: #FF9800; font-weight: bold",
@@ -94,7 +119,7 @@
           response
         );
       } else {
-        console.log(
+        originalConsole.log(
           "%c← RESPONSE %c" + name + " %c← " + fromWindow + " %c✓",
           "color: #4CAF50; font-weight: bold",
           "color: #FF9800; font-weight: bold",
@@ -105,7 +130,7 @@
       }
     },
     handler: (fromWindow, name, type) => {
-      console.log(
+      originalConsole.log(
         "%c◆ HANDLER %c" + name + " %c← " + fromWindow + " %c[" + type + "]",
         "color: #9C27B0; font-weight: bold",
         "color: #FF9800; font-weight: bold",
@@ -891,12 +916,24 @@
           return;
         }
 
-        // Buffer other unhandled messages
-        // The handler should register soon and the message will replay
+        // Buffer other unhandled messages — the handler should register soon and
+        // the message will replay. Cap the buffer (drop oldest, count drops) so a
+        // window that never registers a handler can't grow it unboundedly.
         msg._bufferedAt = Date.now();
+        if (unhandledMessages.length >= MAX_UNHANDLED_MESSAGES) {
+          unhandledMessages.shift();
+          droppedUnhandledCount++;
+        }
         unhandledMessages.push(msg);
         console.warn(
-          "Buffered unhandled message: " + msg.name + " [" + msg.type + "]"
+          "Buffered unhandled message: " +
+            msg.name +
+            " [" +
+            msg.type +
+            "]" +
+            (droppedUnhandledCount
+              ? " (dropped " + droppedUnhandledCount + " over cap)"
+              : "")
         );
         return;
       }

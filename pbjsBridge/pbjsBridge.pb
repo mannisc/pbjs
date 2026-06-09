@@ -88,7 +88,27 @@ Module JSBridge
       ForEach *JSWindow\PendingMessages()
         WebViewExecuteScript(*JSWindow\WebViewGadget, *JSWindow\PendingMessages())
       Next
-      ClearList(*JSWindow\PendingMessages()) 
+      ClearList(*JSWindow\PendingMessages())
+    EndIf
+  EndProcedure
+
+  ; Cap per-window pending-message buffers so a slow-to-init (or stuck) window
+  ; can't accumulate injected scripts unboundedly. Drops the oldest when full
+  ; (FIFO) and counts drops. Replaces the bare AddElement+assign at every
+  ; buffering site below. (P2 / pbjs.md §5.3 "Pending queue is unbounded".)
+  #MaxPendingMessages = 500
+  Global g_DroppedPendingMessages.i = 0
+  Procedure QueuePending(*JSWindow.JSWindow, script.s)
+    If *JSWindow
+      If ListSize(*JSWindow\PendingMessages()) >= #MaxPendingMessages
+        If FirstElement(*JSWindow\PendingMessages())
+          DeleteElement(*JSWindow\PendingMessages())
+          g_DroppedPendingMessages + 1
+        EndIf
+      EndIf
+      LastElement(*JSWindow\PendingMessages())
+      AddElement(*JSWindow\PendingMessages())
+      *JSWindow\PendingMessages() = script
     EndIf
   EndProcedure
   
@@ -128,8 +148,7 @@ Module JSBridge
             If JSWindows()\Ready
                WebViewExecuteScript(JSWindows()\WebViewGadget, script)
             Else
-               AddElement(JSWindows()\PendingMessages())
-               JSWindows()\PendingMessages() = script
+               QueuePending(@JSWindows(), script)
             EndIf
             Break
           EndIf
@@ -176,8 +195,7 @@ Module JSBridge
               If JSWindows()\Ready
                  WebViewExecuteScript(JSWindows()\WebViewGadget, script)
               Else
-                 AddElement(JSWindows()\PendingMessages())
-                 JSWindows()\PendingMessages() = script
+                 QueuePending(@JSWindows(), script)
               EndIf
             EndIf
             Break
@@ -206,8 +224,7 @@ Module JSBridge
                If JSWindows()\Ready
                  WebViewExecuteScript(JSWindows()\WebViewGadget, script)
                Else
-                 AddElement(JSWindows()\PendingMessages())
-                 JSWindows()\PendingMessages() = script
+                 QueuePending(@JSWindows(), script)
                EndIf
                Break
             EndIf
@@ -248,8 +265,7 @@ Module JSBridge
           If JSWindows()\Ready
             WebViewExecuteScript(JSWindows()\WebViewGadget, script)
           Else
-            AddElement(JSWindows()\PendingMessages())
-            JSWindows()\PendingMessages() = script
+            QueuePending(@JSWindows(), script)
           EndIf
           count + 1
         EndIf
@@ -404,8 +420,7 @@ Module JSBridge
               If JSWindows()\Ready
                  WebViewExecuteScript(JSWindows()\WebViewGadget, script)
               Else
-                 AddElement(JSWindows()\PendingMessages())
-                 JSWindows()\PendingMessages() = script
+                 QueuePending(@JSWindows(), script)
               EndIf
               Break
             EndIf
@@ -450,8 +465,7 @@ Module JSBridge
       If *JSWindow\Ready
          WebViewExecuteScript(*JSWindow\WebViewGadget, script)
       Else
-         AddElement(*JSWindow\PendingMessages())
-         *JSWindow\PendingMessages() = script
+         QueuePending(*JSWindow, script)
       EndIf
     EndIf
   EndProcedure
