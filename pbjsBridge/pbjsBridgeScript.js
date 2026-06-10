@@ -27,6 +27,18 @@
   const DEAD_LETTER_GRACE_MS = 5000;
   let deadLetterCount = 0;
 
+  // F9: standard AbortError for cancelled invoke() calls (DOMException where
+  // available, falling back to a named Error).
+  function makeAbortError() {
+    try {
+      return new DOMException("The operation was aborted", "AbortError");
+    } catch (e) {
+      const err = new Error("The operation was aborted");
+      err.name = "AbortError";
+      return err;
+    }
+  }
+
   // Window names we've proven are ready. While a name is in this set,
   // invoke()/send() skip the waitForWindow() probe (two native round-trips).
   // Populated when a probe resolves (waitForWindow) or a reply arrives
@@ -501,7 +513,7 @@
 
       // --- IPC / BRIDGE ---
 
-      invoke: function (windowName, name, params, data) {
+      invoke: function (windowName, name, params, data, options) {
         if (!windowName || typeof windowName !== "string") {
           const error = new Error("windowName must be a non-empty string");
           log.error("invoke", error);
@@ -511,6 +523,12 @@
           const error = new Error("name must be a non-empty string");
           log.error("invoke", error);
           return Promise.reject(error);
+        }
+
+        const signal = options && options.signal;
+        if (signal && signal.aborted) {
+          // Already-aborted signal: never dispatch. (F9.)
+          return Promise.reject(makeAbortError());
         }
 
         log.invoke(windowName, name, params, data);
@@ -526,12 +544,42 @@
             }
 
             const requestId = nextRequestId++;
+
+            // F9 cancellation: wrap settle so the abort listener is always cleaned
+            // up, and let an abort reject + drop the pending entry (a late native
+            // reply then finds no entry and is ignored).
+            let onAbort = null;
+            const cleanup = () => {
+              if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+            };
+            const settleResolve = (v) => {
+              cleanup();
+              resolve(v);
+            };
+            const settleReject = (e) => {
+              cleanup();
+              reject(e);
+            };
+
             pendingRequests.set(requestId, {
-              resolve: resolve,
-              reject: reject,
+              resolve: settleResolve,
+              reject: settleReject,
               windowName: windowName,
               name: name,
             });
+
+            if (signal) {
+              onAbort = function () {
+                if (pendingRequests.has(requestId)) {
+                  pendingRequests.delete(requestId);
+                  settleReject(makeAbortError());
+                }
+              };
+              signal.addEventListener("abort", onAbort, { once: true });
+              // Aborted during the cold-path waitForWindow() (addEventListener
+              // won't fire for an already-aborted signal) — reject now.
+              if (signal.aborted) onAbort();
+            }
 
             setTimeout(() => {
               if (pendingRequests.has(requestId)) {
@@ -543,7 +591,7 @@
                   "Request timeout for " + name + " to " + windowName
                 );
                 log.error("invoke timeout", error);
-                reject(error);
+                settleReject(error);
               }
             }, 30000);
 
@@ -780,6 +828,22 @@
 
       removeAllHandlers: function () {
         handlers.clear();
+      },
+
+      // Lightweight bridge counters for diagnostics / a dev overlay (P5
+      // observability). Surfaces the queues + the drop/dead-letter counters
+      // seeded in P2/P3. Queryable from any window's devtools: window.pbjs.stats().
+      stats: function () {
+        return {
+          window: WINDOW_NAME,
+          pendingRequests: pendingRequests.size,
+          pendingGetAll: getAllPendingRequests.size,
+          unhandledBuffered: unhandledMessages.length,
+          droppedUnhandled: droppedUnhandledCount,
+          deadLetters: deadLetterCount,
+          readyWindows: readyWindows.size,
+          handlers: handlers.size,
+        };
       },
     };
 
