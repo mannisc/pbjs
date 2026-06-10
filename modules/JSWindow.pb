@@ -243,15 +243,24 @@ Module JSWindow
     If window <> 0
       *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
       
-      If Not JSWindows(Str(window))\Ready
+      Protected reloaded.i = JSWindows(Str(window))\Ready
+      Protected subjectName.s = JSWindows(Str(window))\Name
+
+      If Not reloaded
         LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
       Else
         LogToDebugFile("JSReadyState: Subsequent Ready (Reload) for window " + Str(window))
+        ; Reject peers' in-flight requests to this window before its new page
+        ; (which doesn't know the old requestIds) silently drops them. (§6.5)
+        JSBridge::NotifyWindowEvent(subjectName, "reloaded")
       EndIf
-      
+
       JSWindows(Str(window))\Ready = #True
       CreateThread(@MakeContentVisible(),window)
       ReloadedJS = #True
+
+      ; Warm peers' readiness cache now that this window can answer.
+      JSBridge::NotifyWindowEvent(subjectName, "ready")
     Else
       LogToDebugFile("ERROR: Invalid Window ID (0)")
     EndIf
@@ -1495,6 +1504,9 @@ Module JSWindow
       ; valid (runs once, in the cleanup path — the outer call returned above).
       ; Generic hook: pbjs doesn't know or care what observers do.
       If *JSWindow
+        ; Tell peers this window is gone so they reject in-flight requests to it
+        ; now (orphan-reject) and evict it from their readiness cache. (§6.5)
+        JSBridge::NotifyWindowEvent(*JSWindow\Name, "closed")
         ForEach WindowClosingObservers()
           CallFunctionFast(WindowClosingObservers(), *Window, *JSWindow)
         Next

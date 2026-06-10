@@ -111,6 +111,20 @@ Module JSBridge
       *JSWindow\PendingMessages() = script
     EndIf
   EndProcedure
+
+  ; §6.5 push tier: tell every other ready, non-spare window that `subjectName`
+  ; changed lifecycle (kind = "ready" | "closed" | "reloaded"). Lets each window's
+  ; JS readiness cache stay correct and reject in-flight requests to a window that
+  ; just reloaded/closed immediately, instead of leaking to the 30s timeout
+  ; (orphaned-request fix). Spares are skipped (same as HandleSendAll, F13).
+  Procedure NotifyWindowEvent(subjectName.s, kind.s)
+    Protected script.s = "if(window.pbjsWindowEvent){window.pbjsWindowEvent('" + EscapeJSON(subjectName) + "','" + kind + "');}"
+    ForEach JSWindows()
+      If JSWindows()\Name <> subjectName And Not JSWindows()\IsPoolSpare And JSWindows()\Ready
+        WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+      EndIf
+    Next
+  EndProcedure
   
   ; ============================================================================
   ; NATIVE CALLBACKS

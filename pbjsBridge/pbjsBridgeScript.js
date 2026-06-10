@@ -19,6 +19,13 @@
   // accumulate messages unboundedly; drop oldest and count drops. (P2 / §5.3.)
   const MAX_UNHANDLED_MESSAGES = 500;
   let droppedUnhandledCount = 0;
+  // F7: fast-fail a single-target request (`get`) whose target has no handler,
+  // instead of letting the caller wait the full 30s. After this grace, if the
+  // buffered message is still unhandled, reply to the sender with an explicit
+  // error (dead-letter). Generous vs. normal late registration (handlers mount
+  // in React effects, sub-second). Override via window.pbjsDeadLetterGraceMs.
+  const DEAD_LETTER_GRACE_MS = 5000;
+  let deadLetterCount = 0;
 
   // Window names we've proven are ready. While a name is in this set,
   // invoke()/send() skip the waitForWindow() probe (two native round-trips).
@@ -899,6 +906,44 @@
     return value;
   }
 
+  // F7 dead-letter: if a buffered single-target request is still unhandled after
+  // the grace, reject the sender now (explicit error) instead of leaving it to
+  // its own 30s timeout. A handler that registers within the grace dispatches +
+  // splices the message first, so the timer then finds it gone and no-ops.
+  function scheduleDeadLetter(msg) {
+    const grace =
+      typeof window.pbjsDeadLetterGraceMs === "number"
+        ? window.pbjsDeadLetterGraceMs
+        : DEAD_LETTER_GRACE_MS;
+    setTimeout(function () {
+      const idx = unhandledMessages.indexOf(msg);
+      if (idx === -1) return; // already handled (replayed) — nothing to do
+      unhandledMessages.splice(idx, 1);
+      deadLetterCount++;
+      if (window.pbjsNativeReply) {
+        window.pbjsNativeReply(
+          JSON.stringify({
+            requestId: msg.requestId,
+            toWindow: msg.fromWindow,
+            fromWindow: WINDOW_NAME,
+            data: JSON.stringify({
+              error: "No handler for '" + msg.name + "' on " + WINDOW_NAME,
+            }),
+            isGetAll: false,
+          })
+        );
+      }
+      console.warn(
+        "[PBJS] Dead-letter: no handler for '" +
+          msg.name +
+          "' after " +
+          grace +
+          "ms — rejected sender " +
+          msg.fromWindow
+      );
+    }, grace);
+  }
+
   window.pbjsHandleMessage = function (messageJson) {
     try {
       const msg = JSON.parse(messageJson);
@@ -925,6 +970,11 @@
           droppedUnhandledCount++;
         }
         unhandledMessages.push(msg);
+        // F7: a single-target request (get with a requestId) whose handler never
+        // registers should fail the caller fast, not after 30s.
+        if (msg.type === "get" && msg.requestId !== undefined) {
+          scheduleDeadLetter(msg);
+        }
         console.warn(
           "Buffered unhandled message: " +
             msg.name +
@@ -940,6 +990,29 @@
       dispatchMessage(msg, handler);
     } catch (error) {
       log.error("pbjsHandleMessage", error);
+    }
+  };
+
+  // Native push (§6.5): the host calls this on every OTHER window when a window's
+  // lifecycle changes, so the readiness cache stays correct AND in-flight requests
+  // targeting a window that just closed/reloaded are rejected immediately instead
+  // of leaking to their 30s timeout (orphaned-request fix).
+  //   kind: "ready" | "closed" | "reloaded"
+  window.pbjsWindowEvent = function (windowName, kind) {
+    if (!windowName || typeof windowName !== "string") return;
+    if (kind === "ready") {
+      readyWindows.add(windowName);
+      return;
+    }
+    // closed / reloaded: the window can no longer answer outstanding requests.
+    readyWindows.delete(windowName);
+    for (const [requestId, pending] of pendingRequests) {
+      if (pending.windowName === windowName) {
+        pendingRequests.delete(requestId);
+        pending.reject(
+          new Error("Target window " + windowName + " " + kind)
+        );
+      }
     }
   };
 
