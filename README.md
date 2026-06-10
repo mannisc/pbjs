@@ -179,16 +179,22 @@ pbjs.sendAll("agentRenamed", {}, { id, name });                 // all others (s
 
 ---
 
-## 5. Broadcast request/response — `invokeAll`
+## 5. Broadcast request/response — `invokeAll` (⚠️ discouraged)
 
 ```ts
 const replies = await pbjs.invokeAll("getStuff", {}, {}); // → [{windowName, response}, …]
 ```
 
 Multicasts to every other window and resolves when all expected windows reply
-(or after 30 s with whatever arrived). **Rarely needed** — once you have
-`channel`/`sendAll` for events and per-window `invoke` for RPC, `invokeAll` only
-fits true "ask everyone and aggregate" cases. Prefer the alternatives.
+(or after 30 s with whatever arrived).
+
+> **Discouraged — no production caller.** Once you have `channel`/`sendAll` for
+> events and per-window `invoke` for RPC, `invokeAll` only fits a true "ask
+> everyone and aggregate" case — and it has sharp edges: it can't surface
+> per-window failure (resolves with partial results after 30 s — pbjs.md F8),
+> each `response` is the raw `{ success }`/`{ error }` envelope (not unwrapped
+> like `invoke`), and it must keep excluding dormant pool spares (F13). Prefer the
+> alternatives unless you genuinely need every window's reply at once.
 
 ---
 
