@@ -105,10 +105,11 @@ const reply = await pbjs.invoke("main-window", "getAgentStatus", {}, { id: 7 });
 - **Rejects** on: handler `throw` / `event.error(msg)`, target window
   missing/closed (immediate native error), a dead-letter (no handler after a
   grace — §9), or the 30 s timeout. So error handling is ordinary `try/catch`.
-- ⚠️ **Success is wrapped.** A handler that returns `value` makes `invoke`
-  resolve to `{ success: value }` — callers read `.success`. This is a historical
-  wart; the clean fix is a typed facade that unwraps once (see §10.3). Inline:
-  `const v = reply?.success ?? reply;`
+- **Resolves to the handler's return value.** The bridge's reply carries an
+  internal `{ success: value }` envelope on the wire (it's what lets the source
+  tell success from error and resolve-vs-reject), but a **typed wrapper unwraps
+  it once** so app code gets the bare value. Vynce's `Pbjs.ts` does this; if you
+  call the raw `window.pbjs.invoke` directly, read `reply.success` yourself.
 - `options.signal` (an `AbortSignal`) cancels a superseded call: the pending
   entry is dropped and the promise rejects with an `AbortError`; a late reply is
   ignored. Use for resize/search/autocomplete that supersede themselves.
@@ -337,7 +338,9 @@ over the bridge**.
 
 PBJS is a deliberately **untyped transport** — `invoke`/`send` take `any`. Typing
 belongs **one level up, in app code**: a small facade that wraps the residual
-commands with real signatures and unwraps the `{ success }` envelope once.
+commands with real signatures. The typed wrapper already returns the handler's
+bare value (the `{ success }` envelope is stripped there — §3), so the facade
+just types it.
 
 ```ts
 export const myBridge = {
@@ -345,8 +348,7 @@ export const myBridge = {
     return pbjs.invoke("main-window", "toggleThing", {}, { id }).then(() => {});
   },
   getThing(id: number): Promise<Thing> {
-    return pbjs.invoke("main-window", "getThing", {}, { id })
-      .then(r => (r && "success" in r ? r.success : r));
+    return pbjs.invoke<Thing>("main-window", "getThing", {}, { id }); // already unwrapped
   },
 };
 ```
@@ -361,8 +363,9 @@ genuine commands.
 - **`params` vs `data`.** Both slots are forwarded to handlers; by convention the
   **payload goes in `data`** and handlers read `const p = data || params;`. `params`
   is usually `{}`. (Historical split — keep the convention for compatibility.)
-- **Success wrapping.** `invoke` resolves to `{ success: value }` (§3). Unwrap at
-  a facade boundary, not at every call site.
+- **Reply envelope.** The typed wrapper's `invoke` returns the handler's bare
+  value; only the **raw** `window.pbjs.invoke` exposes the `{ success }` wire
+  envelope (§3). Don't re-unwrap at call sites that already use the wrapper.
 - **Register handlers early.** Especially `handleParameters` and anything a peer
   may call at startup — buffering covers a short gap, not arbitrary delay (and a
   `get` past the grace now dead-letters).

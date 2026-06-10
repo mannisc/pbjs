@@ -33,8 +33,9 @@ pbjs.windowName; pbjs.os; pbjs.isReady; pbjs.stats();
 ## Must-know rules
 
 - **Payload in `data`**; handlers read `const p = data || params;` (`params` ≈ `{}`).
-- **`invoke` resolves to `{ success: value }`** — read `.success`, or unwrap once
-  in a typed facade (the right place to add types; the transport stays untyped).
+- **`invoke` (typed wrapper) resolves to the handler's bare value** — the
+  `{ success }` wire envelope is stripped in the wrapper. Only the raw
+  `window.pbjs.invoke` exposes it. Add types in an app-owned facade.
 - **Need a reply → `invoke`; otherwise → `send`/`sendAll`/`channel`.** `invokeAll`
   is rarely needed.
 - **Register handlers early** (esp. `handleParameters`): late `get`s buffer only
