@@ -61,6 +61,14 @@ The native host runs everything on the **main UI thread**, so the bridge is as
 fast as the loop is free. Worker threads exist only for HTML load, content
 visibility, and pool prep.
 
+> **Why not a dedicated routing thread?** It wouldn't help. The WebView
+> inject/callback APIs are UI-thread-pinned (so the costly `WebViewExecuteScript`
+> stays on the main thread regardless), and the heavy rendering/JS already runs
+> out-of-process inside the WebView — the host is just a thin marshaler. Routing
+> itself is an O(1) lookup + string build; threading it only adds hops + locks on
+> the currently lock-free registry. To free the loop, make each message *cheaper*
+> (value-injection F4/F5, micro-batching) rather than threading the router.
+
 ---
 
 ## 2. Getting started
