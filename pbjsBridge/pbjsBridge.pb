@@ -71,6 +71,15 @@ Module JSBridge
     result = ReplaceString(result, Chr(13), Chr(92)+"r")
     result = ReplaceString(result, Chr(10), Chr(92)+"n")
     result = ReplaceString(result, Chr(9), Chr(92)+"t")
+    ; Escape single quotes LAST (after the backslash pass above, so the
+    ; backslash we introduce here is not doubled). Every caller wraps the
+    ; result in a single-quoted JS string literal — pbjsHandleMessage('...') —
+    ; so an unescaped apostrophe in any payload (e.g. "Tim's shell") would
+    ; terminate the literal and throw a SyntaxError, silently dropping the
+    ; message. `\'` is a valid escape inside single-quoted JS strings and the
+    ; inner JSON stays intact after JS un-escapes it. (Same pattern already
+    ; used in pbjsFileSystem.pb.)
+    result = ReplaceString(result, Chr(39), Chr(92)+Chr(39))
     ProcedureReturn result
   EndProcedure
   
@@ -79,8 +88,42 @@ Module JSBridge
       ForEach *JSWindow\PendingMessages()
         WebViewExecuteScript(*JSWindow\WebViewGadget, *JSWindow\PendingMessages())
       Next
-      ClearList(*JSWindow\PendingMessages()) 
+      ClearList(*JSWindow\PendingMessages())
     EndIf
+  EndProcedure
+
+  ; Cap per-window pending-message buffers so a slow-to-init (or stuck) window
+  ; can't accumulate injected scripts unboundedly. Drops the oldest when full
+  ; (FIFO) and counts drops. Replaces the bare AddElement+assign at every
+  ; buffering site below. (P2 / pbjs.md §5.3 "Pending queue is unbounded".)
+  #MaxPendingMessages = 500
+  Global g_DroppedPendingMessages.i = 0
+  Procedure QueuePending(*JSWindow.JSWindow, script.s)
+    If *JSWindow
+      If ListSize(*JSWindow\PendingMessages()) >= #MaxPendingMessages
+        If FirstElement(*JSWindow\PendingMessages())
+          DeleteElement(*JSWindow\PendingMessages())
+          g_DroppedPendingMessages + 1
+        EndIf
+      EndIf
+      LastElement(*JSWindow\PendingMessages())
+      AddElement(*JSWindow\PendingMessages())
+      *JSWindow\PendingMessages() = script
+    EndIf
+  EndProcedure
+
+  ; §6.5 push tier: tell every other ready, non-spare window that `subjectName`
+  ; changed lifecycle (kind = "ready" | "closed" | "reloaded"). Lets each window's
+  ; JS readiness cache stay correct and reject in-flight requests to a window that
+  ; just reloaded/closed immediately, instead of leaking to the 30s timeout
+  ; (orphaned-request fix). Spares are skipped (same as HandleSendAll, F13).
+  Procedure NotifyWindowEvent(subjectName.s, kind.s)
+    Protected script.s = "if(window.pbjsWindowEvent){window.pbjsWindowEvent('" + EscapeJSON(subjectName) + "','" + kind + "');}"
+    ForEach JSWindows()
+      If JSWindows()\Name <> subjectName And Not JSWindows()\IsPoolSpare And JSWindows()\Ready
+        WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+      EndIf
+    Next
   EndProcedure
   
   ; ============================================================================
@@ -119,8 +162,7 @@ Module JSBridge
             If JSWindows()\Ready
                WebViewExecuteScript(JSWindows()\WebViewGadget, script)
             Else
-               AddElement(JSWindows()\PendingMessages())
-               JSWindows()\PendingMessages() = script
+               QueuePending(@JSWindows(), script)
             EndIf
             Break
           EndIf
@@ -167,8 +209,7 @@ Module JSBridge
               If JSWindows()\Ready
                  WebViewExecuteScript(JSWindows()\WebViewGadget, script)
               Else
-                 AddElement(JSWindows()\PendingMessages())
-                 JSWindows()\PendingMessages() = script
+                 QueuePending(@JSWindows(), script)
               EndIf
             EndIf
             Break
@@ -197,8 +238,7 @@ Module JSBridge
                If JSWindows()\Ready
                  WebViewExecuteScript(JSWindows()\WebViewGadget, script)
                Else
-                 AddElement(JSWindows()\PendingMessages())
-                 JSWindows()\PendingMessages() = script
+                 QueuePending(@JSWindows(), script)
                EndIf
                Break
             EndIf
@@ -231,14 +271,15 @@ Module JSBridge
                     ~",\"data\":" + dataJson + ~"}"
       
       script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
-      
+
       ForEach JSWindows()
-        If JSWindows()\Name <> fromWindow
+        ; Skip pool spares: they are dormant, off-screen template windows that
+        ; are not assigned to any caller and should not receive broadcasts.
+        If JSWindows()\Name <> fromWindow And Not JSWindows()\IsPoolSpare
           If JSWindows()\Ready
             WebViewExecuteScript(JSWindows()\WebViewGadget, script)
           Else
-            AddElement(JSWindows()\PendingMessages())
-            JSWindows()\PendingMessages() = script
+            QueuePending(@JSWindows(), script)
           EndIf
           count + 1
         EndIf
@@ -265,9 +306,13 @@ Module JSBridge
       dataJson = GetJSONString(GetJSONMember(JSONValue(json), "data"))
       requestId = GetJSONInteger(GetJSONMember(JSONValue(json), "requestId"))
       
+      ; Count broadcast targets. Must use the SAME predicate as the multicast
+      ; loop below, or expectedCount won't match the windows that can reply.
+      ; Pool spares are excluded: a warming spare never registers the handler,
+      ; so it would never reply and invokeAll would hang to the 30s timeout.
       count = 0
       ForEach JSWindows()
-        If JSWindows()\Name <> fromWindow
+        If JSWindows()\Name <> fromWindow And Not JSWindows()\IsPoolSpare
           count + 1
         EndIf
       Next
@@ -293,7 +338,8 @@ Module JSBridge
         script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
         
         ForEach JSWindows()
-          If JSWindows()\Name <> fromWindow
+          ; Same predicate as the count loop above (excludes pool spares).
+          If JSWindows()\Name <> fromWindow And Not JSWindows()\IsPoolSpare
             If IsGadget(JSWindows()\WebViewGadget)
               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
             EndIf
@@ -388,8 +434,7 @@ Module JSBridge
               If JSWindows()\Ready
                  WebViewExecuteScript(JSWindows()\WebViewGadget, script)
               Else
-                 AddElement(JSWindows()\PendingMessages())
-                 JSWindows()\PendingMessages() = script
+                 QueuePending(@JSWindows(), script)
               EndIf
               Break
             EndIf
@@ -439,8 +484,7 @@ Module JSBridge
       If *JSWindow\Ready
          WebViewExecuteScript(*JSWindow\WebViewGadget, script)
       Else
-         AddElement(*JSWindow\PendingMessages())
-         *JSWindow\PendingMessages() = script
+         QueuePending(*JSWindow, script)
       EndIf
     EndIf
   EndProcedure

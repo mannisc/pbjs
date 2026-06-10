@@ -15,6 +15,38 @@
   const getAllPendingRequests = new Map();
   let nextRequestId = 1;
   const unhandledMessages = [];
+  // Cap the inbound buffer so a window that never registers a handler can't
+  // accumulate messages unboundedly; drop oldest and count drops. (P2 / §5.3.)
+  const MAX_UNHANDLED_MESSAGES = 500;
+  let droppedUnhandledCount = 0;
+  // F7: fast-fail a single-target request (`get`) whose target has no handler,
+  // instead of letting the caller wait the full 30s. After this grace, if the
+  // buffered message is still unhandled, reply to the sender with an explicit
+  // error (dead-letter). Generous vs. normal late registration (handlers mount
+  // in React effects, sub-second). Override via window.pbjsDeadLetterGraceMs.
+  const DEAD_LETTER_GRACE_MS = 5000;
+  let deadLetterCount = 0;
+
+  // F9: standard AbortError for cancelled invoke() calls (DOMException where
+  // available, falling back to a named Error).
+  function makeAbortError() {
+    try {
+      return new DOMException("The operation was aborted", "AbortError");
+    } catch (e) {
+      const err = new Error("The operation was aborted");
+      err.name = "AbortError";
+      return err;
+    }
+  }
+
+  // Window names we've proven are ready. While a name is in this set,
+  // invoke()/send() skip the waitForWindow() probe (two native round-trips).
+  // Populated when a probe resolves (waitForWindow) or a reply arrives
+  // (single or broadcast). Evicted only on a request *timeout* — the signal of
+  // an open-but-unresponsive window (e.g. mid-reload). A closed/missing window
+  // returns an immediate native error instead, so it stays cached and keeps
+  // failing fast (and routes correctly once reopened). (Finding F3.)
+  const readyWindows = new Set();
 
   // --- NATIVE LOGGING WRAPPERS ---
   const originalConsole = {
@@ -23,32 +55,46 @@
     error: console.error,
   };
 
-  function sendToNativeLog(level, args) {
-    if (window.pbjsNativeLog) {
-      try {
-        const message = args
-          .map((arg) => {
-            if (typeof arg === "object") {
-              try {
-                return JSON.stringify(arg);
-              } catch (e) {
-                return String(arg);
-              }
-            }
-            return String(arg);
-          })
-          .join(" ");
+  // Native-log level gate (F11). Forwarding every console.* call to native
+  // competes with real IPC on the main loop, especially under store-sync
+  // traffic. Levels below the threshold are not forwarded. Override at runtime:
+  //   window.pbjsLogLevel = "INFO" | "WARN" | "ERROR" | "OFF"
+  // Default "INFO" preserves the previous behavior for ordinary app logs; the
+  // high-frequency IPC *traces* are handled separately (see `log` below).
+  const LOG_PRIORITY = { INFO: 20, WARN: 30, ERROR: 40, OFF: 100 };
+  function nativeLogThreshold() {
+    const lvl = String(window.pbjsLogLevel || "INFO").toUpperCase();
+    return LOG_PRIORITY[lvl] !== undefined
+      ? LOG_PRIORITY[lvl]
+      : LOG_PRIORITY.INFO;
+  }
 
-        window.pbjsNativeLog(
-          JSON.stringify({
-            level: level,
-            message: message,
-            window: WINDOW_NAME,
-          })
-        );
-      } catch (err) {
-        // Avoid infinite loops
-      }
+  function sendToNativeLog(level, args) {
+    if (!window.pbjsNativeLog) return;
+    if ((LOG_PRIORITY[level] || 0) < nativeLogThreshold()) return;
+    try {
+      const message = args
+        .map((arg) => {
+          if (typeof arg === "object") {
+            try {
+              return JSON.stringify(arg);
+            } catch (e) {
+              return String(arg);
+            }
+          }
+          return String(arg);
+        })
+        .join(" ");
+
+      window.pbjsNativeLog(
+        JSON.stringify({
+          level: level,
+          message: message,
+          window: WINDOW_NAME,
+        })
+      );
+    } catch (err) {
+      // Avoid infinite loops
     }
   }
 
@@ -65,9 +111,16 @@
     sendToNativeLog("ERROR", args);
   };
 
+  // High-frequency IPC trace logs. These print to devtools via the *original*
+  // console (captured above) so they are NOT forwarded to native — every
+  // invoke/response/handler would otherwise ship a log over the bridge and
+  // compete with real IPC on the main loop, especially under store-sync traffic
+  // (F11). Full devtools richness is kept; only the native forward is dropped.
+  // log.error (below) still forwards: bridge errors are rare and worth seeing in
+  // the native terminal.
   const log = {
     invoke: (targetWindow, name, params, data) => {
-      console.log(
+      originalConsole.log(
         "%c→ INVOKE %c" + name + " %c→ " + targetWindow,
         "color: #2196F3; font-weight: bold",
         "color: #FF9800; font-weight: bold",
@@ -77,7 +130,7 @@
     },
     response: (fromWindow, name, response, isError) => {
       if (isError) {
-        console.error(
+        originalConsole.error(
           "%c← RESPONSE %c" + name + " %c← " + fromWindow,
           "color: #F44336; font-weight: bold",
           "color: #FF9800; font-weight: bold",
@@ -85,7 +138,7 @@
           response
         );
       } else {
-        console.log(
+        originalConsole.log(
           "%c← RESPONSE %c" + name + " %c← " + fromWindow + " %c✓",
           "color: #4CAF50; font-weight: bold",
           "color: #FF9800; font-weight: bold",
@@ -96,7 +149,7 @@
       }
     },
     handler: (fromWindow, name, type) => {
-      console.log(
+      originalConsole.log(
         "%c◆ HANDLER %c" + name + " %c← " + fromWindow + " %c[" + type + "]",
         "color: #9C27B0; font-weight: bold",
         "color: #FF9800; font-weight: bold",
@@ -409,6 +462,9 @@
                         "[PBJS] waitForWindow resolving for " + windowName,
                         win
                       );
+                      // Warm the readiness cache (F3) for every waitForWindow
+                      // caller — invoke, send, and external callers alike.
+                      readyWindows.add(windowName);
                       resolve(win);
                     } else {
                       if (attempts < maxAttempts) {
@@ -457,7 +513,7 @@
 
       // --- IPC / BRIDGE ---
 
-      invoke: function (windowName, name, params, data) {
+      invoke: function (windowName, name, params, data, options) {
         if (!windowName || typeof windowName !== "string") {
           const error = new Error("windowName must be a non-empty string");
           log.error("invoke", error);
@@ -469,50 +525,102 @@
           return Promise.reject(error);
         }
 
+        const signal = options && options.signal;
+        if (signal && signal.aborted) {
+          // Already-aborted signal: never dispatch. (F9.)
+          return Promise.reject(makeAbortError());
+        }
+
         log.invoke(windowName, name, params, data);
 
-        return this.waitForWindow(windowName)
-          .then(() => {
-            return new Promise((resolve, reject) => {
-              if (!window.pbjsNativeGet) {
-                const error = new Error("Native bridge not available");
-                log.error("invoke", error);
-                reject(error);
-                return;
-              }
+        // The actual native "get" dispatch + pending-request bookkeeping.
+        const dispatchGet = () => {
+          return new Promise((resolve, reject) => {
+            if (!window.pbjsNativeGet) {
+              const error = new Error("Native bridge not available");
+              log.error("invoke", error);
+              reject(error);
+              return;
+            }
 
-              const requestId = nextRequestId++;
-              pendingRequests.set(requestId, {
-                resolve: resolve,
-                reject: reject,
-                windowName: windowName,
-                name: name,
-              });
+            const requestId = nextRequestId++;
 
-              setTimeout(() => {
+            // F9 cancellation: wrap settle so the abort listener is always cleaned
+            // up, and let an abort reject + drop the pending entry (a late native
+            // reply then finds no entry and is ignored).
+            let onAbort = null;
+            const cleanup = () => {
+              if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+            };
+            const settleResolve = (v) => {
+              cleanup();
+              resolve(v);
+            };
+            const settleReject = (e) => {
+              cleanup();
+              reject(e);
+            };
+
+            pendingRequests.set(requestId, {
+              resolve: settleResolve,
+              reject: settleReject,
+              windowName: windowName,
+              name: name,
+            });
+
+            if (signal) {
+              onAbort = function () {
                 if (pendingRequests.has(requestId)) {
                   pendingRequests.delete(requestId);
-                  const error = new Error(
-                    "Request timeout for " + name + " to " + windowName
-                  );
-                  log.error("invoke timeout", error);
-                  reject(error);
+                  settleReject(makeAbortError());
                 }
-              }, 30000);
+              };
+              signal.addEventListener("abort", onAbort, { once: true });
+              // Aborted during the cold-path waitForWindow() (addEventListener
+              // won't fire for an already-aborted signal) — reject now.
+              if (signal.aborted) onAbort();
+            }
 
-              window.pbjsNativeGet(
-                JSON.stringify({
-                  type: "get",
-                  fromWindow: WINDOW_NAME,
-                  toWindow: windowName,
-                  name: name,
-                  params: JSON.stringify(params || {}),
-                  data: JSON.stringify(data || {}),
-                  requestId: requestId,
-                })
-              );
-            });
-          })
+            setTimeout(() => {
+              if (pendingRequests.has(requestId)) {
+                pendingRequests.delete(requestId);
+                // Unresponsive target — stop trusting the readiness cache so the
+                // next call re-probes via waitForWindow.
+                readyWindows.delete(windowName);
+                const error = new Error(
+                  "Request timeout for " + name + " to " + windowName
+                );
+                log.error("invoke timeout", error);
+                settleReject(error);
+              }
+            }, 30000);
+
+            window.pbjsNativeGet(
+              JSON.stringify({
+                type: "get",
+                fromWindow: WINDOW_NAME,
+                toWindow: windowName,
+                name: name,
+                params: JSON.stringify(params || {}),
+                data: JSON.stringify(data || {}),
+                requestId: requestId,
+              })
+            );
+          });
+        };
+
+        // Fast path: window already proven ready — skip the waitForWindow probe
+        // (two native round-trips). Cold path: probe once; waitForWindow warms
+        // readyWindows on resolve, so later calls take the fast path.
+        if (readyWindows.has(windowName)) {
+          return dispatchGet().catch((err) => {
+            log.error("invoke failed", err);
+            throw err;
+          });
+        }
+
+        return this.waitForWindow(windowName)
+          .then(() => dispatchGet())
           .catch((err) => {
             log.error("invoke failed", err);
             throw err;
@@ -565,6 +673,82 @@
             })
           );
         });
+      },
+
+      // Fire-and-forget message to a single window. No requestId, no pending
+      // entry, no Promise, no 30s timer — the receiver's handle()/handleAll()
+      // fires but is not expected to reply. If the target exists but isn't
+      // ready yet, native buffers it (PendingMessages); if it doesn't exist,
+      // native drops it silently. Use invoke() when you need a response.
+      send: function (windowName, name, params, data) {
+        if (!windowName || typeof windowName !== "string") {
+          log.error("send", new Error("windowName must be a non-empty string"));
+          return;
+        }
+        if (!name || typeof name !== "string") {
+          log.error("send", new Error("name must be a non-empty string"));
+          return;
+        }
+        if (!window.pbjsNativeSend) {
+          log.error("send", new Error("Native bridge not available"));
+          return;
+        }
+
+        const fire = () => {
+          log.invoke(windowName, name, params, data);
+          window.pbjsNativeSend(
+            JSON.stringify({
+              type: "send",
+              fromWindow: WINDOW_NAME,
+              toWindow: windowName,
+              name: name,
+              params: JSON.stringify(params || {}),
+              data: JSON.stringify(data || {}),
+            })
+          );
+        };
+
+        // Cache-gated like invoke(): if the target is already proven ready, fire
+        // immediately (the warm path — instant, no probe). Otherwise wait for the
+        // window once so a message to a not-yet-registered window isn't dropped
+        // (waitForWindow warms readyWindows on resolve). Still returns void; the
+        // caller never awaits.
+        if (readyWindows.has(windowName)) {
+          fire();
+        } else {
+          this.waitForWindow(windowName)
+            .then(() => fire())
+            .catch((err) => log.error("send failed", err));
+        }
+      },
+
+      // Fire-and-forget broadcast to every window except the sender. Same
+      // no-reply semantics as send(). This is the cheap primitive for events,
+      // presence, and store-sync patches (see iplan/pbjszustand.md).
+      //
+      // Note: unlike invoke()/send(), there is no single target to wait on, so
+      // the readiness cache (F3) does not apply here. The native router already
+      // buffers not-ready windows (PendingMessages) and excludes dormant pool
+      // spares (F13), so no per-target probe is needed.
+      sendAll: function (name, params, data) {
+        if (!name || typeof name !== "string") {
+          log.error("sendAll", new Error("name must be a non-empty string"));
+          return;
+        }
+        if (!window.pbjsNativeSendAll) {
+          log.error("sendAll", new Error("Native bridge not available"));
+          return;
+        }
+        log.invoke("ALL WINDOWS", name, params, data);
+        window.pbjsNativeSendAll(
+          JSON.stringify({
+            type: "sendAll",
+            fromWindow: WINDOW_NAME,
+            name: name,
+            params: JSON.stringify(params || {}),
+            data: JSON.stringify(data || {}),
+          })
+        );
       },
 
       onCloseWindow: function (handler) {
@@ -650,6 +834,22 @@
 
       removeAllHandlers: function () {
         handlers.clear();
+      },
+
+      // Lightweight bridge counters for diagnostics / a dev overlay (P5
+      // observability). Surfaces the queues + the drop/dead-letter counters
+      // seeded in P2/P3. Queryable from any window's devtools: window.pbjs.stats().
+      stats: function () {
+        return {
+          window: WINDOW_NAME,
+          pendingRequests: pendingRequests.size,
+          pendingGetAll: getAllPendingRequests.size,
+          unhandledBuffered: unhandledMessages.length,
+          droppedUnhandled: droppedUnhandledCount,
+          deadLetters: deadLetterCount,
+          readyWindows: readyWindows.size,
+          handlers: handlers.size,
+        };
       },
     };
 
@@ -776,6 +976,44 @@
     return value;
   }
 
+  // F7 dead-letter: if a buffered single-target request is still unhandled after
+  // the grace, reject the sender now (explicit error) instead of leaving it to
+  // its own 30s timeout. A handler that registers within the grace dispatches +
+  // splices the message first, so the timer then finds it gone and no-ops.
+  function scheduleDeadLetter(msg) {
+    const grace =
+      typeof window.pbjsDeadLetterGraceMs === "number"
+        ? window.pbjsDeadLetterGraceMs
+        : DEAD_LETTER_GRACE_MS;
+    setTimeout(function () {
+      const idx = unhandledMessages.indexOf(msg);
+      if (idx === -1) return; // already handled (replayed) — nothing to do
+      unhandledMessages.splice(idx, 1);
+      deadLetterCount++;
+      if (window.pbjsNativeReply) {
+        window.pbjsNativeReply(
+          JSON.stringify({
+            requestId: msg.requestId,
+            toWindow: msg.fromWindow,
+            fromWindow: WINDOW_NAME,
+            data: JSON.stringify({
+              error: "No handler for '" + msg.name + "' on " + WINDOW_NAME,
+            }),
+            isGetAll: false,
+          })
+        );
+      }
+      console.warn(
+        "[PBJS] Dead-letter: no handler for '" +
+          msg.name +
+          "' after " +
+          grace +
+          "ms — rejected sender " +
+          msg.fromWindow
+      );
+    }, grace);
+  }
+
   window.pbjsHandleMessage = function (messageJson) {
     try {
       const msg = JSON.parse(messageJson);
@@ -793,18 +1031,58 @@
           return;
         }
 
-        // Buffer other unhandled messages
-        // The handler should register soon and the message will replay
+        // Buffer other unhandled messages — the handler should register soon and
+        // the message will replay. Cap the buffer (drop oldest, count drops) so a
+        // window that never registers a handler can't grow it unboundedly.
         msg._bufferedAt = Date.now();
+        if (unhandledMessages.length >= MAX_UNHANDLED_MESSAGES) {
+          unhandledMessages.shift();
+          droppedUnhandledCount++;
+        }
         unhandledMessages.push(msg);
+        // F7: a single-target request (get with a requestId) whose handler never
+        // registers should fail the caller fast, not after 30s.
+        if (msg.type === "get" && msg.requestId !== undefined) {
+          scheduleDeadLetter(msg);
+        }
         console.warn(
-          "Buffered unhandled message: " + msg.name + " [" + msg.type + "]"
+          "Buffered unhandled message: " +
+            msg.name +
+            " [" +
+            msg.type +
+            "]" +
+            (droppedUnhandledCount
+              ? " (dropped " + droppedUnhandledCount + " over cap)"
+              : "")
         );
         return;
       }
       dispatchMessage(msg, handler);
     } catch (error) {
       log.error("pbjsHandleMessage", error);
+    }
+  };
+
+  // Native push (§6.5): the host calls this on every OTHER window when a window's
+  // lifecycle changes, so the readiness cache stays correct AND in-flight requests
+  // targeting a window that just closed/reloaded are rejected immediately instead
+  // of leaking to their 30s timeout (orphaned-request fix).
+  //   kind: "ready" | "closed" | "reloaded"
+  window.pbjsWindowEvent = function (windowName, kind) {
+    if (!windowName || typeof windowName !== "string") return;
+    if (kind === "ready") {
+      readyWindows.add(windowName);
+      return;
+    }
+    // closed / reloaded: the window can no longer answer outstanding requests.
+    readyWindows.delete(windowName);
+    for (const [requestId, pending] of pendingRequests) {
+      if (pending.windowName === windowName) {
+        pendingRequests.delete(requestId);
+        pending.reject(
+          new Error("Target window " + windowName + " " + kind)
+        );
+      }
     }
   };
 
@@ -825,6 +1103,9 @@
             windowName: response.fromWindow,
             response: response.data,
           });
+          // A window that replied to a broadcast is provably ready — warm the
+          // cache (F3) so a later single invoke/send to it skips the probe.
+          readyWindows.add(response.fromWindow);
           pending.receivedCount++;
           if (
             pending.receivedCount >= pending.expectedCount &&
@@ -846,12 +1127,21 @@
             hasError
           );
           if (hasError) {
+            // Do NOT evict on an error response. A closed/missing window returns
+            // an immediate native error, so keeping it cached lets the next call
+            // fail fast too (and route correctly once reopened). Evicting would
+            // force the next call down the cold path, where waitForWindow polls a
+            // non-existent window for the full 6s before rejecting. The genuinely
+            // stale case (open but unresponsive, e.g. mid-reload) surfaces as a
+            // timeout, which the request setTimeout evicts.
             const errMsg =
               typeof response.data.error === "string"
                 ? response.data.error
                 : JSON.stringify(response.data.error);
             pending.reject(new Error(errMsg));
           } else {
+            // Confirmed reachable — (re)mark ready. Idempotent on the fast path.
+            readyWindows.add(pending.windowName);
             pending.resolve(response.data);
           }
         }

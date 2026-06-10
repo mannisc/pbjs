@@ -15,6 +15,7 @@ DeclareModule JSBridge
   Declare SendParameters(*JSWindow, paramsJson.s)
   Declare SendCloseCheck(*JSWindow)
   Declare FlushPendingMessages(*JSWindow)
+  Declare NotifyWindowEvent(subjectName.s, kind.s)
 EndDeclareModule
 
 

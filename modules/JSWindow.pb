@@ -15,6 +15,7 @@ DeclareModule JSWindow
     #Event_Prepare_Complete
     #Event_Pool_Refill
     #Event_Deferred_Close
+    #Event_Deferred_Release
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -22,6 +23,7 @@ DeclareModule JSWindow
   EndEnumeration
   
   Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  Declare RegisterWindowClosingObserver(*callback)
   Declare PrepareJSWindow(*Window.AppWindow)
   Declare OpenJSWindow(*Window.AppWindow )    
   Declare HideJSWindow(*Window.AppWindow, FromManagedWindow)
@@ -107,6 +109,13 @@ DeclareModule JSWindow
   Global NewMap JSWindows.JSWindow()
   Global NewMap WindowsByName.i()
 
+  ; Generic window-close observers. Mirrors the *WindowReadyCallback hook in the
+  ; opposite direction: callbacks are invoked as (*Window, *JSWindow) just before
+  ; a window's webview is torn down. pbjs stays domain-agnostic — it has no idea
+  ; what observers do; the application layer (main.pb) registers them (e.g. to
+  ; deregister a closed webview from ptym). See Prototype ProtoWindowReady.
+  Global NewList WindowClosingObservers.i()
+
   ; Multi-instance support — see Structure JSWindowTemplate above.
   Global NewMap JSTemplates.JSWindowTemplate()
   ; Per-(template, instanceKey) -> PB window handle.
@@ -122,6 +131,10 @@ DeclareModule JSWindow
     ; Handles whose CloseWindow() must be deferred to the next event-loop tick.
     ; Calling CloseWindow() from inside WaitWindowEvent's call stack crashes on macOS.
     Global NewList DeferredCloseHandles.i()
+    ; WKWebViews retained before CloseWindow and released one tick later via
+    ; #Event_Deferred_Release, keeping WKUserContentController alive so any
+    ; pending XPC postMessage deliveries land on removed (silent) handlers.
+    Global NewList WKWebViewsToRelease.i()
   CompilerEndIf
   Global ClosingScope = 0 ; 0: None, -1: App, >0: WindowID
   Global ReloadedJS = #False
@@ -137,7 +150,15 @@ DeclareModule JSWindow
   Declare RefillPoolAsync(*Template.JSWindowTemplate)
   Declare HandlePoolRefillEvent(Event.i)
   Declare HandleDeferredCloseEvent(Event.i)
+  Declare HandleDeferredReleaseEvent(Event.i)
   Declare FocusInstance(*Window.AppWindow)
+
+  ; Register a hook called repeatedly *during* an OS modal resize/move loop
+  ; (Windows). pbjs owns the window proc — the only callback Windows invokes
+  ; while the modal loop blocks PB's event loop — so anything that must stay live
+  ; mid-drag (e.g. draining a PTY output queue) plugs in here. Generic: pbjs has
+  ; no knowledge of the hook's owner. Pass 0 to clear. No-op off Windows.
+  Declare SetResizeDrainHook(*proc)
 
 EndDeclareModule
 
@@ -158,7 +179,19 @@ Module JSWindow
   CompilerIf #PB_Compiler_OS = #PB_OS_Windows
     Declare WindowCallback(hWnd, uMsg, WParam, LParam)
   CompilerEndIf
-  
+
+  ; Resize-drain hook (see SetResizeDrainHook). Called from WindowCallback while
+  ; the OS modal resize/move loop is running so subscribers stay live mid-drag.
+  Global ResizeDrainHook.i = 0
+  CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+    #JSWIN_RESIZE_DRAIN_TIMER    = 47011
+    #JSWIN_RESIZE_DRAIN_INTERVAL = 16   ; ms — drains while the mouse is held still
+  CompilerEndIf
+
+  Procedure SetResizeDrainHook(*proc)
+    ResizeDrainHook = *proc
+  EndProcedure
+
   Prototype.i ProtoWindowReady(*Window, *JSWindow)
   
   Procedure MakeContentVisible(window)
@@ -220,16 +253,25 @@ Module JSWindow
     If window <> 0
       *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
       
-      If Not JSWindows(Str(window))\Ready
+      Protected reloaded.i = JSWindows(Str(window))\Ready
+      Protected subjectName.s = JSWindows(Str(window))\Name
+
+      If Not reloaded
         LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
       Else
         LogToDebugFile("JSReadyState: Subsequent Ready (Reload) for window " + Str(window))
+        ; Reject peers' in-flight requests to this window before its new page
+        ; (which doesn't know the old requestIds) silently drops them. (§6.5)
+        JSBridge::NotifyWindowEvent(subjectName, "reloaded")
       EndIf
-      
+
       JSWindows(Str(window))\Ready = #True
       JSWindows(Str(window))\NeedsReload = #False  ; content freshly loaded (initial or after reload)
       CreateThread(@MakeContentVisible(),window)
       ReloadedJS = #True
+
+      ; Warm peers' readiness cache now that this window can answer.
+      JSBridge::NotifyWindowEvent(subjectName, "ready")
     Else
       LogToDebugFile("ERROR: Invalid Window ID (0)")
     EndIf
@@ -441,6 +483,79 @@ Module JSWindow
   
   
   
+  Procedure JSSetWindowTitle(JsonParameters.s)
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ReDim Parameters(1)
+      ExtractJSONArray(JSONValue(json), Parameters())
+      FreeJSON(json)
+
+      Protected targetName.s = Trim(Parameters(0))
+      Protected newTitle.s    = Parameters(1)
+
+      ForEach JSWindows()
+        If Trim(JSWindows()\Name) = targetName
+          window = JSWindows()\Window
+          found = #True
+          Break
+        EndIf
+      Next
+
+      If Not found
+        window = Val(targetName)
+      EndIf
+
+      If IsWindow(window)
+        SetWindowTitle(window, newTitle)
+        ProcedureReturn UTF8(~"{\"success\":true}")
+      EndIf
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
+  EndProcedure
+
+  ; Bring a window to the foreground by its runtime name. Reuses the same
+  ; name->window resolution as JSSetWindowTitle and the cross-platform
+  ; FocusInstance used by OpenInstance's re-focus path. Used by the JS
+  ; cross-window singleton agent-tab logic (pbjs.focusWindow).
+  Procedure JSFocusWindow(JsonParameters.s)
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ExtractJSONArray(JSONValue(json), Parameters())
+      FreeJSON(json)
+
+      Protected targetName.s = Trim(Parameters(0))
+
+      ForEach JSWindows()
+        If Trim(JSWindows()\Name) = targetName
+          window = JSWindows()\Window
+          found = #True
+          Break
+        EndIf
+      Next
+
+      If Not found
+        window = Val(targetName)
+      EndIf
+
+      If IsWindow(window)
+        Protected *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
+        If *Window
+          FocusInstance(*Window)
+          ProcedureReturn UTF8(~"{\"success\":true}")
+        EndIf
+      EndIf
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
+  EndProcedure
+
+
+
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
     
     Protected script$ = "if(window.pbjsUpdateScale) window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
@@ -767,29 +882,6 @@ Module JSWindow
     html.s = PeekS(JSWindows(Str(window))\HtmlStart,JSWindows(Str(window))\HtmlEnd-JSWindows(Str(window))\HtmlStart, #PB_UTF8|#PB_ByteLength  )
     JSWindows(Str(window))\Html.s = html
     PostEvent(#CustomWindowEvent, window, 0,#Event_Loaded_Html)
-  EndProcedure 
-  
-  
-  Procedure JSSetWindowTitle(JsonParameters.s)
-    Dim Parameters.s(0)
-    Protected json = ParseJSON(#PB_Any, JsonParameters)
-    If json
-      ExtractJSONArray(JSONValue(json), Parameters())
-      If ArraySize(Parameters()) < 1
-        FreeJSON(json)
-        ProcedureReturn UTF8(~"{\"error\":\"Missing parameters\"}")
-      EndIf
-      Protected windowName.s = Parameters(0)
-      Protected newTitle.s    = Parameters(1)
-      FreeJSON(json)
-      ForEach JSWindows()
-        If Trim(JSWindows()\Name) = Trim(windowName) And IsWindow(JSWindows()\Window)
-          SetWindowTitle(JSWindows()\Window, newTitle)
-          ProcedureReturn UTF8(~"{\"success\":true}")
-        EndIf
-      Next
-    EndIf
-    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
   EndProcedure
 
   Procedure BindWebviewEvents(webViewGadget)
@@ -801,6 +893,7 @@ Module JSWindow
     BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
     BindWebViewCallback(webViewGadget, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
     BindWebViewCallback(webViewGadget, "pbjsNativeSetWindowTitle", @JSSetWindowTitle())
+    BindWebViewCallback(webViewGadget, "pbjsNativeFocusWindow", @JSFocusWindow())
   EndProcedure
   
   
@@ -1177,8 +1270,9 @@ Module JSWindow
 
   CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
   Procedure HandleDeferredCloseEvent(Event.i)
-    ; Drain the deferred-close list. Must be called from HandleMainEvent so that
-    ; CloseWindow() runs at the top of the event loop, not inside WaitWindowEvent's stack.
+    ; Legacy drain path. Window close now goes through ScheduleGCDClose (GCD main
+    ; queue), so this list is normally empty; kept as a safety drain in case any
+    ; handle is ever enqueued here.
     If Event <> #CustomWindowEvent : ProcedureReturn : EndIf
     If EventType() <> #Event_Deferred_Close : ProcedureReturn : EndIf
     While ListSize(DeferredCloseHandles()) > 0
@@ -1186,15 +1280,80 @@ Module JSWindow
       Protected handle.i = DeferredCloseHandles()
       DeleteElement(DeferredCloseHandles())
       If IsWindow(handle)
-        Debug "[HandleDeferredCloseEvent] CloseWindow handle=" + Str(handle)
         CloseWindow(handle)
       EndIf
     Wend
+  EndProcedure
+
+  Procedure HandleDeferredReleaseEvent(Event.i)
+    ; Retired: the retain/release scheme it served was replaced by GCD-ordered
+    ; close (ScheduleGCDClose). Kept as a no-op so HandleMainEvent wiring stays valid.
   EndProcedure
   CompilerElse
   Procedure HandleDeferredCloseEvent(Event.i)
     ; No-op on non-macOS: CloseWindow is called synchronously there.
   EndProcedure
+  Procedure HandleDeferredReleaseEvent(Event.i)
+  EndProcedure
+  CompilerEndIf
+
+
+  CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+    ; ---------------------------------------------------------------------------
+    ; GCD-ordered window close (macOS).
+    ;
+    ; PureBasic's WebViewGadget is built on the webview.h C++ library. When JS
+    ; invokes a native binding, webview enqueues a `resolve` block onto the main
+    ; GCD queue (libdispatch) to deliver the result. The close handshake itself
+    ; triggers such a binding (system:close-window), so a `resolve` block that
+    ; captures the C++ engine `this` is in flight at close time.
+    ;
+    ; If we destroy the window (and thus the webview engine) before that block
+    ; runs, the next run-loop iteration drains the queue, the block fires, and it
+    ; dereferences the freed engine -> EXC_BAD_ACCESS in
+    ; webview::detail::engine_base::resolve (confirmed via symbolicated crash
+    ; report). Retaining the WKWebView/NSWindow does NOT help -- the dangling
+    ; pointer is the webview.h engine, a layer below Apple's objects.
+    ;
+    ; Fix: enqueue CloseWindow onto the SAME main GCD queue via dispatch_async_f.
+    ; GCD is strict FIFO, so the already-queued `resolve` block runs first (engine
+    ; alive), then our block destroys the window. No block is left referencing a
+    ; freed engine. This also runs CloseWindow at the top of a clean run-loop
+    ; iteration (not nested in WaitWindowEvent's call stack).
+    ;
+    ; dispatch_async_f schedules a C callback on a GCD queue. _dispatch_main_q is
+    ; the main-queue object; its ADDRESS is the queue handle (what the inline
+    ; dispatch_get_main_queue() macro returns).
+    ; Import only the function. PureBasic's ImportC parameter list does not take
+    ; type suffixes — all args are integer/pointer-width.
+    ImportC ""
+      dispatch_async_f(gcdQueue, gcdContext, gcdWork)
+    EndImport
+
+    Procedure GCDCloseCallback(handle.i)
+      ; Runs on the main thread (GCD main queue). `handle` is the PB window id,
+      ; passed through dispatch_async_f's context slot.
+      If IsWindow(handle)
+        Debug "[GCDCloseCallback] CloseWindow handle=" + Str(handle)
+        CloseWindow(handle)
+      EndIf
+    EndProcedure
+
+    Procedure ScheduleGCDClose(handle.i)
+      Protected cb.i = @GCDCloseCallback()
+      ; The main-queue handle is the ADDRESS of libdispatch's _dispatch_main_q
+      ; symbol (what the dispatch_get_main_queue() macro returns). Resolve it via
+      ; inline C in the C backend; declare the extern so the C compiler accepts it.
+      Protected q.i = 0
+      ! extern char _dispatch_main_q[];
+      ! v_q = (long)&_dispatch_main_q;
+      If q And cb
+        dispatch_async_f(q, handle, cb)
+      Else
+        ; Fallback: should never happen, but don't leak the window.
+        If IsWindow(handle) : CloseWindow(handle) : EndIf
+      EndIf
+    EndProcedure
   CompilerEndIf
 
 
@@ -1383,6 +1542,15 @@ Module JSWindow
   EndProcedure
   
   
+  ; Register a generic close observer, invoked as (*Window, *JSWindow) just
+  ; before a window's webview is torn down (see CloseJSWindow). Domain-agnostic.
+  Procedure RegisterWindowClosingObserver(*callback)
+    If *callback
+      AddElement(WindowClosingObservers())
+      WindowClosingObservers() = *callback
+    EndIf
+  EndProcedure
+
   Procedure CloseJSWindow(*Window.AppWindow)
     Protected *JSWindow.JSWindow
     ; Capture template/instanceKey/parent BEFORE the JSWindows() entry is deleted.
@@ -1450,18 +1618,88 @@ Module JSWindow
 
       If Not *Window\Closed
         CloseManagedWindow(*Window)
+        ; CloseManagedWindow calls CloseProc = CloseJSWindow recursively (with
+        ; *Window\Closed already True). That inner call runs all cleanup below with
+        ; a valid *JSWindow pointer and defers CloseWindow. By the time we return
+        ; here, the JSWindows map entry is gone and *JSWindow is dangling — bail out
+        ; so the outer call doesn't re-execute cleanup with a stale pointer.
+        If Not FindMapElement(JSWindows(), Str(*Window\Window))
+          ProcedureReturn
+        EndIf
+      EndIf
+
+      ; Notify close observers while *JSWindow and its webview gadget are still
+      ; valid (runs once, in the cleanup path — the outer call returned above).
+      ; Generic hook: pbjs doesn't know or care what observers do.
+      If *JSWindow
+        ; Tell peers this window is gone so they reject in-flight requests to it
+        ; now (orphan-reject) and evict it from their readiness cache. (§6.5)
+        JSBridge::NotifyWindowEvent(*JSWindow\Name, "closed")
+        ForEach WindowClosingObservers()
+          CallFunctionFast(WindowClosingObservers(), *Window, *JSWindow)
+        Next
       EndIf
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
         MacOSUnregisterResizeNotifications(*Window)
+        ; Stop the WebView and remove all script message handlers before deferring
+        ; CloseWindow. Pending WKScriptMessage deliveries from the web content
+        ; process arrive via the Cocoa run loop — if the webview is already freed
+        ; when they land, the next WaitWindowEvent crashes with an invalid memory
+        ; access. Removing the handlers makes those deliveries silent no-ops.
+        ; GadgetID returns a container NSView, not the WKWebView itself — search
+        ; subviews for the actual WKWebView.
+        If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
+          Protected macGadgetView.i = GadgetID(*JSWindow\WebViewGadget)
+          Protected macWKClass.i = objc_getClass_("WKWebView")
+          Protected macWv.i = 0
+          ; Search up to 3 levels deep — GadgetID returns a container NSView, not
+          ; WKWebView itself. Depth varies across PureBasic versions/macOS versions.
+          If macGadgetView And macWKClass
+            Protected macSearchQueue.i = CocoaMessage(0, 0, "NSMutableArray array")
+            CocoaMessage(0, macSearchQueue, "addObject:", macGadgetView)
+            Protected macSearchDepth.i = 0
+            While macWv = 0 And CocoaMessage(0, macSearchQueue, "count") > 0 And macSearchDepth < 3
+              Protected macNextLevel.i = CocoaMessage(0, 0, "NSMutableArray array")
+              Protected macQLvlCount.i = CocoaMessage(0, macSearchQueue, "count")
+              Protected macQIdx.i
+              For macQIdx = 0 To macQLvlCount - 1
+                Protected macQView.i = CocoaMessage(0, macSearchQueue, "objectAtIndex:", macQIdx)
+                If CocoaMessage(0, macQView, "isKindOfClass:", macWKClass)
+                  macWv = macQView
+                  Break
+                EndIf
+                Protected macQSubs.i = CocoaMessage(0, macQView, "subviews")
+                CocoaMessage(0, macNextLevel, "addObjectsFromArray:", macQSubs)
+              Next
+              macSearchQueue = macNextLevel
+              macSearchDepth + 1
+            Wend
+          EndIf
+          Debug "[CloseJSWindow] macWv=" + Str(macWv)
+          If macWv
+            CocoaMessage(0, macWv, "stopLoading")
+            ; Nil the delegates so the WKWebView won't call into PureBasic's
+            ; delegate objects after CloseWindow frees them. These are weak
+            ; properties — nil-ing does NOT extend any object's lifetime.
+            CocoaMessage(0, macWv, "setNavigationDelegate:", 0)
+            CocoaMessage(0, macWv, "setUIDelegate:", 0)
+            Protected macUcc.i = CocoaMessage(0, CocoaMessage(0, macWv, "configuration"), "userContentController")
+            If macUcc : CocoaMessage(0, macUcc, "removeAllScriptMessageHandlers") : EndIf
+          EndIf
+          ; NOTE: do NOT retain the WKWebView/NSWindow past CloseWindow. Doing so
+          ; kept a half-torn-down object alive that the run loop then touched,
+          ; turning an occasional crash into a deterministic one. Letting them
+          ; deallocate naturally during CloseWindow is strictly better here.
+        EndIf
       CompilerEndIf
       If IsWindow(*Window\Window)
         DeleteMapElement(JSWindows(), Str(*Window\Window))
         CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-          ; CloseWindow() cannot be safely called from any event-dispatch context on macOS —
-          ; even from HandleMainEvent (after WaitWindowEvent returns) PureBasic/Cocoa state
-          ; is still mid-dispatch and CloseWindow corrupts it, crashing the next WaitWindowEvent.
-          ; Hide the window now; CleanupManagedWindows calls CloseWindow at app exit (outside the loop).
-          HideWindow(*Window\Window, #True)
+          ; Enqueue CloseWindow on the main GCD queue so it runs AFTER any
+          ; in-flight webview.h `resolve` block (FIFO ordering). See the comment
+          ; on ScheduleGCDClose above for the full rationale. This also avoids
+          ; calling CloseWindow from inside WaitWindowEvent's call stack.
+          ScheduleGCDClose(*Window\Window)
         CompilerElse
           CloseWindow(*Window\Window)
         CompilerEndIf
@@ -1984,16 +2222,37 @@ Module JSWindow
       EndIf 
       
       Select uMsg
-          
+
         Case #WM_SIZE , #WM_SIZING
           w = WindowWidth(*Window\Window)
           h = WindowHeight(*Window\Window)
-          UpdateWebViewScale(JSWindows(Str(*Window\Window)), w, h)  
+          UpdateWebViewScale(JSWindows(Str(*Window\Window)), w, h)
+          ; Live-drain subscribers (e.g. PTY output) on every size step so terminal
+          ; content tracks the drag instead of flooding in on mouse-up. This proc
+          ; is invoked by Windows directly during the modal loop, so the hook runs
+          ; even though PB's own event loop is suspended.
+          If ResizeDrainHook : CallFunctionFast(ResizeDrainHook) : EndIf
           ProcedureReturn #True
-          
+
+        Case $0231 ; WM_ENTERSIZEMOVE — modal loop begins
+          Debug "[JSWIN-CB] WM_ENTERSIZEMOVE hwnd=" + Str(hWnd) + " t=" + Str(ElapsedMilliseconds())
+          ; Cover the held-still case (no WM_SIZE): WM_TIMER is the only message
+          ; this proc receives during an otherwise idle modal loop.
+          SetTimer_(hWnd, #JSWIN_RESIZE_DRAIN_TIMER, #JSWIN_RESIZE_DRAIN_INTERVAL, #Null)
+
+        Case #WM_TIMER
+          If WParam = #JSWIN_RESIZE_DRAIN_TIMER And ResizeDrainHook
+            CallFunctionFast(ResizeDrainHook)
+          EndIf
+
+        Case $0232 ; WM_EXITSIZEMOVE — modal loop ends
+          Debug "[JSWIN-CB] WM_EXITSIZEMOVE hwnd=" + Str(hWnd) + " t=" + Str(ElapsedMilliseconds())
+          KillTimer_(hWnd, #JSWIN_RESIZE_DRAIN_TIMER)
+          If ResizeDrainHook : CallFunctionFast(ResizeDrainHook) : EndIf
+
       EndSelect
-      
-      ProcedureReturn #PB_ProcessPureBasicEvents 
+
+      ProcedureReturn #PB_ProcessPureBasicEvents
     EndProcedure
   CompilerEndIf
   
