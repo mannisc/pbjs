@@ -32,7 +32,10 @@ pbjs.windowName; pbjs.os; pbjs.isReady; pbjs.stats();
 
 ## Must-know rules
 
-- **Payload in `data`**; handlers read `const p = data || params;` (`params` ≈ `{}`).
+- **`params` & `data` both reach the handler** (`handler(event, params, data)`) —
+  payload goes in `data`, `params` ≈ `{}` (historical split). **`options`**
+  (`{ signal }`) is caller-local: consumed by the wrapper, never sent to the
+  handler. (Table in README §3.)
 - **`invoke` (typed wrapper) resolves to the handler's bare value** — the
   `{ success }` wire envelope is stripped in the wrapper. Only the raw
   `window.pbjs.invoke` exposes it. Add types in an app-owned facade.

@@ -102,6 +102,22 @@ The RPC mode: call a method on another window and `await` its reply.
 const reply = await pbjs.invoke("main-window", "getAgentStatus", {}, { id: 7 });
 ```
 
+**The arguments — `params` vs `data` vs `options`:**
+
+| Arg | Crosses the bridge? | Read by | Use for |
+|-----|:---:|---------|---------|
+| `params` | ✅ payload slot 1 | the receiver's handler | legacy/secondary slot — usually `{}` |
+| `data` | ✅ payload slot 2 | the receiver's handler | **the payload** (convention: put everything here) |
+| `options` | ❌ caller-local | the `invoke` wrapper itself | control bag: `{ signal }` (an `AbortSignal`) |
+
+`params` and `data` are **two payload slots that both reach the handler**
+(`handler(event, params, data)`); the receiver reads `const p = data || params`.
+The split is historical — there's no live semantic difference — so by convention
+**the payload goes in `data`** and `params` stays `{}`. `options` is a different
+kind of thing: a **local control bag the bridge consumes itself** (never
+serialized, never sent, never seen by the handler) — today just `{ signal }` for
+cancellation (below).
+
 - **Rejects** on: handler `throw` / `event.error(msg)`, target window
   missing/closed (immediate native error), a dead-letter (no handler after a
   grace — §9), or the 30 s timeout. So error handling is ordinary `try/catch`.
