@@ -5,7 +5,15 @@
 
 DeclareModule JSWindow
   UseModule WindowManager
-  
+
+  ; Startup-trace hook: marks land on the host's Perf timeline when the host
+  ; defines it (vynce perf.pb); compiles to nothing when pbjs is built standalone.
+  Macro PbjsPerfMark(label)
+    CompilerIf Defined(Perf, #PB_Module)
+      Perf::Mark(label)
+    CompilerEndIf
+  EndMacro
+
   ; Callback prototype for resize/move events
   Prototype ResizeCallback(windowName.s, x.l, y.l, w.l, h.l)
   
@@ -258,6 +266,7 @@ Module JSWindow
 
       If Not reloaded
         LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
+        PbjsPerfMark("JS bridge ready (callbackReadyState): " + subjectName)
       Else
         LogToDebugFile("JSReadyState: Subsequent Ready (Reload) for window " + Str(window))
         ; Reject peers' in-flight requests to this window before its new page
@@ -963,7 +972,8 @@ Module JSWindow
       CompilerEndIf
       
       CreateThread(@LoadHtml(),window)
-      
+      PbjsPerfMark("webview window created: " + windowName)
+
       CompilerIf  #Debug_On; remote debugging
         PreparePbjsBasicScript(*JSWindow.JSWindow)
 
@@ -2070,8 +2080,9 @@ Module JSWindow
               
               
               SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
-              *JSWindow\LoadedCode = #True 
-            CompilerEndIf 
+              *JSWindow\LoadedCode = #True
+              PbjsPerfMark("html + bridge script set on webview: " + *JSWindow\Name)
+            CompilerEndIf
           Case #Event_Content_Ready
             
             
@@ -2096,9 +2107,10 @@ Module JSWindow
             
             If *JSWindow\Open And Not *JSWindow\Visible
               HideWindow(*JSWindow\Window, #False)
-            EndIf 
-            *JSWindow\Visible = #True 
-            
+            EndIf
+            *JSWindow\Visible = #True
+            PbjsPerfMark("window shown (content ready): " + *JSWindow\Name)
+
             SetBodyFadeIn(*JSWindow)
             
             If *JSWindow\Ready

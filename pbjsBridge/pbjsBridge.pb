@@ -460,9 +460,21 @@ Module JSBridge
       level = GetJSONString(GetJSONMember(JSONValue(json), "level"))
       message = GetJSONString(GetJSONMember(JSONValue(json), "message"))
       windowName = GetJSONString(GetJSONMember(JSONValue(json), "window"))
-      
-      Debug "[JS][" + windowName + "] " + level + ": " + message
-      
+
+      ; Startup-trace marks from the webview (react/shared/services/startupPerf.ts)
+      ; are re-stamped with the native clock so the line carries both clocks:
+      ; "[PERF] +<native>ms  [win] [PERF-JS] +<webview>ms label". Host-only —
+      ; standalone pbjs builds fall through to the plain Debug.
+      CompilerIf Defined(Perf, #PB_Module)
+        If Left(message, 8) = "[PERF-JS"
+          Perf::Mark("[" + windowName + "] " + message)
+        Else
+          Debug "[JS][" + windowName + "] " + level + ": " + message
+        EndIf
+      CompilerElse
+        Debug "[JS][" + windowName + "] " + level + ": " + message
+      CompilerEndIf
+
       FreeJSON(json)
     EndIf
   EndProcedure
