@@ -1484,9 +1484,47 @@ Module JSWindow
       JSBridge::SendParameters(*JS, paramsJson)
     EndIf
 
-    ; --- Smart cascade: position new instance relative to the caller window,
-    ;     before making it visible so there is no flicker. ---
-    If callerWindowName <> ""
+    ; --- Smart cascade: position the new instance before it becomes visible
+    ;     so there is no flicker. Base preference:
+    ;       1. The most recently opened sibling instance of this template —
+    ;          instances must never stack at the exact same x,y (always on,
+    ;          no smartPosition opt-in needed).
+    ;       2. The caller window (smartPosition opt-in via callerWindowName).
+    ;     No usable base -> keep the default (template) position. ---
+    Protected cascadeBaseX.i, cascadeBaseY.i
+    Protected hasCascadeBase.b = #False
+
+    Protected siblingHandle.i = 0
+    Protected siblingOpenTime.i = -1
+    Protected candHandle.i
+    Protected instPrefix.s = *T\Name + ":"
+    ForEach TemplateInstances()
+      If Left(MapKey(TemplateInstances()), Len(instPrefix)) = instPrefix
+        candHandle = TemplateInstances()
+        If candHandle <> *Window\Window And IsWindow(candHandle) And FindMapElement(JSWindows(), Str(candHandle))
+          ; Minimized windows report bogus positions (-32000 on Windows).
+          If JSWindows()\Open And GetWindowState(candHandle) <> #PB_Window_Minimize And JSWindows()\OpenTime > siblingOpenTime
+            siblingOpenTime = JSWindows()\OpenTime
+            siblingHandle = candHandle
+          EndIf
+        EndIf
+      EndIf
+    Next
+    If siblingHandle
+      If JSWindows(Str(siblingHandle))\HasCascadePosition And WindowX(siblingHandle) < -5000
+        ; Sibling is still parked off-screen (claimed mid-prepare): its real
+        ; target position is the stored cascade target, not the parking spot.
+        cascadeBaseX = JSWindows(Str(siblingHandle))\CascadeX
+        cascadeBaseY = JSWindows(Str(siblingHandle))\CascadeY
+      Else
+        cascadeBaseX = WindowX(siblingHandle)
+        cascadeBaseY = WindowY(siblingHandle)
+      EndIf
+      hasCascadeBase = #True
+      Debug "[OpenInstance] Cascade base: sibling '" + JSWindows(Str(siblingHandle))\Name + "' at " + Str(cascadeBaseX) + "," + Str(cascadeBaseY)
+    EndIf
+
+    If Not hasCascadeBase And callerWindowName <> ""
       Protected callerHandle.i = 0
       ForEach JSWindows()
         If JSWindows()\Name = callerWindowName
@@ -1495,29 +1533,39 @@ Module JSWindow
         EndIf
       Next
       If callerHandle <> 0 And IsWindow(callerHandle)
-        Protected callerX.i  = WindowX(callerHandle)
-        Protected callerY.i  = WindowY(callerHandle)
-        Protected offsetPx.i = Round(10.0 * WindowManager::DPI_Scale, #PB_Round_Nearest)
-        Protected newX.i     = callerX + offsetPx
-        Protected newY.i     = callerY + offsetPx
-        Protected newWinW.i  = WindowWidth(*Window\Window)
-        Protected newWinH.i  = WindowHeight(*Window\Window)
-        Protected desktopCount.i = ExamineDesktops()
-        Protected di.i
-        For di = 0 To desktopCount - 1
-          If callerX >= DesktopX(di) And callerX < DesktopX(di) + DesktopWidth(di) And
-             callerY >= DesktopY(di) And callerY < DesktopY(di) + DesktopHeight(di)
-            If newX + newWinW > DesktopX(di) + DesktopWidth(di)
-              newX = DesktopX(di) + DesktopWidth(di) - newWinW
-            EndIf
-            If newY + newWinH > DesktopY(di) + DesktopHeight(di)
-              newY = DesktopY(di) + DesktopHeight(di) - newWinH
-            EndIf
-            If newX < DesktopX(di) : newX = DesktopX(di) : EndIf
-            If newY < DesktopY(di) : newY = DesktopY(di) : EndIf
-            Break
+        cascadeBaseX = WindowX(callerHandle)
+        cascadeBaseY = WindowY(callerHandle)
+        hasCascadeBase = #True
+      EndIf
+    EndIf
+
+    If hasCascadeBase
+      Protected offsetPx.i = Round(10.0 * WindowManager::DPI_Scale, #PB_Round_Nearest)
+      Protected newX.i     = cascadeBaseX + offsetPx
+      Protected newY.i     = cascadeBaseY + offsetPx
+      Protected newWinW.i  = WindowWidth(*Window\Window)
+      Protected newWinH.i  = WindowHeight(*Window\Window)
+      Protected desktopCount.i = ExamineDesktops()
+      Protected di.i
+      Protected monitorFound.b = #False
+      For di = 0 To desktopCount - 1
+        If cascadeBaseX >= DesktopX(di) And cascadeBaseX < DesktopX(di) + DesktopWidth(di) And
+           cascadeBaseY >= DesktopY(di) And cascadeBaseY < DesktopY(di) + DesktopHeight(di)
+          monitorFound = #True
+          If newX + newWinW > DesktopX(di) + DesktopWidth(di)
+            newX = DesktopX(di) + DesktopWidth(di) - newWinW
           EndIf
-        Next
+          If newY + newWinH > DesktopY(di) + DesktopHeight(di)
+            newY = DesktopY(di) + DesktopHeight(di) - newWinH
+          EndIf
+          If newX < DesktopX(di) : newX = DesktopX(di) : EndIf
+          If newY < DesktopY(di) : newY = DesktopY(di) : EndIf
+          Break
+        EndIf
+      Next
+      ; A base outside every monitor would cascade the window off-screen —
+      ; keep the default position instead.
+      If monitorFound
         ResizeWindow(*Window\Window, newX, newY, #PB_Ignore, #PB_Ignore)
         ; Persist so Event_Prepare_Complete restores here, not to PrepareOriginalX/Y.
         JSWindows(Str(*Window\Window))\HasCascadePosition = #True
