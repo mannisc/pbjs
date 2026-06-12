@@ -1,4 +1,4 @@
-﻿; ============================================================================
+; ============================================================================
 ; UNIFIED WINDOW COMMUNICATION BRIDGE FOR PUREBASIC WEBVIEW
 ; Simple peer-to-peer window communication with unified invoke method
 ; ============================================================================
@@ -465,9 +465,9 @@ Module JSBridge
       ; are re-stamped with the native clock so the line carries both clocks:
       ; "[PERF] +<native>ms  [win] [PERF-JS] +<webview>ms label". Host-only —
       ; standalone pbjs builds fall through to the plain Debug.
-      CompilerIf Defined(Perf, #PB_Module)
+      CompilerIf Defined(StartupTrace, #PB_Module)
         If Left(message, 8) = "[PERF-JS"
-          Perf::Mark("[" + windowName + "] " + message)
+          StartupTrace::Mark("[" + windowName + "] " + message)
         Else
           Debug "[JS][" + windowName + "] " + level + ": " + message
         EndIf
