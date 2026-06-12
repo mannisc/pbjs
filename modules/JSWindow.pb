@@ -33,6 +33,9 @@ DeclareModule JSWindow
   EndEnumeration
   
   Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  ; Set an opaque JS string to inject before this window's content/React loads.
+  ; pbjs injects it verbatim and never interprets it — the app owns its meaning.
+  Declare SetPreRenderJS(*Window.AppWindow, js.s)
   Declare RegisterWindowClosingObserver(*callback)
   Declare PrepareJSWindow(*Window.AppWindow)
   Declare OpenJSWindow(*Window.AppWindow )    
@@ -87,6 +90,10 @@ DeclareModule JSWindow
 
     StartupJS.s
     WindowJS.s
+    ; Opaque app-supplied JS, injected verbatim before page content/React
+    ; (release HTML-wrap; pushed in dev). pbjs never parses or inspects it —
+    ; it has no knowledge of the script's contents. Set via SetPreRenderJS.
+    PreRenderJS.s
 
     List PendingMessages.s()
 
@@ -901,12 +908,43 @@ Module JSWindow
     Else
       result = *JSWindow\StartupJS + result
     EndIf
-    
+
     ProcedureReturn result
   EndProcedure
-  
-  
-  
+
+  ; Inject an opaque app-supplied script before page content. Same insertion
+  ; mechanism as WithPbjsBasicScript (classic <script> right after <body> open),
+  ; so it runs before React's deferred module bundle. pbjs treats js as opaque.
+  Procedure.s WithPreRenderScript(html.s, js.s)
+    If js = ""
+      ProcedureReturn html
+    EndIf
+    Protected result.s = html
+    Protected bodyPos.i, bodyEndPos.i
+    If FindString(result, "<body", 1, #PB_String_NoCase)
+      bodyPos = FindString(result, "<body", 1, #PB_String_NoCase)
+      bodyEndPos = FindString(result, ">", bodyPos)
+      If bodyEndPos > 0
+        result = Left(result, bodyEndPos) + "<script>" + js + "</script>" + Mid(result, bodyEndPos + 1)
+      EndIf
+    Else
+      result = "<script>" + js + "</script>" + result
+    EndIf
+    ProcedureReturn result
+  EndProcedure
+
+  ; Public: store opaque pre-render JS on a window. No interpretation.
+  Procedure SetPreRenderJS(*Window.AppWindow, js.s)
+    If *Window And IsWindow(*Window\Window)
+      Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+      If *JSWindow
+        *JSWindow\PreRenderJS = js
+      EndIf
+    EndIf
+  EndProcedure
+
+
+
   Procedure LoadHtml(window)
     html.s = PeekS(JSWindows(Str(window))\HtmlStart,JSWindows(Str(window))\HtmlEnd-JSWindows(Str(window))\HtmlStart, #PB_UTF8|#PB_ByteLength  )
     JSWindows(Str(window))\Html.s = html
@@ -2118,6 +2156,7 @@ Module JSWindow
         BindWebviewEvents(webViewGadget)
         DEBUGMODEcheckTime =  ElapsedMilliseconds()
         WebViewExecuteScript(webViewGadget, "window.__pbjsAdded = false;")
+        WebViewExecuteScript(webViewGadget, *JSWindow\PreRenderJS)
         WebViewExecuteScript(webViewGadget, *JSWindow\StartupJS)
         WebViewExecuteScript(webViewGadget, *JSWindow\WindowJS )
         WebViewExecuteScript(webViewGadget, JSBridge::GetStartUpJS(*JSWindow\Name))
@@ -2164,10 +2203,12 @@ Module JSWindow
               
               html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
               html.s =  WithPbjsBasicScript(html, *JSWindow)
+              ; Opaque app pre-render script: inserted last ⇒ closest to <body>
+              ; ⇒ runs first, before React's deferred module bundle.
+              html.s =  WithPreRenderScript(html, *JSWindow\PreRenderJS)
 
-              
-              
-              
+
+
               SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
               *JSWindow\LoadedCode = #True
               PbjsStartupTraceMark("html + bridge script set on webview: " + *JSWindow\Name)
