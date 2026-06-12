@@ -7,7 +7,10 @@ DeclareModule OsTheme
   ; For Windows
   CompilerIf #PB_Compiler_OS = #PB_OS_Windows
     Declare ApplyThemeToWinHandle(hWnd)
-  CompilerEndIf 
+    ; Raw dynamic DwmSetWindowAttribute (returns HRESULT, or 0 when dwmapi.dll
+    ; is unavailable — 0 is also S_OK, so callers must not branch on it).
+    Declare.i DwmSetWindowAttributeDynamic(hwnd.i, dwAttribute.i, *pvAttribute, cbAttribute.i)
+  CompilerEndIf
   Declare InitOsTheme()
   
   Global IsDarkModeActiveCached = #False

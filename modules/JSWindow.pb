@@ -25,6 +25,7 @@ DeclareModule JSWindow
     #Event_Pool_Refill
     #Event_Deferred_Close
     #Event_Deferred_Release
+    #Event_Prepare_Uncloak
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -187,6 +188,21 @@ Module JSWindow
   ; For Windows
   CompilerIf #PB_Compiler_OS = #PB_OS_Windows
     Declare WindowCallback(hWnd, uMsg, WParam, LParam)
+
+    #DWMWA_CLOAK = 13   ; not among PB's predefined Windows constants
+
+    ; DWM-cloak a window: it stays fully composed (WebView2 keeps loading and
+    ; rendering) but DWM presents zero pixels — no frame, no shadow, no
+    ; animation — and the Win10/11 taskbar and Alt-Tab filter it out. Used only
+    ; during pool-spare preparation (PrepareJSWindow -> Event_Prepare_Complete).
+    ; Failure is harmless: the alpha-0 + off-screen guards remain in place as
+    ; fallback, so we never branch on the result (0 is both S_OK and the
+    ; dll-missing stub value).
+    Procedure SetWindowCloak(WinID.i, enable.i)
+      Protected cloak.l = Bool(enable)  ; BOOL = 4 bytes; DWM validates cbAttribute strictly
+      Protected hr = OsTheme::DwmSetWindowAttributeDynamic(WinID, #DWMWA_CLOAK, @cloak, SizeOf(Long))
+      Debug "[SetWindowCloak] hwnd=" + Str(WinID) + " enable=" + Str(enable) + " hr=" + Str(hr)
+    EndProcedure
   CompilerEndIf
 
   ; Resize-drain hook (see SetResizeDrainHook). Called from WindowCallback while
@@ -1055,7 +1071,20 @@ Module JSWindow
     EndIf
     
     Debug "[PrepareJSWindowThread] Waiting for Ready..."
-    
+
+    CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+      ; Uncloak ~3 frames after the cloaked no-activate show: by then the DWM
+      ; present race at ShowWindow has settled, but Chromium's occlusion
+      ; tracker treats cloaked windows as occluded — staying cloaked for the
+      ; whole prepare would pause WebView2 rendering and defer the first
+      ; contentful paint to reveal time, defeating the pre-warm. After the
+      ; uncloak the window is still invisible (alpha 0, off-screen,
+      ; WS_EX_TOOLWINDOW) yet renders warm pixels. Event_Prepare_Complete's
+      ; own uncloak then becomes a harmless no-op.
+      Delay(48)
+      PostEvent(#CustomWindowEvent, windowHandle, 0, #Event_Prepare_Uncloak)
+    CompilerEndIf
+
     ; Wait for content to be ready (max 2 seconds)
     Protected i, maxWait = 200
     For i = 0 To maxWait
@@ -1106,17 +1135,25 @@ Module JSWindow
         CocoaMessage(0, WinID, "orderBack:", #Null)
         
       CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
-        ; FIRST: Set alpha to 0 before ANY showing to prevent flash
-        Debug "[PrepareJSWindow] Win: Setting alpha to 0, moving off-screen, showing"
+        Debug "[PrepareJSWindow] Win: cloak + toolwindow + alpha 0, off-screen, show no-activate"
+        ; FIRST: DWM-cloak before the window is ever shown — zero pixels
+        ; presented (frame/shadow included), taskbar/Alt-Tab filtered, while
+        ; WebView2 keeps initializing. The layered alpha-0 + off-screen moves
+        ; below stay as fallback for systems where the cloak call fails.
+        SetWindowCloak(WinID, #True)
+        ; WS_EX_TOOLWINDOW: belt & braces vs taskbar/Alt-Tab where cloak
+        ; filtering misbehaves. Removed again at Event_Prepare_Complete.
         Protected currentStyle = GetWindowLongPtr_(WinID, #GWL_EXSTYLE)
-        SetWindowLongPtr_(WinID, #GWL_EXSTYLE, currentStyle | #WS_EX_LAYERED)
+        SetWindowLongPtr_(WinID, #GWL_EXSTYLE, currentStyle | #WS_EX_LAYERED | #WS_EX_TOOLWINDOW)
         SetLayeredWindowAttributes_(WinID, 0, 0, #LWA_ALPHA)  ; Alpha 0 = invisible
-        
+
         ; Move off-screen
         ResizeWindow(*Window\Window, minValue, minValue, #PB_Ignore, #PB_Ignore)
-        
-        ; Now show window (it's invisible because alpha=0)
-        HideWindow(*Window\Window, #False)
+
+        ; Now show window WITHOUT activating it, so the main window (or, on
+        ; pool refill, the just-claimed instance) keeps focus and an active
+        ; caption.
+        HideWindow(*Window\Window, #False, #PB_Window_NoActivate)
         
       CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
         ; FIRST: Set opacity to 0 before ANY showing to prevent flash
@@ -2134,6 +2171,17 @@ Module JSWindow
               EndIf 
             EndIf 
             
+          Case #Event_Prepare_Uncloak
+            ; Posted by PrepareJSWindowThread ~3 frames after the cloaked
+            ; no-activate show (Windows only). The window stays invisible via
+            ; alpha-0 + off-screen + WS_EX_TOOLWINDOW, but without the cloak
+            ; Chromium no longer considers it occluded, so WebView2 renders
+            ; the page during prepare — that render IS the pre-warm.
+            CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+              Debug "[Event_Prepare_Uncloak] " + *JSWindow\Name
+              SetWindowCloak(WindowID(*JSWindow\Window), #False)
+            CompilerEndIf
+
           Case #Event_Prepare_Complete
             Debug "[Event_Prepare_Complete] Hiding and restoring position for " + *JSWindow\Name
 
@@ -2158,10 +2206,17 @@ Module JSWindow
               Protected restoreAlpha.d = 1.0
               CocoaMessage(0, PrepWinID, "setAlphaValue:@", @restoreAlpha)
             CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
-              If Not claimedAndOpen
-                HideWindow(*JSWindow\Window, #True)
-              EndIf
+              ; Hide FIRST (unconditionally — in the claimed race the window is
+              ; still cloaked-invisible, so this hide cannot flicker), then
+              ; strip every prepare-time invisibility measure while nothing can
+              ; be presented. Uncloak LAST among the restores so any paint
+              ; triggered by the style change is still guarded. The claimed
+              ; race is re-shown below, after the position restore.
+              HideWindow(*JSWindow\Window, #True)
+              Protected prepStyle = GetWindowLongPtr_(PrepWinID, #GWL_EXSTYLE)
+              SetWindowLongPtr_(PrepWinID, #GWL_EXSTYLE, prepStyle & ~#WS_EX_TOOLWINDOW)
               SetLayeredWindowAttributes_(PrepWinID, 0, 255, #LWA_ALPHA)
+              SetWindowCloak(PrepWinID, #False)
             CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
               If Not claimedAndOpen
                 HideWindow(*JSWindow\Window, #True)
@@ -2185,6 +2240,14 @@ Module JSWindow
                 Protected raceNsApp = CocoaMessage(0, 0, "NSApplication sharedApplication")
                 CocoaMessage(0, raceNsApp, "activateIgnoringOtherApps:", #True)
                 CocoaMessage(0, PrepWinID, "makeKeyAndOrderFront:", #Null)
+              CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
+                ; Re-show after the WS_EX_TOOLWINDOW strip happened while
+                ; hidden — the shell re-evaluates taskbar presence on this
+                ; hidden->shown transition, so the button (re)appears. The
+                ; window is uncloaked, alpha 255 and at its final position:
+                ; it appears fully formed.
+                HideWindow(*JSWindow\Window, #False)
+                SetForegroundWindow_(PrepWinID)
               CompilerEndIf
             EndIf
 
