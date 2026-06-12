@@ -28,6 +28,8 @@ DeclareModule WindowManager
     Open.b
     Closed.b
     WasOpen.b
+    OpenMaximized.b  ; one-shot: first show of this window happens maximized; the
+                     ; window's creation x/y/w/h remain the OS restore bounds
   EndStructure
   
   Declare InitWindowManager()
@@ -100,17 +102,26 @@ Module WindowManager
       If IsWindow(*Window\Window)
         If Not manualOpen
           
-          CompilerIf #PB_Compiler_OS = #PB_OS_Windows 
-            
-            If  *Window\WasOpen Or (OSVersion <> #PB_OS_Windows_11 And osVersion <> #PB_OS_Windows_Future)
+          CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+
+            If *Window\OpenMaximized
+              ; First show happens maximized: SW_SHOWMAXIMIZED on the (still
+              ; invisible) window makes Windows record the creation x/y/w/h as
+              ; rcNormalPosition, so the restore button returns to them. The
+              ; Win11 off-screen paint trick below is skipped — its
+              ; SetWindowPos(#SWP_NOSIZE) dance would corrupt maximized placement.
+              *Window\OpenMaximized = #False
+              *Window\WasOpen = #True
+              ShowWindow_(WindowID(*Window\Window), #SW_SHOWMAXIMIZED)
+            ElseIf *Window\WasOpen Or (OSVersion <> #PB_OS_Windows_11 And osVersion <> #PB_OS_Windows_Future)
               HideWindow(*Window\Window, #False)
-            Else 
-              *Window\WasOpen = #True 
+            Else
+              *Window\WasOpen = #True
               ; Basically just ShowWindow with fix to draw immiditaly correctly on fadeIn
               Protected hWnd = WindowID(*Window\Window)
               Protected winRect.RECT
               GetWindowRect_(hWnd, @winRect)
-              
+
               ; Show window instantly (no animation) by positioning it off-screen
               Protected minValue = -1000000000 ;lowest min value possible
               SetWindowPos_(hWnd, 0, minValue, minValue, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW | #SWP_NOACTIVATE)
@@ -125,9 +136,18 @@ Module WindowManager
               Delay(32) ; 16 -  frame at 60fps
                         ; NOW move to correct position WITH animation
               SetWindowPos_(hWnd, 0, winRect\left, winRect\top, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW)
-            EndIf 
+            EndIf
           CompilerElse
-            
+
+            If *Window\OpenMaximized
+              ; Maximize while still hidden (gtk_window_maximize is legal pre-map;
+              ; Cocoa zoom on an unordered window just sets the frame) so the
+              ; window appears maximized with no normal-size flash.
+              *Window\OpenMaximized = #False
+              If GetWindowState(*Window\Window) <> #PB_Window_Maximize
+                SetWindowState(*Window\Window, #PB_Window_Maximize)
+              EndIf
+            EndIf
             HideWindow(*Window\Window, #False)
           CompilerEndIf
         EndIf 

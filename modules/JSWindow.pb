@@ -2088,8 +2088,19 @@ Module JSWindow
               PbjsStartupTraceMark("html + bridge script set on webview: " + *JSWindow\Name)
             CompilerEndIf
           Case #Event_Content_Ready
-            
-            
+
+            ; macOS first-show site (Win/Linux consume the flag in
+            ; OpenManagedWindow): maximize while still hidden so the
+            ; HideWindow(#False) below reveals the window already maximized —
+            ; no normal-size flash — and UpdateWebViewScale sees the maximized
+            ; dimensions. The state guard matters: Cocoa zoom: is a toggle.
+            If *Window\OpenMaximized And *JSWindow\Open And Not *JSWindow\Visible
+              *Window\OpenMaximized = #False
+              If GetWindowState(*JSWindow\Window) <> #PB_Window_Maximize
+                SetWindowState(*JSWindow\Window, #PB_Window_Maximize)
+              EndIf
+            EndIf
+
             webViewGadget = *JSWindow\WebViewGadget
             w = WindowWidth(*JSWindow\Window)
             h = WindowHeight(*JSWindow\Window)
