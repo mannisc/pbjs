@@ -49,12 +49,29 @@ Module JSFileSystem
   ; separately. Do not add ' -> \' here, or any file content containing a quote
   ; (e.g. a graph command `echo 'hi'`) becomes unreadable on read-back.
   Procedure.s EscapeJSON(text.s)
-    Protected result.s
+    Protected result.s, c.i
+    ; Backslash MUST be escaped first (before any \-escape is introduced),
+    ; then the double quote.
     result = ReplaceString(text, Chr(92), Chr(92)+Chr(92))
     result = ReplaceString(result, Chr(34), Chr(92)+Chr(34))
-    result = ReplaceString(result, Chr(13), Chr(92)+"r")
+    ; Named short escapes for the common control characters.
+    result = ReplaceString(result, Chr(8),  Chr(92)+"b")
+    result = ReplaceString(result, Chr(9),  Chr(92)+"t")
     result = ReplaceString(result, Chr(10), Chr(92)+"n")
-    result = ReplaceString(result, Chr(9), Chr(92)+"t")
+    result = ReplaceString(result, Chr(12), Chr(92)+"f")
+    result = ReplaceString(result, Chr(13), Chr(92)+"r")
+    ; JSON forbids ANY raw C0 control character (U+0000..U+001F) inside a string
+    ; literal — JSON.parse throws "Bad control character in string literal".
+    ; The five above are now named escapes; escape every remaining one as \u00XX.
+    ; A raw NUL (Chr(0)) cannot survive in a PB string, so the range starts at 1.
+    For c = 1 To 31
+      Select c
+        Case 8, 9, 10, 12, 13
+          ; already handled as \b \t \n \f \r above
+        Default
+          result = ReplaceString(result, Chr(c), Chr(92)+"u00" + RSet(Hex(c), 2, "0"))
+      EndSelect
+    Next
     ProcedureReturn result
   EndProcedure
   
