@@ -6,7 +6,7 @@
 
 DeclareModule JSBridge
   
-  Declare InitializeBridge(windowName.s, window.i, webViewGadget.i)
+  Declare InitializeBridge(windowName.s, window.i, sink.i)  ; sink: gadget (native) or negative headless handle
   Declare.s WithBridgeScript(html.s, windowName.s)
   Declare GetJSWindowByName(windowName.s)
   Declare.s GetJSWindowNameByID(window.i)

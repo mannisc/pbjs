@@ -86,7 +86,7 @@ Module JSBridge
   Procedure FlushPendingMessages(*JSWindow.JSWindow)
     If *JSWindow
       ForEach *JSWindow\PendingMessages()
-        WebViewExecuteScript(*JSWindow\WebViewGadget, *JSWindow\PendingMessages())
+        Sink::Exec(*JSWindow\Sink, *JSWindow\PendingMessages())
       Next
       ClearList(*JSWindow\PendingMessages())
     EndIf
@@ -121,7 +121,7 @@ Module JSBridge
     Protected script.s = "if(window.pbjsWindowEvent){window.pbjsWindowEvent('" + EscapeJSON(subjectName) + "','" + kind + "');}"
     ForEach JSWindows()
       If JSWindows()\Name <> subjectName And Not JSWindows()\IsPoolSpare And JSWindows()\Ready
-        WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+        Sink::Exec(JSWindows()\Sink, script)
       EndIf
     Next
   EndProcedure
@@ -160,7 +160,7 @@ Module JSBridge
           If JSWindows()\Window = targetWindow
             script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
             If JSWindows()\Ready
-               WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+               Sink::Exec(JSWindows()\Sink, script)
             Else
                QueuePending(@JSWindows(), script)
             EndIf
@@ -207,7 +207,7 @@ Module JSBridge
             Else
               script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
               If JSWindows()\Ready
-                 WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+                 Sink::Exec(JSWindows()\Sink, script)
               Else
                  QueuePending(@JSWindows(), script)
               EndIf
@@ -236,7 +236,7 @@ Module JSBridge
                                                            ~",\"fromWindow\":\"" + toWindow + 
                                                            ~"\",\"data\":{\"error\":\"" + errorMsg + ~"\"}}") + "');"
                If JSWindows()\Ready
-                 WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+                 Sink::Exec(JSWindows()\Sink, script)
                Else
                  QueuePending(@JSWindows(), script)
                EndIf
@@ -277,7 +277,7 @@ Module JSBridge
         ; are not assigned to any caller and should not receive broadcasts.
         If JSWindows()\Name <> fromWindow And Not JSWindows()\IsPoolSpare
           If JSWindows()\Ready
-            WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            Sink::Exec(JSWindows()\Sink, script)
           Else
             QueuePending(@JSWindows(), script)
           EndIf
@@ -322,7 +322,7 @@ Module JSBridge
         ForEach JSWindows()
           If JSWindows()\Window = sourceWindow
             script = "pbjsSetGetAllExpectedCount(" + Str(requestId) + ", " + Str(count) + ");"
-            WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            Sink::Exec(JSWindows()\Sink, script)
             Break
           EndIf
         Next
@@ -340,8 +340,8 @@ Module JSBridge
         ForEach JSWindows()
           ; Same predicate as the count loop above (excludes pool spares).
           If JSWindows()\Name <> fromWindow And Not JSWindows()\IsPoolSpare
-            If IsGadget(JSWindows()\WebViewGadget)
-              WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+            If Sink::IsValid(JSWindows()\Sink)
+              Sink::Exec(JSWindows()\Sink, script)
             EndIf
           EndIf
         Next
@@ -432,7 +432,7 @@ Module JSBridge
             If JSWindows()\Window = targetWindow
               script = "pbjsHandleResponse('" + EscapeJSON(responseJson) + "');"
               If JSWindows()\Ready
-                 WebViewExecuteScript(JSWindows()\WebViewGadget, script)
+                 Sink::Exec(JSWindows()\Sink, script)
               Else
                  QueuePending(@JSWindows(), script)
               EndIf
@@ -480,7 +480,7 @@ Module JSBridge
   EndProcedure
 
   Procedure SendParameters(*JSWindow.JSWindow, paramsJson.s)
-    If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
+    If *JSWindow And Sink::IsValid(*JSWindow\Sink)
       Protected messageJson.s
       messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"system\",\"name\":\"handleParameters\",\"params\":" + paramsJson + ~",\"data\":{}}"
 
@@ -494,7 +494,7 @@ Module JSBridge
       Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + escapedJson + "');" +
                            "requestAnimationFrame(function(){document.body.classList.add('pbjs-document-ready');});"
       If *JSWindow\Ready
-         WebViewExecuteScript(*JSWindow\WebViewGadget, script)
+         Sink::Exec(*JSWindow\Sink, script)
       Else
          QueuePending(*JSWindow, script)
       EndIf
@@ -503,7 +503,7 @@ Module JSBridge
 
   Procedure SendCloseCheck(*JSWindow.JSWindow)
     Debug "[SEND_CLOSE_CHECK] ENTER. Window=" + *JSWindow\Name
-    If *JSWindow And IsGadget(*JSWindow\WebViewGadget)
+    If *JSWindow And Sink::IsValid(*JSWindow\Sink)
       Protected requestId.i = ElapsedMilliseconds() 
       
       Protected messageJson.s
@@ -514,7 +514,7 @@ Module JSBridge
       
       Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + escapedJson + "');"
       If *JSWindow\Ready
-         WebViewExecuteScript(*JSWindow\WebViewGadget, script)
+         Sink::Exec(*JSWindow\Sink, script)
       Else
          ; Window not ready - auto-approve since JS cannot respond
          *JSWindow\BypassCloseCheck = #True
@@ -527,7 +527,9 @@ Module JSBridge
   ; INITIALIZATION
   ; ============================================================================
   
-  Procedure InitializeBridge(windowName.s, window.i, webViewGadget.i)
+  ; sink: the window's Sink handle — the WebViewGadget for real windows, a
+  ; negative headless handle in web mode (routing via Sink::Bind either way).
+  Procedure InitializeBridge(windowName.s, window.i, sink.i)
     Protected windowKey.s
     
     If Trim(windowName) = ""
@@ -535,12 +537,12 @@ Module JSBridge
       ProcedureReturn #False
     EndIf
     
-    BindWebViewCallback(webViewGadget, "pbjsNativeSend", @HandleSend())
-    BindWebViewCallback(webViewGadget, "pbjsNativeGet", @HandleGet())
-    BindWebViewCallback(webViewGadget, "pbjsNativeSendAll", @HandleSendAll())
-    BindWebViewCallback(webViewGadget, "pbjsNativeGetAll", @HandleGetAll())
-    BindWebViewCallback(webViewGadget, "pbjsNativeReply", @HandleReply())
-    BindWebViewCallback(webViewGadget, "pbjsNativeLog", @HandleLog())
+    Sink::Bind(sink, "pbjsNativeSend", @HandleSend())
+    Sink::Bind(sink, "pbjsNativeGet", @HandleGet())
+    Sink::Bind(sink, "pbjsNativeSendAll", @HandleSendAll())
+    Sink::Bind(sink, "pbjsNativeGetAll", @HandleGetAll())
+    Sink::Bind(sink, "pbjsNativeReply", @HandleReply())
+    Sink::Bind(sink, "pbjsNativeLog", @HandleLog())
     
     ProcedureReturn window
   EndProcedure

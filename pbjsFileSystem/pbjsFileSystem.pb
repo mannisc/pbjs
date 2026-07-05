@@ -89,9 +89,9 @@ Module JSFileSystem
     ; not a JSON one, so it is done at the injection layer rather than in
     ; EscapeJSON (see note there).
     script = "pbjsHandleFSResponse('" + ReplaceString(EscapeJSON(response), Chr(39), Chr(92)+Chr(39)) + "');"
-    Debug "SendResponse: Sending " + Str(Len(script)) + " bytes to Gadget " + Str(gadget) + " (ReqID: " + Str(requestId) + ")"
-    Debug "[FS-NATIVE] SendResponse Gadget: " + Str(gadget) + " ReqID: " + Str(requestId) + " Script: " + Left(script, 100) + "..."
-    WebViewExecuteScript(gadget, script)
+    Debug "SendResponse: Sending " + Str(Len(script)) + " bytes to Sink " + Str(gadget) + " (ReqID: " + Str(requestId) + ")"
+    Debug "[FS-NATIVE] SendResponse Sink: " + Str(gadget) + " ReqID: " + Str(requestId) + " Script: " + Left(script, 100) + "..."
+    Sink::Exec(gadget, script)
   EndProcedure
   
   ; ============================================================================
@@ -404,12 +404,14 @@ Module JSFileSystem
   ; PUBLIC API
   ; ============================================================================
   
+  ; webViewGadget is a Sink handle (real gadget or negative headless handle —
+  ; web mode routes via Sink, iplan/webversion/plan.md).
   Procedure InitializeFileSystem(window.i, webViewGadget.i)
     Protected contextId.s = Str(window)
     Contexts(contextId)\Window = window
     Contexts(contextId)\WebViewGadget = webViewGadget
     
-    BindWebViewCallback(webViewGadget, "pbjsNativeFS", @HandleFS())
+    Sink::Bind(webViewGadget, "pbjsNativeFS", @HandleFS())
   EndProcedure
   
   Procedure.s WithFileSystemScript(html.s, contextId.s)
@@ -437,8 +439,8 @@ Module JSFileSystem
   Procedure InjectFileSystemScript(gadget.i, contextId.s)
     Protected initScript.s
     initScript = ~"window.pbjsFSContextId = '" + contextId + ~"';"
-    WebViewExecuteScript(gadget, initScript)
-    WebViewExecuteScript(gadget, fsScript)
+    Sink::Exec(gadget, initScript)
+    Sink::Exec(gadget, fsScript)
   EndProcedure
 
 EndModule

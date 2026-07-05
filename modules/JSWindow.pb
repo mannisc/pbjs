@@ -32,7 +32,10 @@ DeclareModule JSWindow
     #JSWindow_Behaviour_CloseWindow
   EndEnumeration
   
-  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
+  ; webWindow: #True = HEADLESS window (web mode) — real invisible PB window,
+  ; NO WebViewGadget; the page runs in a browser tab bridged via Sink hooks.
+  ; See iplan/webversion/plan.md (D3/D5).
+  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False)
   ; Set an opaque JS string to inject before this window's content/React loads.
   ; pbjs injects it verbatim and never interprets it — the app owns its meaning.
   Declare SetPreRenderJS(*Window.AppWindow, js.s)
@@ -64,6 +67,7 @@ DeclareModule JSWindow
     DebugUrl.s
     PoolTargetSize.i
     NextSeq.i
+    WebMode.b                   ; #True = instances are headless web windows
     List PoolHandles.i()        ; PB window handles of warm spares
   EndStructure
 
@@ -72,7 +76,12 @@ DeclareModule JSWindow
     *Parent.AppWindow
 
     Window.i
-    WebViewGadget.i
+    WebViewGadget.i   ; 0 for headless windows
+    ; Routing handle for the window's page: == WebViewGadget for real windows,
+    ; negative Sink handle for headless ones. All script/bind traffic goes
+    ; through Sink::Exec/Bind/IsValid with this value.
+    Sink.i
+    Headless.b        ; #True = web-mode window (no gadget, never shown)
 
     ;Stages
     OpenTime.i
@@ -161,7 +170,14 @@ DeclareModule JSWindow
   Declare CancelClose(Reason.s="")
 
   ; Multi-instance public API. See plan iplan/agent-window-multi-instance/plan.md.
-  Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1)
+  Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1, webMode.b = #False)
+
+  ; Web mode: browser tab (re)attached / detached for a headless window —
+  ; called by the app's proxy layer (WebProxy). Attach replays binds and the
+  ; dev-reload bootstrap sequence; detach resets Ready so messages buffer.
+  ; See iplan/webversion/plan.md §5.5.
+  Declare HandleHeadlessAttach(windowName.s)
+  Declare HandleHeadlessDetach(windowName.s)
   Declare.i FindTemplate(templateName.s)
   Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "")
   Declare RefillPoolAsync(*Template.JSWindowTemplate)
@@ -546,6 +562,12 @@ Module JSWindow
 
       If IsWindow(window)
         SetWindowTitle(window, newTitle)
+        ; Headless: also forward to the browser tab (document.title).
+        If FindMapElement(JSWindows(), Str(window))
+          If JSWindows()\Headless
+            Sink::WinCmd(JSWindows()\Sink, "title", newTitle)
+          EndIf
+        EndIf
         ProcedureReturn UTF8(~"{\"success\":true}")
       EndIf
     EndIf
@@ -593,16 +615,22 @@ Module JSWindow
 
 
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
-    
+
     Protected script$ = "if(window.pbjsUpdateScale) window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
-    
-    
+
+    ; Headless: the browser tab owns its viewport — the invisible PB window's
+    ; dimensions are meaningless there; the web adapter drives pbjsUpdateScale
+    ; from browser resize events instead (plan C5).
+    If *JSWindow\Headless
+      ProcedureReturn
+    EndIf
+
     CompilerIf #PB_Compiler_OS = #PB_OS_Windows
       If IsIconic_(WindowID(*JSWindow\Window))
         ProcedureReturn
       EndIf
     CompilerEndIf
-    
+
     If Not IsGadget(*JSWindow\WebViewGadget) Or width = 0 Or height = 0
       ProcedureReturn
     EndIf
@@ -785,21 +813,21 @@ Module JSWindow
   
   
   Procedure SetBodyFadeIn(*JSWindow.JSWindow)
-    If IsGadget(*JSWindow\WebViewGadget)
+    If Sink::IsValid(*JSWindow\Sink)
       If *JSWindow\Visible
-        fadeInTime = 150 
+        fadeInTime = 150
       Else
         fadeInTime = 0
-      EndIf 
+      EndIf
       bodyFadeInScript.s =  "(function(){const style=document.createElement('style');" +
                             "style.id='pbjs-dynamic-style-pbjs-document-ready';" +
                             "style.textContent='body.pbjs-document-ready{" +
                             "transition:opacity " + fadeInTime + "ms ease-out!important;" +
                             "}';" +
                             "document.head.appendChild(style);})()";
-      WebViewExecuteScript(*JSWindow\WebViewGadget, bodyFadeInScript)
-    EndIf 
-  EndProcedure 
+      Sink::Exec(*JSWindow\Sink, bodyFadeInScript)
+    EndIf
+  EndProcedure
   
   
   
@@ -951,43 +979,58 @@ Module JSWindow
     PostEvent(#CustomWindowEvent, window, 0,#Event_Loaded_Html)
   EndProcedure
 
-  Procedure BindWebviewEvents(webViewGadget)
-    BindWebViewCallback(webViewGadget, "callbackReadyState", @JSReadyState())
-    BindWebViewCallback(webViewGadget, "pbjsNativeGetWindow", @JSGetWindow())
-    BindWebViewCallback(webViewGadget, "pbjsNativeOpenWindow", @JSOpenWindow())
-    BindWebViewCallback(webViewGadget, "pbjsNativeOpenInstance", @JSOpenInstance())
-    BindWebViewCallback(webViewGadget, "pbjsNativeHideWindow", @JSHideWindow())
-    BindWebViewCallback(webViewGadget, "pbjsNativeCloseWindow", @JSCloseWindow())
-    BindWebViewCallback(webViewGadget, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
-    BindWebViewCallback(webViewGadget, "pbjsNativeSetWindowTitle", @JSSetWindowTitle())
-    BindWebViewCallback(webViewGadget, "pbjsNativeFocusWindow", @JSFocusWindow())
+  ; Takes a Sink handle (== the gadget for real windows, negative for headless)
+  ; so the same nine bindings reach a browser tab via the proxy in web mode.
+  Procedure BindWebviewEvents(sink)
+    Sink::Bind(sink, "callbackReadyState", @JSReadyState())
+    Sink::Bind(sink, "pbjsNativeGetWindow", @JSGetWindow())
+    Sink::Bind(sink, "pbjsNativeOpenWindow", @JSOpenWindow())
+    Sink::Bind(sink, "pbjsNativeOpenInstance", @JSOpenInstance())
+    Sink::Bind(sink, "pbjsNativeHideWindow", @JSHideWindow())
+    Sink::Bind(sink, "pbjsNativeCloseWindow", @JSCloseWindow())
+    Sink::Bind(sink, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
+    Sink::Bind(sink, "pbjsNativeSetWindowTitle", @JSSetWindowTitle())
+    Sink::Bind(sink, "pbjsNativeFocusWindow", @JSFocusWindow())
   EndProcedure
   
   
   
-  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="")
-    
+  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False)
+
     Protected parentWindowID = 0
     If *Parent And IsWindow(*Parent\Window)
       parentWindowID = WindowID(*Parent\Window)
     EndIf
-    
+
     window = OpenWindow(#PB_Any,x,y,w,h,title.s,flags| #PB_Window_Invisible,parentWindowID)
-    
+
     If window
-      webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
-      
+      ; Headless (web-mode) window: real invisible PB window — all identity /
+      ; geometry / close plumbing keeps working — but NO WebViewGadget; the
+      ; page runs in a browser tab and traffic routes through the Sink hooks.
+      ; See iplan/webversion/plan.md D3.
+      Protected webViewGadget = 0
+      Protected sink.i
+      If webWindow
+        sink = Sink::RegisterHeadless(windowName)
+      Else
+        webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
+        sink = webViewGadget
+      EndIf
+
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-        CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0)
+        If Not webWindow
+          CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0)
+        EndIf
         ; Disable window show/hide animation (NSWindowAnimationBehaviorNone = 2).
         ; Without this, every makeKeyAndOrderFront: call adds ~150-200ms of zoom animation.
         CocoaMessage(0, WindowID(window), "setAnimationBehavior:", 2)
       CompilerEndIf
-      
+
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
-      
+
       Protected hWnd = WindowID(window)
-      
+
       SetWindowColor(window, themeBackgroundColor)
 
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
@@ -995,20 +1038,21 @@ Module JSWindow
         ApplyThemeToWinHandle(hWnd)
         SetWindowCallback(@WindowCallback(),window, #PB_Window_NoChildEvents)
       CompilerEndIf
-      
+
       CompilerIf Not #Debug_On
-        
-        CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
-          ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
-        CompilerElse 
-          HideGadget(webViewGadget,#True)
-        CompilerEndIf 
-      CompilerEndIf 
-      
-      BindWebviewEvents(webViewGadget)
-      
-      *JSWindow.JSWindow = JSWindows(Str(window)) 
-      
+        If Not webWindow
+          CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
+            ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
+          CompilerElse
+            HideGadget(webViewGadget,#True)
+          CompilerEndIf
+        EndIf
+      CompilerEndIf
+
+      BindWebviewEvents(sink)
+
+      *JSWindow.JSWindow = JSWindows(Str(window))
+
       *JSWindow\Window = window
       *JSWindow\Name = windowName
       *JSWindow\Visible = #False
@@ -1020,31 +1064,40 @@ Module JSWindow
       *JSWindow\ResizeProc = *ResizeCallback
       *JSWindow\CloseBehaviour = CloseBehaviour
       *JSWindow\WebViewGadget = webViewGadget
-      
+      *JSWindow\Sink = sink
+      *JSWindow\Headless = webWindow
+
       WindowsByName(windowName) = window
-      JSBridge::InitializeBridge(windowName, window, webViewGadget)
-      
-      ; Register for live resize notifications on macOS
+      JSBridge::InitializeBridge(windowName, window, sink)
+
+      ; Register for live resize notifications on macOS (pointless for a
+      ; never-shown headless window — plan C12)
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-        MacOSRegisterResizeNotifications(*Window)
+        If Not webWindow
+          MacOSRegisterResizeNotifications(*Window)
+        EndIf
       CompilerEndIf
-      
-      CreateThread(@LoadHtml(),window)
+
+      ; Headless: the page is served by Vite/the browser, never from the
+      ; embedded HTML — skip the loader thread entirely (plan C7).
+      If Not webWindow
+        CreateThread(@LoadHtml(),window)
+      EndIf
       PbjsStartupTraceMark("webview window created: " + windowName)
 
       CompilerIf  #Debug_On; remote debugging
         PreparePbjsBasicScript(*JSWindow.JSWindow)
 
-        
-        If debugUrl <> ""
+
+        If debugUrl <> "" And Not webWindow
           SetGadgetText(webViewGadget, debugUrl)
         EndIf
-      CompilerEndIf 
-      
+      CompilerEndIf
+
       ProcedureReturn *Window
-    EndIf 
+    EndIf
     ProcedureReturn -1
-  EndProcedure 
+  EndProcedure
   
   
   
@@ -1052,12 +1105,27 @@ Module JSWindow
   
   
   
-  Procedure OpenJSWindow(*Window.AppWindow )  
+  Procedure OpenJSWindow(*Window.AppWindow )
     Protected manualOpen
     Protected startTime = ElapsedMilliseconds()
     Debug "[OpenJSWindow] START at " + Str(startTime)
     If IsWindow(*Window\Window)
       *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+
+      ; Headless: mark open ("virtually visible" — the browser tab is the
+      ; view) but never show the PB window. OpenManagedWindow(manualOpen=#True)
+      ; sets AppWindow\Open without any show call, which keeps the event loop
+      ; alive (WindowManager.pb:154). No ForceContentVisible either — content
+      ; readiness comes from the attach-driven callbackReadyState handshake.
+      If *JSWindow\Headless
+        *JSWindow\Open = #True
+        *JSWindow\Visible = #True
+        *JSWindow\OpenTime = ElapsedMilliseconds()
+        OpenManagedWindow(*Window, #True)
+        Debug "[OpenJSWindow] headless open: " + *JSWindow\Name
+        ProcedureReturn
+      EndIf
+
       Debug "[OpenJSWindow] *JSWindow\Visible = " + Str(*JSWindow\Visible) + ", *JSWindow\Ready = " + Str(*JSWindow\Ready)
       If *JSWindow\Visible
         manualOpen = #False
@@ -1143,12 +1211,19 @@ Module JSWindow
     Debug "[PrepareJSWindowThread] END"
   EndProcedure
   
-  Procedure PrepareJSWindow(*Window.AppWindow)  
+  Procedure PrepareJSWindow(*Window.AppWindow)
     Debug "[PrepareJSWindow] START (non-blocking)"
     If IsWindow(*Window\Window)
       Protected WinID = WindowID(*Window\Window)
       Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
       Protected windowHandle = *Window\Window
+
+      ; Headless spares need no pre-warm theatrics (cloak/alpha/off-screen are
+      ; meaningless for a never-shown window — plan C15). Mark claimable.
+      If *JSWindow\Headless
+        *JSWindow\Visible = #True
+        ProcedureReturn
+      EndIf
       
       ; Save original position
       Protected originalX = WindowX(*Window\Window)
@@ -1234,6 +1309,12 @@ Module JSWindow
     If Not (*Window And IsWindow(*Window\Window))
       ProcedureReturn
     EndIf
+    ; Headless: "focus" means the browser tab, not the invisible PB window.
+    Protected *FocusJS.JSWindow = JSWindows(Str(*Window\Window))
+    If *FocusJS And *FocusJS\Headless
+      Sink::WinCmd(*FocusJS\Sink, "focus", "")
+      ProcedureReturn
+    EndIf
     HideWindow(*Window\Window, #False)
     CompilerSelect #PB_Compiler_OS
       CompilerCase #PB_OS_MacOS
@@ -1261,7 +1342,7 @@ Module JSWindow
   EndProcedure
 
 
-  Procedure.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1)
+  Procedure.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1, webMode.b = #False)
     AddMapElement(JSTemplates(), templateName)
     Protected *T.JSWindowTemplate = @JSTemplates()
     *T\Name = templateName
@@ -1279,7 +1360,8 @@ Module JSWindow
     *T\DebugUrl = debugUrl
     *T\PoolTargetSize = poolTargetSize
     *T\NextSeq = 1
-    Debug "[RegisterTemplate] Registered '" + templateName + "' poolTargetSize=" + Str(poolTargetSize)
+    *T\WebMode = webMode
+    Debug "[RegisterTemplate] Registered '" + templateName + "' poolTargetSize=" + Str(poolTargetSize) + " webMode=" + Str(webMode)
     ProcedureReturn *T
   EndProcedure
 
@@ -1292,7 +1374,7 @@ Module JSWindow
 
     Debug "[CreateAndPrepareSpare] Creating '" + instanceName + "'"
 
-    Protected *Window.AppWindow = CreateJSWindow(instanceName, *T\X, *T\Y, *T\W, *T\H, *T\Title, *T\Flags, *T\HtmlStart, *T\HtmlEnd, *T\Parent, #JSWindow_Behaviour_CloseWindow, *T\WindowReadyCallback, *T\ResizeCallback, *T\DebugUrl)
+    Protected *Window.AppWindow = CreateJSWindow(instanceName, *T\X, *T\Y, *T\W, *T\H, *T\Title, *T\Flags, *T\HtmlStart, *T\HtmlEnd, *T\Parent, #JSWindow_Behaviour_CloseWindow, *T\WindowReadyCallback, *T\ResizeCallback, *T\DebugUrl, *T\WebMode)
 
     If *Window = 0 Or *Window = -1
       Debug "[CreateAndPrepareSpare] CreateJSWindow failed for '" + instanceName + "'"
@@ -1717,19 +1799,19 @@ Module JSWindow
             *JSWindow\Visible = #False
             *JSWindow\NeedsReload = #False  ; cleared again by JSReadyState after reload completes
             CompilerIf #Debug_On
-              If IsGadget(*JSWindow\WebViewGadget)
-                WebViewExecuteScript(*JSWindow\WebViewGadget, "window.location.reload();")
-              EndIf
+              Sink::Exec(*JSWindow\Sink, "window.location.reload();")
             CompilerElse
-              CreateThread(@LoadHtml(), *Window\Window)
+              If *JSWindow\Headless
+                Sink::Exec(*JSWindow\Sink, "window.location.reload();")
+              Else
+                CreateThread(@LoadHtml(), *Window\Window)
+              EndIf
             CompilerEndIf
           Else
             ; Fast recycle (no reload): blank body so next user doesn't see stale content.
             ; SendParameters re-adds 'pbjs-document-ready' via rAF when the instance is next claimed.
             *JSWindow\NeedsReload = #True
-            If IsGadget(*JSWindow\WebViewGadget)
-              WebViewExecuteScript(*JSWindow\WebViewGadget, "document.body.classList.remove('pbjs-document-ready');")
-            EndIf
+            Sink::Exec(*JSWindow\Sink, "document.body.classList.remove('pbjs-document-ready');")
             ; Visible stays #True: WebView is live and ready for instant reuse.
           EndIf
           *JSWindow\IsPoolSpare = #True
@@ -1775,6 +1857,11 @@ Module JSWindow
         ForEach WindowClosingObservers()
           CallFunctionFast(WindowClosingObservers(), *Window, *JSWindow)
         Next
+        ; Headless: tell the browser tab, then release the sink handle.
+        If *JSWindow\Headless
+          Sink::WinCmd(*JSWindow\Sink, "close", "")
+          Sink::ReleaseHeadless(*JSWindow\Sink)
+        EndIf
       EndIf
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
         MacOSUnregisterResizeNotifications(*Window)
@@ -2150,30 +2237,34 @@ Module JSWindow
     *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
     
     CompilerIf #Debug_On
-      webViewGadget = *JSWindow\WebViewGadget
-      If (Not *JSWindow\Ready Or DEBUGMODEinjectStartupOnce) And ElapsedMilliseconds() - DEBUGMODEcheckTime > 300
-        DEBUGMODEinjectStartupOnce = #False
-        BindWebviewEvents(webViewGadget)
-        DEBUGMODEcheckTime =  ElapsedMilliseconds()
-        WebViewExecuteScript(webViewGadget, "window.__pbjsAdded = false;")
-        WebViewExecuteScript(webViewGadget, *JSWindow\PreRenderJS)
-        WebViewExecuteScript(webViewGadget, *JSWindow\StartupJS)
-        WebViewExecuteScript(webViewGadget, *JSWindow\WindowJS )
-        WebViewExecuteScript(webViewGadget, JSBridge::GetStartUpJS(*JSWindow\Name))
-      EndIf 
-      
-      
-      If  ElapsedMilliseconds() - DEBUGMODEexecuteLocationScriptTime > 500
-        DEBUGMODEexecuteLocationScriptTime = ElapsedMilliseconds() 
-        BindWebViewCallback(webViewGadget, "callbackLocation", @CallbackLocation())      
-        WebViewExecuteScript(webViewGadget, ~"callbackLocation('"+Str(*Window\Window)+"', '"+ ~"'+document.location.href+'" +~"');")
-        
-        w = WindowWidth(*JSWindow\Window)
-        h = WindowHeight(*JSWindow\Window)
-        UpdateWebViewScale(*JSWindow, w, h)  
-      EndIf 
-      
-      
+      ; Headless windows are bootstrapped attach-driven (HandleHeadlessAttach),
+      ; not by this event-driven retry loop; the location poll is equally
+      ; meaningless for a browser tab (reload detection = proxy re-attach).
+      ; Gate BOTH blocks (plan C6).
+      If Not *JSWindow\Headless
+        webViewGadget = *JSWindow\WebViewGadget
+        If (Not *JSWindow\Ready Or DEBUGMODEinjectStartupOnce) And ElapsedMilliseconds() - DEBUGMODEcheckTime > 300
+          DEBUGMODEinjectStartupOnce = #False
+          BindWebviewEvents(webViewGadget)
+          DEBUGMODEcheckTime =  ElapsedMilliseconds()
+          WebViewExecuteScript(webViewGadget, "window.__pbjsAdded = false;")
+          WebViewExecuteScript(webViewGadget, *JSWindow\PreRenderJS)
+          WebViewExecuteScript(webViewGadget, *JSWindow\StartupJS)
+          WebViewExecuteScript(webViewGadget, *JSWindow\WindowJS )
+          WebViewExecuteScript(webViewGadget, JSBridge::GetStartUpJS(*JSWindow\Name))
+        EndIf
+
+
+        If  ElapsedMilliseconds() - DEBUGMODEexecuteLocationScriptTime > 500
+          DEBUGMODEexecuteLocationScriptTime = ElapsedMilliseconds()
+          BindWebViewCallback(webViewGadget, "callbackLocation", @CallbackLocation())
+          WebViewExecuteScript(webViewGadget, ~"callbackLocation('"+Str(*Window\Window)+"', '"+ ~"'+document.location.href+'" +~"');")
+
+          w = WindowWidth(*JSWindow\Window)
+          h = WindowHeight(*JSWindow\Window)
+          UpdateWebViewScale(*JSWindow, w, h)
+        EndIf
+      EndIf
     CompilerEndIf
     
     
@@ -2198,22 +2289,42 @@ Module JSWindow
             
           Case #Event_Loaded_Html
             CompilerIf Not #Debug_On
-              
-              webViewGadget = *JSWindow\WebViewGadget
-              
-              html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
-              html.s =  WithPbjsBasicScript(html, *JSWindow)
-              ; Opaque app pre-render script: inserted last ⇒ closest to <body>
-              ; ⇒ runs first, before React's deferred module bundle.
-              html.s =  WithPreRenderScript(html, *JSWindow\PreRenderJS)
+              ; Headless: no gadget, page comes from the browser (plan C7).
+              ; (LoadHtml is never started for headless windows; belt & braces.)
+              If Not *JSWindow\Headless
+                webViewGadget = *JSWindow\WebViewGadget
+
+                html.s =  JSBridge::WithBridgeScript(*JSWindow\Html, *JSWindow\Name)
+                html.s =  WithPbjsBasicScript(html, *JSWindow)
+                ; Opaque app pre-render script: inserted last ⇒ closest to <body>
+                ; ⇒ runs first, before React's deferred module bundle.
+                html.s =  WithPreRenderScript(html, *JSWindow\PreRenderJS)
 
 
 
-              SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
-              *JSWindow\LoadedCode = #True
-              PbjsStartupTraceMark("html + bridge script set on webview: " + *JSWindow\Name)
+                SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
+                *JSWindow\LoadedCode = #True
+                PbjsStartupTraceMark("html + bridge script set on webview: " + *JSWindow\Name)
+              EndIf
             CompilerEndIf
           Case #Event_Content_Ready
+
+            ; Headless: no gadget to unhide, no window to show/maximize — but
+            ; the semantic milestone is identical: mark visible, fade-in style,
+            ; and fire WindowReadyProc (→ WindowLoaded: ptym/FS/settings
+            ; bridges attach through the Sink). Plan §5.4-4.
+            If *JSWindow\Headless
+              Debug " #Event_Content_Ready (headless) "+*JSWindow\Name
+              *JSWindow\Visible = #True
+              PbjsStartupTraceMark("headless content ready: " + *JSWindow\Name)
+              SetBodyFadeIn(*JSWindow)
+              If *JSWindow\Ready
+                If *JSWindow\WindowReadyProc
+                  CallFunctionFast(*JSWindow\WindowReadyProc, *Window , *JSWindow)
+                EndIf
+              EndIf
+              ProcedureReturn #True
+            EndIf
 
             ; macOS first-show site (Win/Linux consume the flag in
             ; OpenManagedWindow): maximize while still hidden so the
@@ -2230,22 +2341,22 @@ Module JSWindow
             webViewGadget = *JSWindow\WebViewGadget
             w = WindowWidth(*JSWindow\Window)
             h = WindowHeight(*JSWindow\Window)
-            
-            UpdateWebViewScale(*JSWindow, w, h) 
-            
-            CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux 
+
+            UpdateWebViewScale(*JSWindow, w, h)
+
+            CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
               ResizeGadget(webViewGadget,0,0,#PB_Ignore,#PB_Ignore)
-            CompilerEndIf 
+            CompilerEndIf
             CompilerIf #PB_Compiler_OS = #PB_OS_Windows
               ;UpdateWindow_(WindowID(*JSWindow\Window))
-              RedrawWindow_(GadgetID(*JSWindow\WebViewGadget), #Null, #Null, #RDW_UPDATENOW  ) 
-              RedrawWindow_(WindowID(*JSWindow\Window), #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN ) 
-            CompilerEndIf 
-            
+              RedrawWindow_(GadgetID(*JSWindow\WebViewGadget), #Null, #Null, #RDW_UPDATENOW  )
+              RedrawWindow_(WindowID(*JSWindow\Window), #Null, #Null, #RDW_UPDATENOW | #RDW_ALLCHILDREN )
+            CompilerEndIf
+
             Debug " #Event_Content_Ready "+*JSWindow\Name
-            
+
             HideGadget(webViewGadget,#False)
-            
+
             If *JSWindow\Open And Not *JSWindow\Visible
               HideWindow(*JSWindow\Window, #False)
             EndIf
@@ -2253,12 +2364,12 @@ Module JSWindow
             PbjsStartupTraceMark("window shown (content ready): " + *JSWindow\Name)
 
             SetBodyFadeIn(*JSWindow)
-            
+
             If *JSWindow\Ready
               If *JSWindow\WindowReadyProc
                 CallFunctionFast(*JSWindow\WindowReadyProc, *Window , *JSWindow)
-              EndIf 
-            EndIf 
+              EndIf
+            EndIf
             
           Case #Event_Prepare_Uncloak
             ; Posted by PrepareJSWindowThread ~3 frames after the cloaked
@@ -2439,12 +2550,75 @@ Module JSWindow
   Procedure ForceContentVisible(window)
     Delay(600)
     If IsWindow(window)
-      If Not JSWindows(Str(window))\Ready 
-        PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
-      EndIf 
-    EndIf 
+      If Not JSWindows(Str(window))\Ready
+        PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready)
+      EndIf
+    EndIf
   EndProcedure
-  
+
+
+  ; ===========================================================================
+  ;- HEADLESS (WEB-MODE) ATTACH / DETACH
+  ; ===========================================================================
+  ; A browser tab (re)connected for a headless window. Replays the EXACT
+  ; dev-reload bootstrap this module already uses for Vite-served pages (the
+  ; #Debug_On retry block above): binds first, then __pbjsAdded reset,
+  ; PreRenderJS (window.startupSettings), StartupJS (pbjsDocumentReady →
+  ; callbackReadyState), WindowJS, and the pbjs bridge script. Everything
+  ; after that — JSReadyState → Ready → FlushPendingMessages → Content_Ready →
+  ; WindowLoaded — is the untouched existing handshake.
+  ; iplan/webversion/plan.md §5.5.
+  Procedure HandleHeadlessAttach(windowName.s)
+    If Not FindMapElement(WindowsByName(), windowName)
+      Debug "[JSWindow] HandleHeadlessAttach: unknown window '" + windowName + "'"
+      ProcedureReturn
+    EndIf
+    Protected window.i = WindowsByName()
+    Protected *JSWindow.JSWindow = JSWindows(Str(window))
+    If *JSWindow = 0 Or Not *JSWindow\Headless
+      Debug "[JSWindow] HandleHeadlessAttach: '" + windowName + "' is not headless"
+      ProcedureReturn
+    EndIf
+
+    ; Re-attach (tab reload / takeover): same semantics as a dev-mode page
+    ; reload — reset readiness and orphan-reject peers' in-flight requests.
+    If *JSWindow\Ready
+      Debug "[JSWindow] HandleHeadlessAttach: re-attach for '" + windowName + "' — resetting Ready"
+      *JSWindow\Ready = #False
+      JSBridge::NotifyWindowEvent(windowName, "reloaded")
+    EndIf
+
+    ; 1. Shims first, so StartupJS's callbackReadyState poll finds its target.
+    Sink::ReplayBinds(windowName)
+
+    ; 2..5. The dev-reload injection sequence, byte-identical script content.
+    Sink::Exec(*JSWindow\Sink, "window.__pbjsAdded = false;")
+    Sink::Exec(*JSWindow\Sink, *JSWindow\PreRenderJS)
+    PreparePbjsBasicScript(*JSWindow)
+    Sink::Exec(*JSWindow\Sink, *JSWindow\StartupJS)
+    Sink::Exec(*JSWindow\Sink, *JSWindow\WindowJS)
+    Sink::Exec(*JSWindow\Sink, JSBridge::GetStartUpJS(windowName))
+
+    Debug "[JSWindow] HandleHeadlessAttach: bootstrap sent to '" + windowName + "'"
+  EndProcedure
+
+  ; Tab closed / WS dropped: NOT a window close (terminals keep running,
+  ; ownership stays — plan C11). Ready=#False makes the bridge buffer messages
+  ; via the existing QueuePending path until the next attach replays them;
+  ; peers orphan-reject their in-flight requests instead of waiting 30 s.
+  Procedure HandleHeadlessDetach(windowName.s)
+    If Not FindMapElement(WindowsByName(), windowName)
+      ProcedureReturn
+    EndIf
+    Protected window.i = WindowsByName()
+    Protected *JSWindow.JSWindow = JSWindows(Str(window))
+    If *JSWindow And *JSWindow\Headless And *JSWindow\Ready
+      *JSWindow\Ready = #False
+      JSBridge::NotifyWindowEvent(windowName, "reloaded")
+      Debug "[JSWindow] HandleHeadlessDetach: '" + windowName + "' marked not-ready"
+    EndIf
+  EndProcedure
+
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
 ; CursorPosition = 102
