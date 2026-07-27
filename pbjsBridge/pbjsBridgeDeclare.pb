@@ -14,6 +14,11 @@ DeclareModule JSBridge
   Declare.s EscapeJSON(text.s)
   Declare SendParameters(*JSWindow, paramsJson.s)
   Declare SendCloseCheck(*JSWindow)
+  ; Native-owned system requests use the normal PBJS request/reply transport,
+  ; but their replies return to PureBasic rather than another web window.
+  Prototype SystemResponseHandler(requestName.s, fromWindow.s, dataJson.s)
+  Declare RegisterSystemResponseHandler(*handler.SystemResponseHandler)
+  Declare SendSystemRequest(*JSWindow, requestName.s, paramsJson.s = "{}")
   Declare FlushPendingMessages(*JSWindow)
   Declare NotifyWindowEvent(subjectName.s, kind.s)
 EndDeclareModule

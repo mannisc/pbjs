@@ -1790,7 +1790,10 @@ Module JSWindow
       ; This mirrors terminal-window behaviour: WebView content stays loaded and
       ; Visible stays True, so the next OpenInstance claim is instant — no WKWebView
       ; reload or ForceContentVisible delay.
-      If *T And instanceKey <> ""
+      ; Not while quitting: recycling skips the WebView teardown below, and the
+      ; app-exit cleanup then frees a WKWebView that still has script-message
+      ; handlers attached — the ObjC abort this teardown exists to prevent.
+      If *T And instanceKey <> "" And Not AppClosing
         If *JSWindow
           If *JSWindow\ReloadOnRecycle
             ; Reload path: page will be replaced — no need to blank body first.

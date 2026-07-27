@@ -29,6 +29,13 @@
 
 Module JSBridge
   UseModule JSWindow
+
+  Structure PendingSystemRequest
+    Name.s
+  EndStructure
+  Global NewMap PendingSystemRequests.PendingSystemRequest()
+  Global NextSystemRequestId.i = 1
+  Global *SystemResponseHandler.SystemResponseHandler = 0
   
   ; ============================================================================
   ; JAVASCRIPT BRIDGE SCRIPT - Loaded from external file
@@ -369,6 +376,20 @@ Module JSBridge
       isGetAll = GetJSONBoolean(GetJSONMember(JSONValue(json), "isGetAll"))
       
       If toWindow = "system"
+        ; Structured native-originated system request. Keep this separate from
+        ; the legacy close-check path below, whose payload is deliberately a
+        ; boolean veto/allow contract.
+        If FindMapElement(PendingSystemRequests(), Str(requestId))
+          Protected systemRequestName.s = PendingSystemRequests()\Name
+          DeleteMapElement(PendingSystemRequests())
+          If *SystemResponseHandler
+            ; Prototype call, not CallFunctionFast — the compiler then handles
+            ; the string parameters with the normal PB calling convention.
+            *SystemResponseHandler(systemRequestName, fromWindow, dataJson)
+          EndIf
+          FreeJSON(json)
+          ProcedureReturn
+        EndIf
         ; --- SYSTEM MESSAGE HANDLING (e.g. Close Check) ---
         Protected *SourceJSWindow.JSWindow = 0
         Protected sourceWindowID.i = GetJSWindowByName(fromWindow)
@@ -520,6 +541,36 @@ Module JSBridge
          *JSWindow\BypassCloseCheck = #True
          JSWindow::CheckCloseProgress()
       EndIf
+    EndIf
+  EndProcedure
+
+  Procedure RegisterSystemResponseHandler(*handler.SystemResponseHandler)
+    *SystemResponseHandler = *handler
+  EndProcedure
+
+  ; Send a native-originated request to one JS window.  Unlike SendCloseCheck,
+  ; this supports structured replies and keeps the request name by id so the
+  ; response router can dispatch it to the application layer.
+  Procedure SendSystemRequest(*JSWindow.JSWindow, requestName.s, paramsJson.s = "{}")
+    If Not *JSWindow Or Not Sink::IsValid(*JSWindow\Sink)
+      ProcedureReturn
+    EndIf
+
+    NextSystemRequestId + 1
+    If NextSystemRequestId <= 0
+      NextSystemRequestId = 1
+    EndIf
+    Protected requestId.i = NextSystemRequestId
+    PendingSystemRequests(Str(requestId))\Name = requestName
+
+    Protected messageJson.s
+    messageJson = ~"{\"type\":\"get\",\"fromWindow\":\"system\",\"name\":\"" + requestName +
+                  ~"\",\"params\":" + paramsJson + ~",\"data\":{},\"requestId\":" + Str(requestId) + "}"
+    Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
+    If *JSWindow\Ready
+      Sink::Exec(*JSWindow\Sink, script)
+    Else
+      QueuePending(*JSWindow, script)
     EndIf
   EndProcedure
   

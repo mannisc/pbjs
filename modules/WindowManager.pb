@@ -36,6 +36,7 @@ DeclareModule WindowManager
   Declare AddManagedWindow(Title.s, window, *HandleProc,*HideProc = 0, *CloseProc = 0, *CleanupProc = 0)
   Declare OpenManagedWindow(*Window.AppWindow,manualOpen=#False)
   Declare HideManagedWindow(*Window.AppWindow)
+  Declare HideAllManagedWindows()
   Declare CloseManagedWindow(*Window.AppWindow)
   Declare RunEventLoop(*HandleMainEvent.HandleMainEvent, *HandleNetworkEvent.HandleNetworkEvent = 0, *ShouldKeepRunning.ShouldKeepRunning = 0)
   Declare CleanupManagedWindows()
@@ -170,6 +171,25 @@ Module WindowManager
     EndIf
   EndProcedure
 
+  ; App shutdown hides every live managed window in one native event turn, so
+  ; the app disappears at once instead of window by window. Deliberately NOT a
+  ; close: WebViews stay alive for a final JS acknowledgement. The caller must
+  ; still run CloseManagedWindows() afterwards — hiding skips the per-window
+  ; CloseProc that tears the WebView down.
+  Procedure HideAllManagedWindows()
+    ForEach ManagedWindows()
+      If ManagedWindows()\Open
+        HideManagedWindow(@ManagedWindows())
+        ; A managed window without a HideProc would otherwise stay Open and
+        ; keep the event loop (and the visible window) alive.
+        If ManagedWindows()\Open And ManagedWindows()\Window
+          HideWindow(ManagedWindows()\Window, #True)
+          ManagedWindows()\Open = #False
+        EndIf
+      EndIf
+    Next
+  EndProcedure
+
 
   Procedure CloseManagedWindow(*Window.AppWindow)
     Debug "[WM] CloseManagedWindow: title='" + *Window\Title + "' Open=" + Str(*Window\Open)
@@ -198,7 +218,7 @@ Module WindowManager
         Windows() = ManagedWindows()\Window
 
         If ManagedWindows()\CloseProc
-          CallFunctionFast(ManagedWindows()\CloseProc, ManagedWindows()\Window)
+          CallFunctionFast(ManagedWindows()\CloseProc, @ManagedWindows())
         EndIf
       ElseIf Not ManagedWindows()\Closed
         ; Window was hidden (not destroyed) — add for explicit CloseWindow() to free WebViewGadget/WKWebView
