@@ -1,0 +1,20 @@
+# =============================================================================
+# Line endings — pbjs is a nested repo of its own (the parent ignores pbjs/),
+# so it needs this file too; the parent's .gitattributes does not reach here.
+#
+# Same rule as the host app: LF is the single canonical form, stored in git and
+# checked out on both Windows and macOS. Local `core.autocrlf` cannot drift it.
+#
+# After editing this file, re-run:  git add --renormalize .   (own commit)
+# =============================================================================
+
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png  binary
+*.ico  binary
+*.icns binary
+*.swp  binary
