@@ -138,7 +138,10 @@ Module JSFileSystem
         CloseFile(file)
         
         If encoding = "utf8"
-          content = PeekS(*mem, length, #PB_UTF8)
+          ; length is a BYTE count (Lof) — #PB_ByteLength stops the UTF-8 decode
+          ; at the end of the buffer. Without it PeekS treats it as a CHARACTER
+          ; count and over-reads past *mem by (bytes - chars) for multibyte files.
+          content = PeekS(*mem, length, #PB_UTF8 | #PB_ByteLength)
           SendResponse(gadget, requestId, ~"\"" + EscapeJSON(content) + ~"\"")
         Else
           base64 = Base64Encoder(*mem, length)
