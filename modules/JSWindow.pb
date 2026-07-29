@@ -574,6 +574,169 @@ Module JSWindow
     ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
   EndProcedure
 
+  ; Shared name->window resolution for the window-chrome calls below. Same
+  ; lookup JSSetWindowTitle/JSFocusWindow do inline: runtime name first, then a
+  ; raw PB window id as fallback.
+  Procedure.i ResolveJSWindowByName(name.s)
+    Protected trimmed.s = Trim(name)
+    ForEach JSWindows()
+      If Trim(JSWindows()\Name) = trimmed
+        ProcedureReturn JSWindows()\Window
+      EndIf
+    Next
+    ProcedureReturn Val(trimmed)
+  EndProcedure
+
+  ; JS → PB: drive the minimize/maximize/close buttons the page draws. PB's
+  ; SetWindowState is cross-platform, so this one implementation serves macOS,
+  ; Windows and Linux.
+  ;
+  ; "close" deliberately POSTS #PB_Event_CloseWindow rather than calling
+  ; CloseJSWindow directly (which is what pbjsNativeCloseWindow does): posting
+  ; raises exactly the event the OS close button used to raise, so the app-close
+  ; confirmation protocol in docs/app-close.md, any registered veto handler and
+  ; the per-window hide-vs-close behaviour all still apply. Calling
+  ; CloseJSWindow here would tear the window down behind all of that.
+  ;
+  ; Parameters: [windowName, "minimize"|"maximize"|"restore"|"toggle"|"close"]
+  Procedure JSSetWindowState(JsonParameters.s)
+    Dim Parameters.s(0)
+
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ExtractJSONArray(JSONValue(json), Parameters())
+      FreeJSON(json)
+
+      If ArraySize(Parameters()) >= 1
+        Protected window.i = ResolveJSWindowByName(Parameters(0))
+        If IsWindow(window)
+          Select LCase(Trim(Parameters(1)))
+            Case "minimize"
+              SetWindowState(window, #PB_Window_Minimize)
+            Case "maximize"
+              SetWindowState(window, #PB_Window_Maximize)
+            Case "restore"
+              SetWindowState(window, #PB_Window_Normal)
+            Case "toggle"
+              If GetWindowState(window) = #PB_Window_Maximize
+                SetWindowState(window, #PB_Window_Normal)
+              Else
+                SetWindowState(window, #PB_Window_Maximize)
+              EndIf
+            Case "close"
+              PostEvent(#PB_Event_CloseWindow, window, 0)
+            Default
+              ProcedureReturn UTF8(~"{\"error\":\"unknown state\"}")
+          EndSelect
+          ProcedureReturn UTF8(~"{\"success\":true}")
+        EndIf
+      EndIf
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
+  EndProcedure
+
+  ; JS → PB: the REAL window size, which the page cannot get for itself.
+  ; The WebViewGadget is created at MaxDesktopWidth x MaxDesktopHeight and merely
+  ; clipped by the window, so window.innerWidth/innerHeight are the desktop size,
+  ; not the window size (e.g. 1512x982 reported inside an 1291x850 window).
+  ; Anything anchored right or bottom — the Windows/Linux button cluster — must
+  ; be positioned from these numbers instead of CSS. Pulled by the page on mount;
+  ; UpdateWebViewScale keeps it fresh on every resize.
+  Procedure JSGetWindowMetrics(JsonParameters.s)
+    Dim Parameters.s(0)
+
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ExtractJSONArray(JSONValue(json), Parameters())
+      FreeJSON(json)
+
+      Protected window.i = ResolveJSWindowByName(Parameters(0))
+      If IsWindow(window)
+        Protected maximized.s = "false"
+        If GetWindowState(window) = #PB_Window_Maximize
+          maximized = "true"
+        EndIf
+        ProcedureReturn UTF8(~"{\"width\":" + Str(WindowWidth(window)) +
+                             ~",\"height\":" + Str(WindowHeight(window)) +
+                             ~",\"maximized\":" + maximized + "}")
+      EndIf
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
+  EndProcedure
+
+  CompilerIf #PB_Compiler_OS = #PB_OS_Linux
+    ; Hands a press to the window manager so it performs the move itself
+    ; (works on both X11 and Wayland, unlike setting the window position).
+    ImportC ""
+      gtk_window_begin_move_drag(*window, button.i, root_x.i, root_y.i, timestamp.i)
+    EndImport
+  CompilerEndIf
+
+  ; JS → PB: start a native window drag from the page's own title bar.
+  ; With the content view spanning the full frame the OS no longer receives a
+  ; caption mousedown, so DefaultWindowComponent forwards it here. Each platform
+  ; hands the drag straight back to the window manager, so snapping, Spaces,
+  ; multi-monitor and Aero Snap all keep working — this is deliberately NOT a
+  ; hand-rolled move loop.
+  ; Parameters: [windowName, screenX, screenY] (coords only used on Linux).
+  Procedure JSStartWindowDrag(JsonParameters.s)
+    Dim Parameters.s(0)
+    Protected window.i, found.i
+
+    Protected json = ParseJSON(#PB_Any, JsonParameters)
+    If json
+      ExtractJSONArray(JSONValue(json), Parameters())
+      FreeJSON(json)
+
+      Protected targetName.s = Trim(Parameters(0))
+
+      ForEach JSWindows()
+        If Trim(JSWindows()\Name) = targetName
+          window = JSWindows()\Window
+          found = #True
+          Break
+        EndIf
+      Next
+
+      If Not found
+        window = Val(targetName)
+      EndIf
+
+      If IsWindow(window)
+        CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+          ; currentEvent is still the mousedown AppKit is dispatching when the
+          ; script message lands, which is exactly what this selector wants.
+          Protected ev.i = CocoaMessage(0, CocoaMessage(0, 0, "NSApplication sharedApplication"), "currentEvent")
+          If ev
+            Debug "[JSWIN-DRAG] performWindowDragWithEvent: eventType=" + Str(CocoaMessage(0, ev, "type"))
+            CocoaMessage(0, WindowID(window), "performWindowDragWithEvent:", ev)
+            ProcedureReturn UTF8(~"{\"success\":true}")
+          EndIf
+          ProcedureReturn UTF8(~"{\"error\":\"no current event\"}")
+
+        CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
+          ; Hand the press to the window manager as if it had landed on the
+          ; caption. ReleaseCapture first or the webview child HWND keeps the
+          ; mouse and the drag never starts.
+          ReleaseCapture_()
+          SendMessage_(WindowID(window), #WM_NCLBUTTONDOWN, #HTCAPTION, 0)
+          ProcedureReturn UTF8(~"{\"success\":true}")
+
+        CompilerElse
+          ; GTK needs the press position in ROOT coordinates; the page sends
+          ; screenX/screenY. button 1, timestamp 0 = CurrentTime.
+          If ArraySize(Parameters()) >= 2
+            gtk_window_begin_move_drag(WindowID(window), 1,
+                                       Val(Parameters(1)), Val(Parameters(2)), 0)
+            ProcedureReturn UTF8(~"{\"success\":true}")
+          EndIf
+          ProcedureReturn UTF8(~"{\"error\":\"missing screen coords\"}")
+        CompilerEndIf
+      EndIf
+    EndIf
+    ProcedureReturn UTF8(~"{\"error\":\"Window not found\"}")
+  EndProcedure
+
   ; Bring a window to the foreground by its runtime name. Reuses the same
   ; name->window resolution as JSSetWindowTitle and the cross-platform
   ; FocusInstance used by OpenInstance's re-focus path. Used by the JS
@@ -616,7 +779,14 @@ Module JSWindow
 
   Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
 
-    Protected script$ = "if(window.pbjsUpdateScale) window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + ");"
+    ; Third argument is the maximized flag, so a page-drawn maximize/restore
+    ; button can flip its icon without polling. Extra arg is ignored by any
+    ; older consumer that only declared (w, h).
+    Protected maximizedArg.s = "false"
+    If GetWindowState(*JSWindow\Window) = #PB_Window_Maximize
+      maximizedArg = "true"
+    EndIf
+    Protected script$ = "if(window.pbjsUpdateScale) window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + "," + maximizedArg + ");"
 
     ; Headless: the browser tab owns its viewport — the invisible PB window's
     ; dimensions are meaningless there; the web adapter drives pbjsUpdateScale
@@ -991,6 +1161,9 @@ Module JSWindow
     Sink::Bind(sink, "pbjsNativeIsWindowOpen", @JSIsWindowOpen())
     Sink::Bind(sink, "pbjsNativeSetWindowTitle", @JSSetWindowTitle())
     Sink::Bind(sink, "pbjsNativeFocusWindow", @JSFocusWindow())
+    Sink::Bind(sink, "pbjsNativeStartWindowDrag", @JSStartWindowDrag())
+    Sink::Bind(sink, "pbjsNativeSetWindowState", @JSSetWindowState())
+    Sink::Bind(sink, "pbjsNativeGetWindowMetrics", @JSGetWindowMetrics())
   EndProcedure
   
   
@@ -1025,6 +1198,23 @@ Module JSWindow
         ; Disable window show/hide animation (NSWindowAnimationBehaviorNone = 2).
         ; Without this, every makeKeyAndOrderFront: call adds ~150-200ms of zoom animation.
         CocoaMessage(0, WindowID(window), "setAnimationBehavior:", 2)
+
+        ; Full-size content view: grow the content view over the titlebar so the
+        ; WebViewGadget's 0,0 origin lands at the window FRAME origin and the page
+        ; owns the whole surface. The traffic lights stay as floating AppKit views
+        ; on top; everything else in the strip belongs to the WKWebView (verified
+        ; by hit-testing the NSThemeFrame — the strip resolves to a view whose
+        ; ancestor is the WKWebView, so clicks reach the page). The page draws its
+        ; own title bar via DefaultWindowComponent and forwards caption drags
+        ; through JSStartWindowDrag below.
+        If Not webWindow
+          #NSWindowStyleMaskFullSizeContentView = 32768   ; 1 << 15
+          Protected nsWin.i = WindowID(window)
+          CocoaMessage(0, nsWin, "setStyleMask:",
+                       CocoaMessage(0, nsWin, "styleMask") | #NSWindowStyleMaskFullSizeContentView)
+          CocoaMessage(0, nsWin, "setTitlebarAppearsTransparent:", #True)
+          CocoaMessage(0, nsWin, "setTitleVisibility:", 1)   ; NSWindowTitleHidden
+        EndIf
       CompilerEndIf
 
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
@@ -1035,6 +1225,27 @@ Module JSWindow
 
       CompilerIf #PB_Compiler_OS = #PB_OS_Windows
         SetWindowLongPtr_(WindowID(window), #GWL_STYLE, GetWindowLongPtr_(WindowID(window), #GWL_STYLE) | #WS_CLIPCHILDREN)
+
+        ; Frameless: drop WS_CAPTION so the client area starts at the top of the
+        ; frame and the page draws the title bar (the macOS counterpart is
+        ; NSWindowStyleMaskFullSizeContentView above).
+        ;
+        ; WS_THICKFRAME is kept deliberately: Windows then still owns resizing,
+        ; so the resize borders, Aero Snap and the snap-assist layouts keep
+        ; working without a WM_NCHITTEST implementation — which could not work
+        ; here anyway, because the WebView2 child HWND covers the client area and
+        ; receives the mouse before the parent ever sees a hit-test.
+        ; WS_SYSMENU/MINIMIZEBOX/MAXIMIZEBOX keep the taskbar entry, Win+Arrow
+        ; snapping and the minimize/restore animations intact.
+        If Not webWindow
+          Protected winStyle.i = GetWindowLongPtr_(hWnd, #GWL_STYLE)
+          SetWindowLongPtr_(hWnd, #GWL_STYLE,
+                            (winStyle & ~#WS_CAPTION) | #WS_THICKFRAME |
+                            #WS_SYSMENU | #WS_MINIMIZEBOX | #WS_MAXIMIZEBOX)
+          SetWindowPos_(hWnd, 0, 0, 0, 0, 0,
+                        #SWP_NOMOVE | #SWP_NOSIZE | #SWP_NOZORDER | #SWP_FRAMECHANGED)
+        EndIf
+
         ApplyThemeToWinHandle(hWnd)
         SetWindowCallback(@WindowCallback(),window, #PB_Window_NoChildEvents)
       CompilerEndIf
