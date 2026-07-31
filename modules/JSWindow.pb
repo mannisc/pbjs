@@ -39,6 +39,20 @@ DeclareModule JSWindow
   ; Set an opaque JS string to inject before this window's content/React loads.
   ; pbjs injects it verbatim and never interprets it — the app owns its meaning.
   Declare SetPreRenderJS(*Window.AppWindow, js.s)
+
+  ; Move this window's content-ready handshake from "the DOM parsed" to "the
+  ; page says so". By default pbjs reports ready at DOMContentLoaded and the
+  ; window is revealed there — which for a framework app means revealing an
+  ; empty document, with the UI arriving a few frames later. Opt in, and the
+  ; page owns the moment instead: it calls `window.pbjsContentReady()` once it
+  ; has painted, and only then is the window revealed.
+  ;
+  ; pbjs stays framework-agnostic — it just stops firing the signal itself,
+  ; exposes the function, and stretches its reveal watchdog to match. Two
+  ; fallbacks keep the contract unbreakable: the injected script reports anyway
+  ; after #PBJS_DeferredReadyFallbackMs, and the window is revealed regardless
+  ; after #PBJS_DeferredRevealWatchdogMs. Call before the window is opened.
+  Declare SetDeferContentReady(*Window.AppWindow, defer.b = #True)
   Declare RegisterWindowClosingObserver(*callback)
   Declare PrepareJSWindow(*Window.AppWindow)
   Declare OpenJSWindow(*Window.AppWindow )    
@@ -89,6 +103,9 @@ DeclareModule JSWindow
     Ready.b
     Open.b
     Visible.b
+    ; The page reports content-readiness itself (SetDeferContentReady). Changes
+    ; both what the injected script does and how long the reveal watchdog waits.
+    DeferContentReady.b
 
     BypassCloseCheck.b ; Flag to indicate if we can skip the JS check
 
@@ -241,24 +258,69 @@ Module JSWindow
   EndProcedure
 
   Prototype.i ProtoWindowReady(*Window, *JSWindow)
-  
+
+  ; A page put into deferred content-readiness (SetDeferContentReady) promises
+  ; to call window.pbjsContentReady() once it has painted. If it never does —
+  ; crash before first render, broken bundle — this timer reports ready anyway,
+  ; so the host contract (Ready → FlushPendingMessages → Content_Ready →
+  ; WindowReadyProc) can never be lost.
+  ;
+  ; Two layered watchdogs, different jobs: ForceContentVisible reveals the
+  ; window so the user never faces a dead app, and this one still delivers the
+  ; ready handshake afterwards, so the bridges attach either way.
+  #PBJS_DeferredReadyFallbackMs = 1200
+
+  ; Last-resort reveal when a page never reports content-ready at all
+  ; (ForceContentVisible). 600 ms is right for the default handshake, which
+  ; fires at DOMContentLoaded.
+  #PBJS_RevealWatchdogMs = 600
+
+  ; A deferred-ready window reports LATER BY DESIGN — it waits for its first
+  ; painted frame — and the page-side fallback above already covers anything
+  ; that parsed but never signalled. So this watchdog only has to catch a page
+  ; that never ran JS at all, and it must sit clear of both: at 600 ms it would
+  ; win the race on a cold start and reveal exactly the blank frame the whole
+  ; deferral exists to avoid.
+  #PBJS_DeferredRevealWatchdogMs = 2500
+
+  ; "#rrggbb" for a PureBasic RGB() colour. The injected page style needs the
+  ; host's theme background as CSS so the document canvas is already painted in
+  ; the app's colour before the page's own stylesheet — let alone its framework —
+  ; has produced anything. Without it the canvas is transparent and the webview
+  ; composites its default white, which is the startup flash.
+  Procedure.s ColorToCssHex(color.i)
+    ProcedureReturn "#" + RSet(Hex(Red(color)), 2, "0") +
+                          RSet(Hex(Green(color)), 2, "0") +
+                          RSet(Hex(Blue(color)), 2, "0")
+  EndProcedure
+
   Procedure MakeContentVisible(window)
-    
-    CompilerIf #PB_Compiler_OS = #PB_OS_Linux
-      Delay(100)
-    CompilerElseIf #PB_Compiler_OS = #PB_OS_MacOS
-      Delay(16)
-    CompilerElse
-      ; Windows: was 100ms. An early show is flash-safe — the window bg is
-      ; pre-set to themeBackgroundColor and the body sits at opacity:0 until
-      ; pbjs-document-ready (iplan/startupREVIEWED.md #6).
-      Delay(24)
-    CompilerEndIf
-    
-    
+
+    ; The delay below buys the page a beat to paint between "ready" and the
+    ; reveal. A deferred-ready window has already had it — it reported only
+    ; AFTER painting — so the wait would be pure latency on the one path that
+    ; cares most about it.
+    Protected deferred.b = #False
+    If FindMapElement(JSWindows(), Str(window))
+      deferred = JSWindows()\DeferContentReady
+    EndIf
+
+    If Not deferred
+      CompilerIf #PB_Compiler_OS = #PB_OS_Linux
+        Delay(100)
+      CompilerElseIf #PB_Compiler_OS = #PB_OS_MacOS
+        Delay(16)
+      CompilerElse
+        ; Windows: was 100ms. An early show is flash-safe — the window bg is
+        ; pre-set to themeBackgroundColor and the body sits at opacity:0 until
+        ; pbjs-document-ready (iplan/startupREVIEWED.md #6).
+        Delay(24)
+      CompilerEndIf
+    EndIf
+
     If IsWindow(window)
-      PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready) 
-    EndIf 
+      PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready)
+    EndIf
   EndProcedure
   
   Procedure LogToDebugFile(message.s)
@@ -854,7 +916,92 @@ Module JSWindow
     Procedure ShowGadgetThread(gadget)
       Delay(200)
       HideGadget(gadget,#False)
-    EndProcedure 
+    EndProcedure
+
+    ; GadgetID() hands back a container NSView, not the WKWebView itself, and the
+    ; nesting depth varies with the PureBasic / macOS version — so walk the
+    ; subview tree. (CloseJSWindow does the same search inline; it is left alone
+    ; deliberately, that path is crash-sensitive and must not gain a call.)
+    Procedure.i FindWKWebView(gadget)
+      If Not IsGadget(gadget)
+        ProcedureReturn 0
+      EndIf
+      Protected root.i = GadgetID(gadget)
+      Protected wkClass.i = objc_getClass_("WKWebView")
+      If root = 0 Or wkClass = 0
+        ProcedureReturn 0
+      EndIf
+
+      Protected queue.i = CocoaMessage(0, 0, "NSMutableArray array")
+      CocoaMessage(0, queue, "addObject:", root)
+      Protected depth.i
+      Protected idx.i
+      Protected count.i
+      Protected view.i
+      Protected nextLevel.i
+
+      While CocoaMessage(0, queue, "count") > 0 And depth < 3
+        nextLevel = CocoaMessage(0, 0, "NSMutableArray array")
+        count = CocoaMessage(0, queue, "count")
+        For idx = 0 To count - 1
+          view = CocoaMessage(0, queue, "objectAtIndex:", idx)
+          If CocoaMessage(0, view, "isKindOfClass:", wkClass)
+            ProcedureReturn view
+          EndIf
+          CocoaMessage(0, nextLevel, "addObjectsFromArray:", CocoaMessage(0, view, "subviews"))
+        Next
+        queue = nextLevel
+        depth + 1
+      Wend
+
+      ProcedureReturn 0
+    EndProcedure
+
+    ; Stop the WKWebView drawing its own opaque white backdrop. Until the web
+    ; process commits a first frame there is nothing to composite, and that
+    ; default backdrop IS the startup flash. With it off, the NSWindow's
+    ; themeBackgroundColor shows through instead; the moment the page paints, the
+    ; injected `html { background }` (PreparePbjsBasicScript) makes the surface
+    ; opaque again, so the transparent phase costs nothing after startup.
+    Procedure MacClearWebViewBackdrop(gadget)
+      Protected wk.i = FindWKWebView(gadget)
+      If wk
+        CocoaMessage(0, wk, "setValue:", CocoaMessage(0, 0, "NSNumber numberWithBool:", #False),
+                             "forKey:$", @"drawsBackground")
+      EndIf
+    EndProcedure
+
+    ; ---------------------------------------------------------------------
+    ; FIRST REVEAL (macOS)
+    ; ---------------------------------------------------------------------
+    ; Ordering the window in is what starts WebKit rendering. A WKWebView in a
+    ; window that has never been on screen does no rendering work at all, so the
+    ; first frame can only be produced from here on — measured, not assumed:
+    ; requestAnimationFrame does not run in the page before this call, and it
+    ; makes no difference whether the window is ordered back, moved off screen
+    ; or held at a fraction of a percent alpha. AppKit treats all of those as
+    ; occluded, and an occluded window is exactly what stops the engine.
+    ;
+    ; (This is why Windows needs its DWM-cloak dance in PrepareJSWindow and mac
+    ; has no equivalent: there is no macOS state that is invisible to the user
+    ; and visible to the compositor at the same time.)
+    ;
+    ; So the reveal cannot land on painted pixels, and — measured — it must not
+    ; try to hide that behind an alpha fade either. Ordering the window in at
+    ; alpha 0 and animating up to 1 keeps it occluded through the first part of
+    ; the animation, so the rendering pass starts LATER than with a plain show:
+    ; reveal → first painted frame averaged ~530 ms over a 120 ms fade against
+    ; ~305 ms without one, and with far worse variance. The reveal is therefore
+    ; immediate, and what covers the remaining gap is the themed canvas the page
+    ; carries from its first parse (PreparePbjsBasicScript) — a window in the
+    ; app's own colour, never a white one.
+    Procedure MacRevealWindow(*JSWindow.JSWindow)
+      ; On screen and in front: this is the app's first window, it belongs key.
+      HideWindow(*JSWindow\Window, #False)
+      Protected nsApp = CocoaMessage(0, 0, "NSApplication sharedApplication")
+      CocoaMessage(0, nsApp, "activateIgnoringOtherApps:", #True)
+      CocoaMessage(0, WindowID(*JSWindow\Window), "makeKeyAndOrderFront:", #Null)
+    EndProcedure
     
     
     ; Callback - called from Objective-C observer
@@ -982,19 +1129,42 @@ Module JSWindow
   CompilerEndIf
   
   
+  ; The content fade for a first show. The window is already on screen carrying
+  ; its themed background, so this ramps the UI in over it rather than covering
+  ; for anything. Short on purpose: long enough that the UI arrives instead of
+  ; blinking into existence, short enough that it never reads as waiting.
+  #PBJS_BodyFadeMs = 90
+
   Procedure SetBodyFadeIn(*JSWindow.JSWindow)
     If Sink::IsValid(*JSWindow\Sink)
       If *JSWindow\Visible
-        fadeInTime = 150
+        fadeInTime = #PBJS_BodyFadeMs
       Else
         fadeInTime = 0
       EndIf
+
+      ; A deferred-ready page deliberately left its body hidden when it reported
+      ; ready. The class it is waiting for is added HERE, in the same turn that
+      ; put the window on screen, so the fade plays where the user can see it.
+      ; (The default handshake adds the class itself at DOMContentLoaded, long
+      ; before this, and its fade is spent behind a window nobody sees.)
+      ;
+      ; No requestAnimationFrame around it: the transition cannot advance until
+      ; the engine is rendering anyway, and waiting for a frame that only comes
+      ; once rendering starts would just add a frame to the appearance.
+      Protected revealBody.s = ""
+      If *JSWindow\DeferContentReady
+        revealBody = "document.body.classList.add('pbjs-document-ready');"
+      EndIf
+
       bodyFadeInScript.s =  "(function(){const style=document.createElement('style');" +
                             "style.id='pbjs-dynamic-style-pbjs-document-ready';" +
                             "style.textContent='body.pbjs-document-ready{" +
                             "transition:opacity " + fadeInTime + "ms ease-out!important;" +
                             "}';" +
-                            "document.head.appendChild(style);})()";
+                            "document.head.appendChild(style);" +
+                            revealBody +
+                            "})()";
       Sink::Exec(*JSWindow\Sink, bodyFadeInScript)
     EndIf
   EndProcedure
@@ -1006,6 +1176,21 @@ Module JSWindow
     webViewGadget.i = *JSWindow\WebViewGadget
     width = WindowWidth(window)
     height = WindowHeight(window)
+    ; Same colour the host already gave the native window (SetWindowColor in
+    ; CreateJSWindow), handed to the page so BOTH layers are themed from the
+    ; first frame: the window while the webview has nothing, the canvas while
+    ; the app has nothing.
+    Protected themeBg.s = ColorToCssHex(themeBackgroundColor)
+    Protected deferReady.s = "false"
+    ; Who un-hides the body. Normally the page does it the moment the DOM is
+    ; parsed; a deferred-ready window leaves it to the host, which adds the
+    ; class one frame after the window is on screen (SetBodyFadeIn) so the fade
+    ; is not spent behind a window nobody can see yet.
+    Protected markBodyReadyJs.s = "setTimeout(()=>{document.body.classList.add('pbjs-document-ready');},0);"
+    If *JSWindow\DeferContentReady
+      deferReady = "true"
+      markBodyReadyJs = ""
+    EndIf
     Debug WindowWidth(window)
     If *JSWindow\Visible
       
@@ -1021,6 +1206,20 @@ Module JSWindow
     Else
       fadeInTime = 0
     EndIf 
+    ; Two things below are worth knowing before reading the wall of string
+    ; concatenation:
+    ;
+    ; • window.pbjsContentReady() is the single entry point for "this page has
+    ;   content to show". By default it fires from DOMContentLoaded, exactly as
+    ;   this script always did. A page that sets window.pbjsDeferContentReady
+    ;   owns the call instead and makes it once it has actually painted; pbjs
+    ;   neither knows nor cares which framework decides that — it only honours
+    ;   the flag, and keeps a timer so the handshake cannot be lost.
+    ;
+    ; • The `else` branch of the readyState test runs when the script is
+    ;   replayed into a live document (dev reload, web-mode re-attach). The page
+    ;   is already up there, so deferral would only strand the handshake until
+    ;   that fallback timer — it reports ready immediately instead.
     *JSWindow\StartupJS = ""+
                           "if(!window.__pbjsAdded){" +
                           "" + 
@@ -1031,11 +1230,10 @@ Module JSWindow
                           ""+    
                           " window.pbjs = (window.pbjs || {});" +
                           " window.pbjs.darkMode = " + Str(OsTheme::IsDarkModeActive()) + ";" +
+                          " window.pbjsDeferContentReady = " + deferReady + ";" +
                           ""+
                           " window.pbjsDocumentReady = function () {" +
-                          "  setTimeout(()=>{"+
-                          "    document.body.classList.add('pbjs-document-ready');" +
-                          "  },0);"+
+                          "  " + markBodyReadyJs +
                           "  const callReady = () => {" +
                           "    if(window.callbackReadyState) {" +
                           "      try { " +
@@ -1044,8 +1242,15 @@ Module JSWindow
                           "    } " +
                           "    else setTimeout(callReady, 50);" +
                           "  };" +
-                          "  callReady();" + 
+                          "  callReady();" +
                           " };"+
+                          ""+
+                          " window.__pbjsContentReadySent = false;" +
+                          " window.pbjsContentReady = function () {" +
+                          "  if (window.__pbjsContentReadySent) return;" +
+                          "  window.__pbjsContentReadySent = true;" +
+                          "  window.pbjsDocumentReady();" +
+                          " };" +
                           ""+
                           "(function (){"+
                           ""+
@@ -1061,11 +1266,15 @@ Module JSWindow
                           "   min-height: 0!important;" + 
                           "   max-width: var(--container-width);" + 
                           "   max-height: var(--container-height);" + 
-                          " }" + 
-                          "" + 
-                          " body {" + 
-                          "   opacity: 0;" + 
-                          " }" + 
+                          " }" +
+                          "" +
+                          " html {" +
+                          "   background: " + themeBg + ";" +
+                          " }" +
+                          "" +
+                          " body {" +
+                          "   opacity: 0;" +
+                          " }" +
                           "" + 
                           " body.pbjs-document-ready {" + 
                           "   opacity: 1;" + 
@@ -1076,10 +1285,14 @@ Module JSWindow
                           "" +
                           " if (document.readyState === 'loading') {" +
                           "   document.addEventListener('DOMContentLoaded', function() {" +
-                          "     pbjsDocumentReady();"+
+                          "     if (window.pbjsDeferContentReady) {" +
+                          "       setTimeout(window.pbjsContentReady, " + Str(#PBJS_DeferredReadyFallbackMs) + ");" +
+                          "     } else {" +
+                          "       window.pbjsContentReady();" +
+                          "     }" +
                           "   });" +
                           " } else {" +
-                          "   pbjsDocumentReady();"+
+                          "   window.pbjsContentReady();"+
                           " }" +
                           ""+
                           ""+
@@ -1141,6 +1354,16 @@ Module JSWindow
     EndIf
   EndProcedure
 
+  ; Public: hand the content-ready decision to the page (see the declaration).
+  Procedure SetDeferContentReady(*Window.AppWindow, defer.b = #True)
+    If *Window And IsWindow(*Window\Window)
+      Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+      If *JSWindow
+        *JSWindow\DeferContentReady = defer
+      EndIf
+    EndIf
+  EndProcedure
+
 
 
   Procedure LoadHtml(window)
@@ -1194,6 +1417,9 @@ Module JSWindow
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
         If Not webWindow
           CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0)
+          ; Before the first web-process frame the webview has nothing to show —
+          ; let the themed window colour show through instead of WebKit's white.
+          MacClearWebViewBackdrop(webViewGadget)
         EndIf
         ; Disable window show/hide animation (NSWindowAnimationBehaviorNone = 2).
         ; Without this, every makeKeyAndOrderFront: call adds ~150-200ms of zoom animation.
@@ -1953,7 +2179,7 @@ Module JSWindow
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
     If IsWindow(*Window\Window)
       Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
-      
+
       HideWindow(*Window\Window,#True)
       
       If *Window\Open
@@ -2572,7 +2798,13 @@ Module JSWindow
             HideGadget(webViewGadget,#False)
 
             If *JSWindow\Open And Not *JSWindow\Visible
-              HideWindow(*JSWindow\Window, #False)
+              ; First reveal. On mac it fades up from transparent, which is what
+              ; covers WebKit's first rendering pass — see MacRevealWindow.
+              CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+                MacRevealWindow(*JSWindow)
+              CompilerElse
+                HideWindow(*JSWindow\Window, #False)
+              CompilerEndIf
             EndIf
             *JSWindow\Visible = #True
             PbjsStartupTraceMark("window shown (content ready): " + *JSWindow\Name)
@@ -2761,8 +2993,20 @@ Module JSWindow
   CompilerEndIf
   
   
+  ; Last resort: reveal a window whose page never reported content-ready. Read
+  ; the deadline BEFORE sleeping — a deferred-ready page is expected to take
+  ; longer, and firing at the default 600 ms would show the blank frame the
+  ; deferral was introduced to prevent.
   Procedure ForceContentVisible(window)
-    Delay(600)
+    Protected deadline = #PBJS_RevealWatchdogMs
+    If FindMapElement(JSWindows(), Str(window))
+      If JSWindows()\DeferContentReady
+        deadline = #PBJS_DeferredRevealWatchdogMs
+      EndIf
+    EndIf
+
+    Delay(deadline)
+
     If IsWindow(window)
       If Not JSWindows(Str(window))\Ready
         PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready)
