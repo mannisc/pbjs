@@ -1441,6 +1441,30 @@ Module JSWindow
           CocoaMessage(0, nsWin, "setTitlebarAppearsTransparent:", #True)
           CocoaMessage(0, nsWin, "setTitleVisibility:", 1)   ; NSWindowTitleHidden
         EndIf
+
+        ; Re-apply the requested origin. OpenWindow alone gets it wrong twice on
+        ; macOS, and both errors are invisible until a window is restored from
+        ; saved geometry:
+        ;
+        ;   1. FullSizeContentView above absorbs the titlebar into the content
+        ;      view, so AppKit shrinks the frame by its height while keeping the
+        ;      bottom-left origin — the top edge drops 32px. Save that on close
+        ;      and the window walks down the screen, 32px per launch. (Measured:
+        ;      OpenWindow y=300 -> WindowY 300, then 332 right after the patch.)
+        ;
+        ;   2. AppKit's constrainFrameRect:toScreen: pulls a frame that lands on
+        ;      a SECONDARY display back onto the main screen at creation time —
+        ;      even for an invisible window — so a window saved on an external
+        ;      monitor always reopens on the primary one. (Measured on a
+        ;      3-display Mac: OpenWindow at 1662,52 -> WindowX/Y 542,52.)
+        ;
+        ; ResizeWindow has neither problem: it honours the exact coordinates,
+        ; negative ones included, while the window is still invisible.
+        ; Centered windows are left alone — they asked for a computed position,
+        ; not the x/y passed in.
+        If Not (flags & (#PB_Window_ScreenCentered | #PB_Window_WindowCentered))
+          ResizeWindow(window, x, y, #PB_Ignore, #PB_Ignore)
+        EndIf
       CompilerEndIf
 
       *Window.AppWindow = AddManagedWindow(title, window, @HandleEvent(), @HideJSWindow() , @CloseJSWindow())
