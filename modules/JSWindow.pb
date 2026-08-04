@@ -26,6 +26,7 @@ DeclareModule JSWindow
     #Event_Deferred_Close
     #Event_Deferred_Release
     #Event_Prepare_Uncloak
+    #Event_Show_WebView
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -913,9 +914,16 @@ Module JSWindow
     EndProcedure
     
     
-    Procedure ShowGadgetThread(gadget)
+    ; Re-show the webview a beat after a fullscreen transition. No UI work may
+    ; happen on this thread: HideGadget off the main thread trips AppKit's
+    ; "NSWindow drag regions should only be invalidated on the Main Thread"
+    ; assert (SIGABRT on fullscreen exit), so this only sleeps and posts — the
+    ; actual un-hide runs in HandleEvent's #Event_Show_WebView case.
+    Procedure ShowGadgetThread(window)
       Delay(200)
-      HideGadget(gadget,#False)
+      If IsWindow(window)
+        PostEvent(#CustomWindowEvent, window, 0, #Event_Show_WebView)
+      EndIf
     EndProcedure
 
     ; GadgetID() hands back a container NSView, not the WKWebView itself, and the
@@ -1039,14 +1047,14 @@ Module JSWindow
             HideGadget(webViewGadget,#True)
             CocoaMessage(0, WindowID(MacOSResizeStates()\Window\Window), "display")
             
-            CreateThread(@ShowGadgetThread(),webViewGadget)
+            CreateThread(@ShowGadgetThread(), MacOSResizeStates()\Window\Window)
           ElseIf MacOSResizeStates()\isFulscreen 
             MacOSResizeStates()\isFulscreen = #False
             
             HideGadget(webViewGadget,#True)
             CocoaMessage(0, WindowID(MacOSResizeStates()\Window\Window), "display")
             
-            CreateThread(@ShowGadgetThread(),webViewGadget)
+            CreateThread(@ShowGadgetThread(), MacOSResizeStates()\Window\Window)
           EndIf 
           
           Protected currentW.i = WindowWidth(*State\Window\Window)
@@ -2850,6 +2858,21 @@ Module JSWindow
             CompilerIf #PB_Compiler_OS = #PB_OS_Windows
               Debug "[Event_Prepare_Uncloak] " + *JSWindow\Name
               SetWindowCloak(WindowID(*JSWindow\Window), #False)
+            CompilerEndIf
+
+          Case #Event_Show_WebView
+            ; Posted by ShowGadgetThread after a fullscreen transition
+            ; (macOS only). The un-hide must run here on the main thread —
+            ; HideGadget from the worker thread trips AppKit's drag-region
+            ; main-thread assert and aborts. Gadget re-resolved now, not at
+            ; post time: the window may have closed during the 200 ms wait.
+            CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+              If Not *JSWindow\Headless
+                webViewGadget = *JSWindow\WebViewGadget
+                If IsGadget(webViewGadget)
+                  HideGadget(webViewGadget, #False)
+                EndIf
+              EndIf
             CompilerEndIf
 
           Case #Event_Prepare_Complete
