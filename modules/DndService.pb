@@ -233,21 +233,25 @@ Module DndService
     Procedure.s HitTestWindowName()
       Protected pt.DndPoint
       CocoaMessage(@pt, 0, "NSEvent mouseLocation")
-      ; +[NSWindow windowNumberAtPoint:belowWindowWithNumber:] is a CLASS method
-      ; with two keywords. PB's "ClassName selector:" 0-target shorthand (used
-      ; correctly elsewhere in this codebase, e.g. "NSNumber numberWithBool:")
-      ; only resolves the class for a SINGLE keyword segment — folding the class
-      ; name into the first of two chained keyword segments ("NSWindow
-      ; windowNumberAtPoint:@", ..., "belowWindowWithNumber:", ...) sent nothing
-      ; to a real object and crashed with "does not respond to method" (caught
-      ; live: a real drag hit this the first time the tick loop actually ran).
-      ; Two-step fix: resolve the Class object explicitly, then send the full
-      ; multi-keyword message to THAT pointer exactly like a normal instance
-      ; call — the chained-keyword form is already proven throughout JSWindow.pb
-      ; for real instance targets; only the class-resolution step was missing.
+      ; +[NSWindow windowNumberAtPoint:belowWindowWithWindowNumber:] is a CLASS
+      ; method with two keywords (confirmed against Apple's own doc page,
+      ; developer.apple.com/documentation/appkit/nswindow/1419210-windownumberatpoint
+      ; — the selector really does repeat "Window": "belowWindowWith" +
+      ; "WindowNumber", not "belowWindowWithNumber"). A first pass here had the
+      ; second keyword misspelled as "belowWindowWithNumber:" — Objective-C
+      ; selector lookup is an exact string match, so the wrong spelling failed
+      ; with "does not respond to method" regardless of the target, which is
+      ; why an earlier fix that only changed HOW the class was resolved (still
+      ; correct, kept below) made no difference and crashed identically at the
+      ; same call site (caught live twice: a real drag hit this both times the
+      ; tick loop actually ran).
+      ; Resolve the Class object explicitly, then send the full multi-keyword
+      ; message to THAT pointer exactly like a normal instance call — the
+      ; chained-keyword form is already proven throughout JSWindow.pb for real
+      ; instance targets.
       Protected windowClass.i = CocoaMessage(0, 0, "NSWindow class")
       Protected num.i = CocoaMessage(0, windowClass, "windowNumberAtPoint:@", @pt,
-                                     "belowWindowWithNumber:", DragBadge::CocoaWindowNumber())
+                                     "belowWindowWithWindowNumber:", DragBadge::CocoaWindowNumber())
       If num <= 0
         ProcedureReturn ""
       EndIf
@@ -492,7 +496,18 @@ Module DndService
       If Trim(dataJson) = "" : dataJson = "{}" : EndIf
       Protected revert.i = #False
       Protected reject.i = #False
-      Protected responseJson.s = "{}"
+      ; The response field embedded below is informational only (nothing on
+      ; the JS side reads DropResult.response today) — it carries the FULL
+      ; wrapped reply ({"success":...}/{"error":...}), not a re-serialized
+      ; "success" subtree. ComposeJSON() operates on a JSON *document* handle
+      ; (from ParseJSON/CreateJSON), not an arbitrary JSONValue member — an
+      ; earlier version passed GetJSONMember's result straight to it and
+      ; crashed at runtime ("#JSON is not initialised": a syntactically valid
+      ; call PB's compiler can't catch, since it doesn't distinguish document
+      ; handles from member handles at compile time — only surfaces when the
+      ; tick loop actually runs one). dataJson is already a plain string, so
+      ; embedding it directly needs no JSON-resource handling at all — same
+      ; pattern HandleGet's error path already uses elsewhere in this file.
       Protected json = ParseJSON(#PB_Any, dataJson)
       If json
         Protected v = JSONValue(json)
@@ -513,7 +528,6 @@ Module DndService
               reject = #True
             EndIf
           EndIf
-          responseJson = ComposeJSON(unwrapped)
         ElseIf Not reject
           ; No recognizable {success:...}/{error:...} envelope — the reply
           ; didn't come from the normal dispatchMessage() path. Don't treat
@@ -529,7 +543,7 @@ Module DndService
       ElseIf reject
         Resolve(~"{\"accepted\":false,\"reason\":\"rejected\"}")
       Else
-        Resolve(~"{\"accepted\":true,\"window\":\"" + JsonStr(S\TargetWindow) + ~"\",\"response\":" + responseJson + "}", #True)
+        Resolve(~"{\"accepted\":true,\"window\":\"" + JsonStr(S\TargetWindow) + ~"\",\"response\":" + dataJson + "}", #True)
       EndIf
     EndProcedure
 
