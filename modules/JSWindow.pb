@@ -27,6 +27,7 @@ DeclareModule JSWindow
     #Event_Deferred_Release
     #Event_Prepare_Uncloak
     #Event_Show_WebView
+    #Event_Force_Content_Visible
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -132,6 +133,11 @@ DeclareModule JSWindow
     ; Prepare window state
     PrepareOriginalX.i
     PrepareOriginalY.i
+    ; #True while a pool-spare prepare is in flight (PrepareJSWindow set it,
+    ; #Event_Prepare_Complete has not run yet). Latched off by the FIRST
+    ; #Event_Prepare_Complete — ready-driven or timeout — so the loser's post
+    ; and any stale timer landing on a recycled window number are no-ops.
+    PrepareWaiting.b
 
     ; Multi-instance support (#Null / 0 / "" for non-template windows)
     *OwningTemplate.JSWindowTemplate
@@ -197,7 +203,10 @@ DeclareModule JSWindow
   Declare HandleHeadlessAttach(windowName.s)
   Declare HandleHeadlessDetach(windowName.s)
   Declare.i FindTemplate(templateName.s)
-  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "")
+  ; atScreenX/atScreenY: explicit position for the new instance in desktop
+  ; coordinates (DnD drop-point placement). #JSWindow_NoPosition = unset.
+  #JSWindow_NoPosition = -2147483647
+  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "", atScreenX.i = #JSWindow_NoPosition, atScreenY.i = #JSWindow_NoPosition)
   Declare RefillPoolAsync(*Template.JSWindowTemplate)
   Declare HandlePoolRefillEvent(Event.i)
   Declare HandleDeferredCloseEvent(Event.i)
@@ -284,6 +293,11 @@ Module JSWindow
   ; deferral exists to avoid.
   #PBJS_DeferredRevealWatchdogMs = 2500
 
+  ; Ceiling on how long a pool-spare prepare waits for the page's ready
+  ; handshake before #Event_Prepare_Complete fires anyway (replaces the old
+  ; prepare thread's 200 × 10 ms poll — see PrepareJSWindow).
+  #PBJS_PrepareReadyTimeoutMs = 2000
+
   ; "#rrggbb" for a PureBasic RGB() colour. The injected page style needs the
   ; host's theme background as CSS so the document canvas is already painted in
   ; the app's colour before the page's own stylesheet — let alone its framework —
@@ -295,12 +309,56 @@ Module JSWindow
                           RSet(Hex(Blue(color)), 2, "0")
   EndProcedure
 
+  ; ---------------------------------------------------------------------------
+  ; Sleep-and-post timer threads.
+  ;
+  ; The ONLY work a JSWindow worker thread may do is sleep, then post an event
+  ; (the ShowGadgetThread pattern). Everything else — JSWindows() lookups,
+  ; state checks, UI calls — must happen on the main thread: either before the
+  ; spawn (resolved into *Args by the caller) or in the handler of the posted
+  ; event. PB maps are not thread-safe: all lookups share one current-element
+  ; pointer, and reading a missing key even inserts an element — so a
+  ; thread-side JSWindows() access racing a main-thread add/delete corrupts
+  ; the map or dereferences a freed element.
+  Structure DelayedEventArgs
+    Window.i
+    DelayMs.i
+    EventType.i
+  EndStructure
+
+  Procedure DelayedEventThread(*Args.DelayedEventArgs)
+    Protected window    = *Args\Window
+    Protected delayMs   = *Args\DelayMs
+    Protected eventType = *Args\EventType
+    FreeStructure(*Args)
+    If delayMs > 0
+      Delay(delayMs)
+    EndIf
+    If IsWindow(window)
+      PostEvent(#CustomWindowEvent, window, 0, eventType)
+    EndIf
+  EndProcedure
+
+  ; Main-thread spawner for DelayedEventThread.
+  Procedure PostEventAfterDelay(window, delayMs, eventType)
+    Protected *Args.DelayedEventArgs = AllocateStructure(DelayedEventArgs)
+    *Args\Window    = window
+    *Args\DelayMs   = delayMs
+    *Args\EventType = eventType
+    If CreateThread(@DelayedEventThread(), *Args) = 0
+      FreeStructure(*Args)
+    EndIf
+  EndProcedure
+
+  ; Runs on the MAIN thread (called from JSReadyState): it reads JSWindows(),
+  ; which no worker thread may touch. Only the sleep-and-post is threaded.
   Procedure MakeContentVisible(window)
 
     ; The delay below buys the page a beat to paint between "ready" and the
     ; reveal. A deferred-ready window has already had it — it reported only
     ; AFTER painting — so the wait would be pure latency on the one path that
     ; cares most about it.
+    Protected delayMs = 0
     Protected deferred.b = #False
     If FindMapElement(JSWindows(), Str(window))
       deferred = JSWindows()\DeferContentReady
@@ -308,20 +366,18 @@ Module JSWindow
 
     If Not deferred
       CompilerIf #PB_Compiler_OS = #PB_OS_Linux
-        Delay(100)
+        delayMs = 100
       CompilerElseIf #PB_Compiler_OS = #PB_OS_MacOS
-        Delay(16)
+        delayMs = 16
       CompilerElse
         ; Windows: was 100ms. An early show is flash-safe — the window bg is
         ; pre-set to themeBackgroundColor and the body sits at opacity:0 until
         ; pbjs-document-ready (iplan/startupREVIEWED.md #6).
-        Delay(24)
+        delayMs = 24
       CompilerEndIf
     EndIf
 
-    If IsWindow(window)
-      PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready)
-    EndIf
+    PostEventAfterDelay(window, delayMs, #Event_Content_Ready)
   EndProcedure
   
   Procedure LogToDebugFile(message.s)
@@ -364,11 +420,20 @@ Module JSWindow
     
     LogToDebugFile("Parsed Window ID: " + Str(window))
     
-    If window <> 0
-      *Window.AppWindow = GetManagedWindowFromWindowHandle(WindowID(window))
-      
-      Protected reloaded.i = JSWindows(Str(window))\Ready
-      Protected subjectName.s = JSWindows(Str(window))\Name
+    ; Resolve the subject ONCE, guarded: `window` is page-supplied JSON, and a
+    ; bare JSWindows(Str(window)) dereference would auto-create a ghost map
+    ; element for a 0 / unknown / already-closed id (PB map () access inserts
+    ; missing keys — the same reason the flush below must not run unresolved).
+    Protected *ReadyJS.JSWindow = 0
+    If window <> 0 And IsWindow(window)
+      If FindMapElement(JSWindows(), Str(window))
+        *ReadyJS = @JSWindows()
+      EndIf
+    EndIf
+
+    If *ReadyJS
+      Protected reloaded.i = *ReadyJS\Ready
+      Protected subjectName.s = *ReadyJS\Name
 
       If Not reloaded
         LogToDebugFile("JSReadyState: Initial Ready for window " + Str(window))
@@ -380,20 +445,29 @@ Module JSWindow
         JSBridge::NotifyWindowEvent(subjectName, "reloaded")
       EndIf
 
-      JSWindows(Str(window))\Ready = #True
-      JSWindows(Str(window))\NeedsReload = #False  ; content freshly loaded (initial or after reload)
-      CreateThread(@MakeContentVisible(),window)
+      *ReadyJS\Ready = #True
+      *ReadyJS\NeedsReload = #False  ; content freshly loaded (initial or after reload)
+      MakeContentVisible(window)
       ReloadedJS = #True
+
+      ; A pool spare mid-prepare completes the moment its page reports ready —
+      ; the event-driven replacement for the old PrepareJSWindowThread poll
+      ; (which read JSWindows() off the main thread). The timeout timer's
+      ; later duplicate post is absorbed by the PrepareWaiting latch in the
+      ; #Event_Prepare_Complete handler.
+      If *ReadyJS\PrepareWaiting
+        PostEvent(#CustomWindowEvent, window, 0, #Event_Prepare_Complete)
+      EndIf
 
       ; Warm peers' readiness cache now that this window can answer.
       JSBridge::NotifyWindowEvent(subjectName, "ready")
+
+      ; FLUSH PENDING MESSAGES
+      JSBridge::FlushPendingMessages(*ReadyJS)
     Else
-      LogToDebugFile("ERROR: Invalid Window ID (0)")
+      LogToDebugFile("ERROR: JSReadyState for invalid/unknown window id " + Str(window))
     EndIf
-    
-    ; FLUSH PENDING MESSAGES
-    JSBridge::FlushPendingMessages(@JSWindows(Str(window))) 
-    
+
     ProcedureReturn UTF8(~"{\"success\":true}")
   EndProcedure
   
@@ -1374,10 +1448,36 @@ Module JSWindow
 
 
 
-  Procedure LoadHtml(window)
-    html.s = PeekS(JSWindows(Str(window))\HtmlStart,JSWindows(Str(window))\HtmlEnd-JSWindows(Str(window))\HtmlStart, #PB_UTF8|#PB_ByteLength  )
-    JSWindows(Str(window))\Html.s = html
-    PostEvent(#CustomWindowEvent, window, 0,#Event_Loaded_Html)
+  ; Off-main UTF-8 decode of the embedded single-file HTML (megabytes — that
+  ; is why it is threaded at all). The thread touches only *Args: the source
+  ; range is resolved by the main-thread spawner below, and the decoded string
+  ; rides back as the #Event_Loaded_Html payload, where the handler copies it
+  ; into JSWindows() and frees *Args. The thread itself never reads the map.
+  ; (If the window dies before the event is dispatched the args leak — a close
+  ; within the few ms of decoding; accepted over sharing map state with a
+  ; thread.)
+  Structure LoadHtmlArgs
+    Window.i
+    *HtmlStart
+    *HtmlEnd
+    Html.s
+  EndStructure
+
+  Procedure LoadHtml(*Args.LoadHtmlArgs)
+    *Args\Html = PeekS(*Args\HtmlStart, *Args\HtmlEnd - *Args\HtmlStart, #PB_UTF8|#PB_ByteLength)
+    PostEvent(#CustomWindowEvent, *Args\Window, 0, #Event_Loaded_Html, *Args)
+  EndProcedure
+
+  ; Main-thread spawner: resolves the html source range while JSWindows() is
+  ; safe to read.
+  Procedure StartLoadHtml(*JSWindow.JSWindow)
+    Protected *Args.LoadHtmlArgs = AllocateStructure(LoadHtmlArgs)
+    *Args\Window    = *JSWindow\Window
+    *Args\HtmlStart = *JSWindow\HtmlStart
+    *Args\HtmlEnd   = *JSWindow\HtmlEnd
+    If CreateThread(@LoadHtml(), *Args) = 0
+      FreeStructure(*Args)
+    EndIf
   EndProcedure
 
   ; Takes a Sink handle (== the gadget for real windows, negative for headless)
@@ -1395,6 +1495,11 @@ Module JSWindow
     Sink::Bind(sink, "pbjsNativeStartWindowDrag", @JSStartWindowDrag())
     Sink::Bind(sink, "pbjsNativeSetWindowState", @JSSetWindowState())
     Sink::Bind(sink, "pbjsNativeGetWindowMetrics", @JSGetWindowMetrics())
+    ; Cross-window drag & drop: the pbjsNativeDnd* binds live in DndService
+    ; itself (PB's @ operator cannot take module-qualified procedure
+    ; addresses, so the module binds its own procs; declares come from
+    ; DndServiceDeclare.pb ahead of this file).
+    DndService::BindNatives(sink)
   EndProcedure
   
   
@@ -1550,7 +1655,7 @@ Module JSWindow
       ; Headless: the page is served by Vite/the browser, never from the
       ; embedded HTML — skip the loader thread entirely (plan C7).
       If Not webWindow
-        CreateThread(@LoadHtml(),window)
+        StartLoadHtml(*JSWindow)
       EndIf
       PbjsStartupTraceMark("webview window created: " + windowName)
 
@@ -1620,8 +1725,8 @@ Module JSWindow
       OpenManagedWindow(*Window,manualOpen)
       Debug "[OpenJSWindow] OpenManagedWindow returned at " + Str(ElapsedMilliseconds() - startTime) + "ms"
       If Not *JSWindow\Visible
-        Debug "[OpenJSWindow] Creating ForceContentVisible thread (this adds 600ms delay!)"
-        CreateThread(@ForceContentVisible(),*Window\Window)
+        Debug "[OpenJSWindow] Starting ForceContentVisible watchdog (this adds 600ms delay!)"
+        ForceContentVisible(*Window\Window)
       Else
         Debug "[OpenJSWindow] Skipping ForceContentVisible (already visible)"
         ; Mac: HideWindow() shows the window but does not activate it or raise it
@@ -1635,49 +1740,6 @@ Module JSWindow
       EndIf
     EndIf 
     Debug "[OpenJSWindow] END at " + Str(ElapsedMilliseconds() - startTime) + "ms"
-  EndProcedure
-  
-  ; Thread procedure for non-blocking prepare
-  Procedure PrepareJSWindowThread(windowHandle.i)
-    Protected *JSWindow.JSWindow = JSWindows(Str(windowHandle))
-    If *JSWindow = 0
-      Debug "[PrepareJSWindowThread] JSWindow not found for handle: " + Str(windowHandle)
-      ProcedureReturn
-    EndIf
-    
-    Debug "[PrepareJSWindowThread] Waiting for Ready..."
-
-    CompilerIf #PB_Compiler_OS = #PB_OS_Windows
-      ; Uncloak ~3 frames after the cloaked no-activate show: by then the DWM
-      ; present race at ShowWindow has settled, but Chromium's occlusion
-      ; tracker treats cloaked windows as occluded — staying cloaked for the
-      ; whole prepare would pause WebView2 rendering and defer the first
-      ; contentful paint to reveal time, defeating the pre-warm. After the
-      ; uncloak the window is still invisible (alpha 0, off-screen,
-      ; WS_EX_TOOLWINDOW) yet renders warm pixels. Event_Prepare_Complete's
-      ; own uncloak then becomes a harmless no-op.
-      Delay(48)
-      PostEvent(#CustomWindowEvent, windowHandle, 0, #Event_Prepare_Uncloak)
-    CompilerEndIf
-
-    ; Wait for content to be ready (max 2 seconds)
-    Protected i, maxWait = 200
-    For i = 0 To maxWait
-      If *JSWindow\Ready
-        Debug "[PrepareJSWindowThread] Ready after " + Str(i * 10) + "ms"
-        Break
-      EndIf
-      Delay(10)
-    Next
-    
-    ; Mark as visible-ready so OpenJSWindow skips ForceContentVisible delay
-    Debug "[PrepareJSWindowThread] Setting Visible = #True"
-    *JSWindow\Visible = #True
-    
-    ; Post event to main thread to hide window
-    PostEvent(#CustomWindowEvent, windowHandle, 0, #Event_Prepare_Complete)
-    
-    Debug "[PrepareJSWindowThread] END"
   EndProcedure
   
   Procedure PrepareJSWindow(*Window.AppWindow)
@@ -1752,10 +1814,30 @@ Module JSWindow
         HideWindow(*Window\Window, #False)
       CompilerEndIf
       
-      ; Start background thread to wait for Ready
-      CreateThread(@PrepareJSWindowThread(), windowHandle)
-      
-      Debug "[PrepareJSWindow] Thread started, returning immediately"
+      ; Prepare completion is event-driven on the main thread — the old
+      ; PrepareJSWindowThread polled *JSWindow\Ready through a JSWindows()
+      ; lookup from a worker thread. Now JSReadyState posts
+      ; #Event_Prepare_Complete the moment this page reports ready, and a
+      ; pure sleep-and-post timer posts the same event as a timeout failsafe;
+      ; the PrepareWaiting latch in the handler makes whichever fires second
+      ; a no-op.
+      *JSWindow\PrepareWaiting = #True
+      CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+        ; Uncloak ~3 frames after the cloaked no-activate show: by then the
+        ; DWM present race at ShowWindow has settled, but Chromium's occlusion
+        ; tracker treats cloaked windows as occluded — staying cloaked for the
+        ; whole prepare would pause WebView2 rendering and defer the first
+        ; contentful paint to reveal time, defeating the pre-warm. After the
+        ; uncloak the window is still invisible (alpha 0, off-screen,
+        ; WS_EX_TOOLWINDOW) yet renders warm pixels. Event_Prepare_Complete's
+        ; own uncloak then becomes a harmless no-op.
+        PostEventAfterDelay(windowHandle, 48, #Event_Prepare_Uncloak)
+        PostEventAfterDelay(windowHandle, 48 + #PBJS_PrepareReadyTimeoutMs, #Event_Prepare_Complete)
+      CompilerElse
+        PostEventAfterDelay(windowHandle, #PBJS_PrepareReadyTimeoutMs, #Event_Prepare_Complete)
+      CompilerEndIf
+
+      Debug "[PrepareJSWindow] Prepare timers started, returning immediately"
     EndIf
   EndProcedure
 
@@ -1997,7 +2079,7 @@ Module JSWindow
   CompilerEndIf
 
 
-  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "")
+  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "", atScreenX.i = #JSWindow_NoPosition, atScreenY.i = #JSWindow_NoPosition)
     If Not FindMapElement(JSTemplates(), templateName)
       Debug "[OpenInstance] Unknown template: " + templateName
       ProcedureReturn 0
@@ -2083,6 +2165,17 @@ Module JSWindow
     Protected cascadeBaseX.i, cascadeBaseY.i
     Protected hasCascadeBase.b = #False
 
+    ; Explicit drop-point placement (cross-window DnD "new window at the
+    ; cursor"): overrides both cascade bases and skips the +10 offset — the
+    ; caller already chose the exact spot. Still monitor-clamped below.
+    Protected explicitPos.b = #False
+    If atScreenX <> #JSWindow_NoPosition And atScreenY <> #JSWindow_NoPosition
+      explicitPos = #True
+      cascadeBaseX = atScreenX
+      cascadeBaseY = atScreenY
+      hasCascadeBase = #True
+    EndIf
+
     Protected siblingHandle.i = 0
     Protected siblingOpenTime.i = -1
     Protected candHandle.i
@@ -2099,7 +2192,7 @@ Module JSWindow
         EndIf
       EndIf
     Next
-    If siblingHandle
+    If siblingHandle And Not explicitPos
       If JSWindows(Str(siblingHandle))\HasCascadePosition And WindowX(siblingHandle) < -5000
         ; Sibling is still parked off-screen (claimed mid-prepare): its real
         ; target position is the stored cascade target, not the parking spot.
@@ -2130,6 +2223,9 @@ Module JSWindow
 
     If hasCascadeBase
       Protected offsetPx.i = Round(10.0 * WindowManager::DPI_Scale, #PB_Round_Nearest)
+      If explicitPos
+        offsetPx = 0
+      EndIf
       Protected newX.i     = cascadeBaseX + offsetPx
       Protected newY.i     = cascadeBaseY + offsetPx
       Protected newWinW.i  = WindowWidth(*Window\Window)
@@ -2195,7 +2291,17 @@ Module JSWindow
     Protected callerWindowName.s = ""
     If ArraySize(Parameters()) >= 4 : callerWindowName = Parameters(4) : EndIf
 
-    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson, reloadOnReuse, callerWindowName)
+    ; Optional explicit position (DnD drop-point placement); "" = unset.
+    Protected atScreenX.i = #JSWindow_NoPosition
+    Protected atScreenY.i = #JSWindow_NoPosition
+    If ArraySize(Parameters()) >= 5 And Parameters(5) <> ""
+      atScreenX = Val(Parameters(5))
+    EndIf
+    If ArraySize(Parameters()) >= 6 And Parameters(6) <> ""
+      atScreenY = Val(Parameters(6))
+    EndIf
+
+    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson, reloadOnReuse, callerWindowName, atScreenX, atScreenY)
     If handle = 0
       ProcedureReturn UTF8(~"{\"error\":\"OpenInstance failed\"}")
     EndIf
@@ -2276,7 +2382,7 @@ Module JSWindow
               If *JSWindow\Headless
                 Sink::Exec(*JSWindow\Sink, "window.location.reload();")
               Else
-                CreateThread(@LoadHtml(), *Window\Window)
+                StartLoadHtml(*JSWindow)
               EndIf
             CompilerEndIf
           Else
@@ -2662,7 +2768,13 @@ Module JSWindow
       
       window.s = Parameters(0)
       location.s = Parameters(1)
-      
+
+      ; Page-supplied key — don't let an unknown/closed id auto-create a ghost
+      ; JSWindows() element (map () access inserts missing keys).
+      If Not FindMapElement(JSWindows(), window)
+        ProcedureReturn UTF8(~"")
+      EndIf
+
       If JSWindows(window)\LastLocation <> "" And JSWindows(window)\LastLocation <> location
         DEBUGMODEinjectStartupOnce = #True 
         JSWindows(window)\Ready = #False 
@@ -2760,6 +2872,15 @@ Module JSWindow
         Select Type.i 
             
           Case #Event_Loaded_Html
+            ; The decoded HTML arrives as the event payload (LoadHtml threads
+            ; only over its own args, never the map). Copy + free
+            ; unconditionally — outside the release gate below — so debug
+            ; builds don't leak the args either.
+            Protected *LoadArgs.LoadHtmlArgs = EventData()
+            If *LoadArgs
+              *JSWindow\Html = *LoadArgs\Html
+              FreeStructure(*LoadArgs)
+            EndIf
             CompilerIf Not #Debug_On
               ; Headless: no gadget, page comes from the browser (plan C7).
               ; (LoadHtml is never started for headless windows; belt & braces.)
@@ -2850,8 +2971,8 @@ Module JSWindow
             EndIf
             
           Case #Event_Prepare_Uncloak
-            ; Posted by PrepareJSWindowThread ~3 frames after the cloaked
-            ; no-activate show (Windows only). The window stays invisible via
+            ; Posted by PrepareJSWindow's uncloak timer ~3 frames after the
+            ; cloaked no-activate show (Windows only). The window stays invisible via
             ; alpha-0 + off-screen + WS_EX_TOOLWINDOW, but without the cloak
             ; Chromium no longer considers it occluded, so WebView2 renders
             ; the page during prepare — that render IS the pre-warm.
@@ -2875,7 +2996,27 @@ Module JSWindow
               EndIf
             CompilerEndIf
 
+          Case #Event_Force_Content_Visible
+            ; Reveal watchdog fired (ForceContentVisible's timer). The page
+            ; may have reported ready during the sleep — that check runs HERE
+            ; on the main thread, not in the timer thread; if it hasn't,
+            ; fall through to the normal reveal path.
+            If Not *JSWindow\Ready
+              PostEvent(#CustomWindowEvent, *Window\Window, 0, #Event_Content_Ready)
+            EndIf
+
           Case #Event_Prepare_Complete
+            ; Posted by JSReadyState (page ready) or by the prepare timeout
+            ; timer — first one wins; the latch makes the second a no-op and
+            ; absorbs a stale timer post landing on a recycled window number.
+            If Not *JSWindow\PrepareWaiting
+              ProcedureReturn #True
+            EndIf
+            *JSWindow\PrepareWaiting = #False
+            ; Claimable-marker (OpenInstance requires Ready And Visible; also
+            ; lets OpenJSWindow skip the reveal watchdog). Was the prepare
+            ; thread's off-main write; now it flips here on the main thread.
+            *JSWindow\Visible = #True
             Debug "[Event_Prepare_Complete] Hiding and restoring position for " + *JSWindow\Name
 
             Protected PrepWinID = WindowID(*JSWindow\Window)
@@ -3040,10 +3181,13 @@ Module JSWindow
   CompilerEndIf
   
   
-  ; Last resort: reveal a window whose page never reported content-ready. Read
-  ; the deadline BEFORE sleeping — a deferred-ready page is expected to take
-  ; longer, and firing at the default 600 ms would show the blank frame the
-  ; deferral was introduced to prevent.
+  ; Last resort: reveal a window whose page never reported content-ready. Runs
+  ; on the MAIN thread (called from OpenJSWindow): the deadline is read here —
+  ; a deferred-ready page is expected to take longer, and firing at the
+  ; default 600 ms would show the blank frame the deferral was introduced to
+  ; prevent — and only the sleep is threaded. The post-sleep "did the page
+  ; report ready meanwhile?" check lives in the #Event_Force_Content_Visible
+  ; handler, so no worker thread ever reads JSWindows().
   Procedure ForceContentVisible(window)
     Protected deadline = #PBJS_RevealWatchdogMs
     If FindMapElement(JSWindows(), Str(window))
@@ -3052,13 +3196,7 @@ Module JSWindow
       EndIf
     EndIf
 
-    Delay(deadline)
-
-    If IsWindow(window)
-      If Not JSWindows(Str(window))\Ready
-        PostEvent(#CustomWindowEvent, window, 0,#Event_Content_Ready)
-      EndIf
-    EndIf
+    PostEventAfterDelay(window, deadline, #Event_Force_Content_Visible)
   EndProcedure
 
 

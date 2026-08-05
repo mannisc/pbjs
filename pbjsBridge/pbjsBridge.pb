@@ -36,6 +36,8 @@ Module JSBridge
   Global NewMap PendingSystemRequests.PendingSystemRequest()
   Global NextSystemRequestId.i = 1
   Global *SystemResponseHandler.SystemResponseHandler = 0
+  ; requestName -> handler; consulted before the global catch-all above.
+  Global NewMap SystemResponseHandlersByName.i()
   
   ; ============================================================================
   ; JAVASCRIPT BRIDGE SCRIPT - Loaded from external file
@@ -382,10 +384,14 @@ Module JSBridge
         If FindMapElement(PendingSystemRequests(), Str(requestId))
           Protected systemRequestName.s = PendingSystemRequests()\Name
           DeleteMapElement(PendingSystemRequests())
-          If *SystemResponseHandler
+          If FindMapElement(SystemResponseHandlersByName(), systemRequestName)
+            ; Per-name handler wins (module-owned requests, e.g. dnd:drop).
+            Protected namedHandler.SystemResponseHandler = SystemResponseHandlersByName()
+            namedHandler(systemRequestName, fromWindow, dataJson, requestId)
+          ElseIf *SystemResponseHandler
             ; Prototype call, not CallFunctionFast — the compiler then handles
             ; the string parameters with the normal PB calling convention.
-            *SystemResponseHandler(systemRequestName, fromWindow, dataJson)
+            *SystemResponseHandler(systemRequestName, fromWindow, dataJson, requestId)
           EndIf
           FreeJSON(json)
           ProcedureReturn
@@ -548,12 +554,37 @@ Module JSBridge
     *SystemResponseHandler = *handler
   EndProcedure
 
+  Procedure RegisterSystemResponseHandlerFor(requestName.s, *handler.SystemResponseHandler)
+    If requestName <> "" And *handler
+      SystemResponseHandlersByName(requestName) = *handler
+    EndIf
+  EndProcedure
+
+  ; Fire-and-forget native→JS message (generic sibling of SendParameters):
+  ; arrives at pbjs.handle("system", name, ...) handlers with `params` = the
+  ; given JSON. Buffered like every other message while the window isn't ready.
+  Procedure SendSystemMessage(*JSWindow.JSWindow, name.s, paramsJson.s)
+    If *JSWindow And Sink::IsValid(*JSWindow\Sink)
+      Protected messageJson.s
+      messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"system\",\"name\":\"" + name +
+                    ~"\",\"params\":" + paramsJson + ~",\"data\":{}}"
+      Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
+      If *JSWindow\Ready
+        Sink::Exec(*JSWindow\Sink, script)
+      Else
+        QueuePending(*JSWindow, script)
+      EndIf
+    EndIf
+  EndProcedure
+
   ; Send a native-originated request to one JS window.  Unlike SendCloseCheck,
   ; this supports structured replies and keeps the request name by id so the
-  ; response router can dispatch it to the application layer.
-  Procedure SendSystemRequest(*JSWindow.JSWindow, requestName.s, paramsJson.s = "{}")
+  ; response router can dispatch it to the application layer. Returns the
+  ; requestId (0 on failure) so the caller can correlate its own reply and
+  ; distinguish it from a late reply to an abandoned earlier request.
+  Procedure.i SendSystemRequest(*JSWindow.JSWindow, requestName.s, paramsJson.s = "{}")
     If Not *JSWindow Or Not Sink::IsValid(*JSWindow\Sink)
-      ProcedureReturn
+      ProcedureReturn 0
     EndIf
 
     NextSystemRequestId + 1
@@ -571,6 +602,17 @@ Module JSBridge
       Sink::Exec(*JSWindow\Sink, script)
     Else
       QueuePending(*JSWindow, script)
+    EndIf
+    ProcedureReturn requestId
+  EndProcedure
+
+  ; Free a pending request's slot without waiting for its reply — used when
+  ; the caller gives up (timeout/cancel) so a reply that never arrives can't
+  ; leak the map entry forever. No-op if the id is already gone (already
+  ; replied, or never existed).
+  Procedure CancelPendingSystemRequest(requestId.i)
+    If FindMapElement(PendingSystemRequests(), Str(requestId))
+      DeleteMapElement(PendingSystemRequests())
     EndIf
   EndProcedure
   
@@ -627,8 +669,23 @@ Module JSBridge
     CompilerEndIf 
     
     bridgeScript = ReplaceString(bridgeScript, "_OS_NAME_INJECTED_BY_NATIVE_", osName)
+
+    ; Synchronous "is the DnD service actually live" flag — read once at page
+    ; load, before pbjs.drag exists as an object at all. DndServiceDeclare.pb
+    ; (included ahead of this file) exposes IsEnabled() precisely so this
+    ; module doesn't need the full DndService body in scope. Lets
+    ; PbjsDragService.available report the real answer (host without
+    ; DndService / VYNCE_DND=0 / non-mac / web mode) instead of only "does
+    ; the native function exist", which stays true even when disabled.
+    Protected dndEnabled.s
+    If DndService::IsEnabled()
+      dndEnabled = "1"
+    Else
+      dndEnabled = "0"
+    EndIf
+    bridgeScript = ReplaceString(bridgeScript, "_DND_ENABLED_INJECTED_BY_NATIVE_", dndEnabled)
     ProcedureReturn bridgeScript
-  EndProcedure 
+  EndProcedure
   
   Procedure.s WithBridgeScript(html.s, windowName.s)
     result.s = html
