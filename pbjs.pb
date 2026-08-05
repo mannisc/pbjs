@@ -22,6 +22,11 @@ XIncludeFile "modules/JSSink.pb"
 
 IncludeFile "pbjsBridge/pbjsBridgeDeclare.pb"
 
+; =============================================================================
+;- CROSS-WINDOW DRAG & DROP (badge + declares; module body follows JSBridge)
+; =============================================================================
+IncludeFile "modules/DragBadge.pb"
+IncludeFile "modules/DndServiceDeclare.pb"
 
 ; =============================================================================
 ;- JS WINDOW
@@ -33,3 +38,8 @@ IncludeFile "modules/JSWindow.pb"
 ; =============================================================================
 
 IncludeFile "pbjsBridge/pbjsBridge.pb"
+
+; =============================================================================
+;- CROSS-WINDOW DRAG & DROP (module body — needs JSWindow registry + JSBridge)
+; =============================================================================
+IncludeFile "modules/DndService.pb"

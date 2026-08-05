@@ -258,6 +258,18 @@ message — register it early so the first message isn't missed:
 pbjs.handleAll("handleParameters", (_e, params) => setState(params));
 ```
 
+**Cross-window drag & drop** (`pbjs.drag`) is a separate, generic service
+layered on top of this transport — not part of the core API above. A source
+window starts a session (`pbjs.drag.start`), native tracks the cursor and
+hit-tests the topmost window across the whole desktop (a 15ms timer, not
+client-rect math), and any window can register as a drop target
+(`pbjs.drag.registerTarget`) for typed payloads. macOS only today; every
+consumer feature-detects (`pbjs.drag.available`) and degrades gracefully
+elsewhere. Canonical doc (protocol, native architecture, release semantics):
+`docs/dnd.md` in the main vynce repo — not duplicated here since it's a
+consumer-side doc, not a `pbjs` API reference concern; the native half
+(`DndService.pb`, `DragBadge.pb`) does live in this repo though.
+
 ---
 
 ## 8. Lifecycle & readiness

@@ -9,6 +9,11 @@
 
   const WINDOW_NAME = "_WINDOW_NAME_INJECTED_BY_NATIVE_";
   const OS_NAME = "_OS_NAME_INJECTED_BY_NATIVE_";
+  // Read once at page load, before pbjs.drag exists as an object — reports
+  // whether DndService actually started (host has it / VYNCE_DND!=0 / mac /
+  // not web mode), not just whether the pbjsNativeDnd* functions exist (they
+  // exist as no-op-ish natives regardless of Enabled).
+  const DND_ENABLED = "_DND_ENABLED_INJECTED_BY_NATIVE_" === "1";
 
   const handlers = new Map();
   const pendingRequests = new Map();
@@ -189,6 +194,7 @@
       version: "UNIFIED_V2",
       windowName: WINDOW_NAME,
       os: OS_NAME,
+      dndAvailable: DND_ENABLED,
       darkModeHandlers: [],
       ready: true,
 
@@ -755,6 +761,80 @@
         window.pbjs.handle("system", "close-window", handler);
       },
 
+      // ── Cross-window drag & drop (DndService.pb) ─────────────────────────
+      // Thin promise wrappers over the pbjsNativeDnd* binds. Args travel as
+      // plain strings; results come back as JSON strings and are parsed here.
+      // Feature-detect with `if (window.pbjs.dndStart)` — on hosts without the
+      // service the natives reject / report {error}.
+      _dndCall: function (fnName, args) {
+        return new Promise((resolve, reject) => {
+          const fn = window[fnName];
+          if (!fn) {
+            reject(new Error(fnName + " not available"));
+            return;
+          }
+          fn.apply(null, args)
+            .then((result) => {
+              try {
+                resolve(
+                  typeof result === "string" && result
+                    ? JSON.parse(result)
+                    : result || {}
+                );
+              } catch (e) {
+                console.error("[PBJS] " + fnName + " parse error:", e);
+                resolve({ error: "parse error" });
+              }
+            })
+            .catch(reject);
+        });
+      },
+      // spec: {type, payloadJson, badge:{icon,label}} — payload pre-stringified
+      // by the caller so the native side never has to re-serialize a subtree.
+      dndStart: function (spec) {
+        return this._dndCall("pbjsNativeDndStart", [
+          String(window.pbjs.windowName || ""),
+          JSON.stringify(spec || {}),
+        ]);
+      },
+      dndDrop: function (sessionId) {
+        return this._dndCall("pbjsNativeDndDrop", [
+          String(window.pbjs.windowName || ""),
+          String(sessionId || ""),
+        ]);
+      },
+      dndCancel: function (sessionId) {
+        return this._dndCall("pbjsNativeDndCancel", [
+          String(window.pbjs.windowName || ""),
+          String(sessionId || ""),
+        ]);
+      },
+      dndUpdateBadge: function (sessionId, badge) {
+        return this._dndCall("pbjsNativeDndUpdateBadge", [
+          String(window.pbjs.windowName || ""),
+          String(sessionId || ""),
+          JSON.stringify(badge || {}),
+        ]);
+      },
+      dndSetZoneActive: function (sessionId, active) {
+        return this._dndCall("pbjsNativeDndSetZoneActive", [
+          String(window.pbjs.windowName || ""),
+          String(sessionId || ""),
+          active ? "1" : "0",
+        ]);
+      },
+      dndRegisterTarget: function (types) {
+        return this._dndCall("pbjsNativeDndRegisterTarget", [
+          String(window.pbjs.windowName || ""),
+          JSON.stringify(types || []),
+        ]);
+      },
+      dndUnregisterTarget: function () {
+        return this._dndCall("pbjsNativeDndUnregisterTarget", [
+          String(window.pbjs.windowName || ""),
+        ]);
+      },
+
       // Open a multi-instance window from a registered template.
       // - templateName: opaque string matching a JSWindow::RegisterTemplate call.
       // - instanceKey:  opaque caller string for dedupe. Empty string disables
@@ -773,13 +853,21 @@
           const callerName = (options && options.smartPosition)
             ? String(window.pbjs.windowName || "")
             : "";
+          // Optional explicit position (DnD drop-point placement). "" = unset.
+          const at = options && options.atScreen;
+          const atX =
+            at && Number.isFinite(at.x) ? String(Math.round(at.x)) : "";
+          const atY =
+            at && Number.isFinite(at.y) ? String(Math.round(at.y)) : "";
           window
             .pbjsNativeOpenInstance(
               String(templateName),
               String(instanceKey || ""),
               paramJson,
               reloadParam,
-              callerName
+              callerName,
+              atX,
+              atY
             )
             .then((result) => {
               if (!result) {
