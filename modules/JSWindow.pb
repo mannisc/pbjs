@@ -1804,7 +1804,7 @@ Module JSWindow
         Debug "[PrepareJSWindow] Linux: Setting opacity to 0, moving off-screen, showing"
         Protected *GtkWidget = WinID
         If *GtkWidget
-          gtk_widget_set_opacity_(*GtkWidget, 0.0)
+          ;gtk_widget_set_opacity_(*GtkWidget, 0.0)
         EndIf
         
         ; Move off-screen
@@ -3055,7 +3055,7 @@ Module JSWindow
               If Not claimedAndOpen
                 HideWindow(*JSWindow\Window, #True)
               EndIf
-              gtk_widget_set_opacity_(PrepWinID, 1.0)
+              ;gtk_widget_set_opacity_(PrepWinID, 1.0)
             CompilerEndIf
 
             ; Restore position — use cascade target if OpenInstance set one, otherwise
@@ -3264,7 +3264,7 @@ Module JSWindow
 
 EndModule
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)
-; CursorPosition = 102
+; CursorPosition = 3058
 ; FirstLine = 97
 ; Folding = ----------
 ; EnableXP
