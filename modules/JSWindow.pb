@@ -807,6 +807,36 @@ Module JSWindow
     ImportC ""
       gtk_window_begin_move_drag(*window, button.i, root_x.i, root_y.i, timestamp.i)
     EndImport
+
+    ; gtk_widget_set_opacity is declared HERE rather than called as PureBasic's
+    ; built-in gtk_widget_set_opacity_(), because not every PureBasic build
+    ; declares it. The ARM build (the only one for Raspberry Pi OS, and what
+    ; runs on arm64 Debian) fails the whole compile with
+    ;
+    ;   Line 1807 - gtk_widget_set_opacity_() is not a function, array, list,
+    ;   map or macro
+    ;
+    ; PureBasic's `name_()` syntax resolves against the compiler's own OS-API
+    ; database, and that database is built per PureBasic release — a missing
+    ; entry says nothing about the machine. gtk_widget_set_opacity() itself has
+    ; existed since GTK 3.8 (2013) and is present on every host this can run
+    ; on: webkit2gtk requires GTK3, so GTK3 is already a hard dependency of the
+    ; webview. Importing the symbol directly sidesteps the compiler's database
+    ; and lets the linker resolve it against the GTK that is already linked.
+    ;
+    ; The declared name deliberately has NO trailing underscore, so on builds
+    ; where PureBasic DOES declare gtk_widget_set_opacity_() the two names
+    ; cannot collide — both end up calling the same symbol.
+    ;
+    ; The `.d` matters and is not decoration: the C parameter is a double, and
+    ; on AArch64 and x86-64 alike doubles pass in FLOATING-POINT registers.
+    ; Declaring it integer-width would put the value in the wrong register and
+    ; hand GTK garbage rather than an opacity. Verified against the C backend,
+    ; which emits `f_gtk_widget_set_opacity(integer,double)` — a real double,
+    ; so the platform C compiler assigns the register.
+    ImportC ""
+      gtk_widget_set_opacity(*widget, opacity.d)
+    EndImport
   CompilerEndIf
 
   ; JS → PB: start a native window drag from the page's own title bar.
@@ -1804,7 +1834,11 @@ Module JSWindow
         Debug "[PrepareJSWindow] Linux: Setting opacity to 0, moving off-screen, showing"
         Protected *GtkWidget = WinID
         If *GtkWidget
-          ;gtk_widget_set_opacity_(*GtkWidget, 0.0)
+          ; Imported near gtk_window_begin_move_drag above, NOT the built-in
+          ; gtk_widget_set_opacity_() — see that comment. Pairs with the
+          ; restore to 1.0 in the reveal path; changing one without the other
+          ; leaves every pre-warmed window invisible for good.
+          gtk_widget_set_opacity(*GtkWidget, 0.0)
         EndIf
         
         ; Move off-screen
@@ -3055,7 +3089,10 @@ Module JSWindow
               If Not claimedAndOpen
                 HideWindow(*JSWindow\Window, #True)
               EndIf
-              ;gtk_widget_set_opacity_(PrepWinID, 1.0)
+              ; The other half of the pair: undoes the opacity 0 set in
+              ; PrepareJSWindow. Imported, not the built-in — see the ImportC
+              ; block near gtk_window_begin_move_drag.
+              gtk_widget_set_opacity(PrepWinID, 1.0)
             CompilerEndIf
 
             ; Restore position — use cascade target if OpenInstance set one, otherwise
