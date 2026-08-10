@@ -805,7 +805,15 @@ Module JSWindow
     ; Hands a press to the window manager so it performs the move itself
     ; (works on both X11 and Wayland, unlike setting the window position).
     ImportC ""
+      gtk_box_new(orientation.i, spacing.i)
+      gtk_window_set_titlebar(*window, *widget)
       gtk_window_begin_move_drag(*window, button.i, root_x.i, root_y.i, timestamp.i)
+      gtk_window_set_decorated(*window, setting.i)
+      gtk_widget_get_style_context(*widget)
+      gtk_css_provider_new()
+      gtk_css_provider_load_from_data(*provider, *data, length.i, *error)
+      gtk_style_context_add_provider(*context, *provider, priority.l)
+      g_object_unref(*object)
     EndImport
 
     ; gtk_widget_set_opacity is declared HERE rather than called as PureBasic's
@@ -1641,6 +1649,34 @@ Module JSWindow
 
         ApplyThemeToWinHandle(hWnd)
         SetWindowCallback(@WindowCallback(),window, #PB_Window_NoChildEvents)
+      CompilerEndIf
+
+      CompilerIf #PB_Compiler_OS = #PB_OS_Linux
+        ; Frameless titlebar: replace server-side titlebar with an empty 0-height GtkBox.
+        ; Removes the OS titlebar box so WebView content starts at (0,0), while
+        ; preserving GTK window borders, resize grips, and hover cursor indicators (↔, ↕, ⤢).
+        If Not webWindow
+          Protected *emptyTitlebar = gtk_box_new(0, 0)
+          gtk_window_set_titlebar(hWnd, *emptyTitlebar)
+        EndIf
+
+        ; Apply GTK CSS background color to window container to match themeBackgroundColor (dark/light)
+        ; so no white gaps/flashes appear during live window resizing.
+        Protected *winCssProvider = gtk_css_provider_new()
+        If *winCssProvider
+          Protected winBgHex.s = ColorToCssHex(themeBackgroundColor)
+          Protected winCss.s = "window, widget, grid, box { background-color: " + winBgHex + "; }"
+          Protected *utf8WinCss = UTF8(winCss)
+          If *utf8WinCss
+            gtk_css_provider_load_from_data(*winCssProvider, *utf8WinCss, -1, 0)
+            Protected *winStyleContext = gtk_widget_get_style_context(hWnd)
+            If *winStyleContext
+              gtk_style_context_add_provider(*winStyleContext, *winCssProvider, 600)
+            EndIf
+            FreeMemory(*utf8WinCss)
+          EndIf
+          g_object_unref(*winCssProvider)
+        EndIf
       CompilerEndIf
 
       CompilerIf Not #Debug_On

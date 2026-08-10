@@ -213,8 +213,7 @@ Module OsTheme
          EndIf
       EndIf
       
-      ProcedureReturn isDark
-      
+      result = isDark
     CompilerEndIf
     
     If result
