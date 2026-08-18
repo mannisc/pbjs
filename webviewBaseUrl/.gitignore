@@ -1,0 +1,6 @@
+# build output
+wvtest
+wvtest.exe
+*.o
+# harness output — regenerate per machine
+results-*.txt
