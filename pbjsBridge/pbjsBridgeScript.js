@@ -121,6 +121,16 @@
   // invoke/response/handler would otherwise ship a log over the bridge and
   // compete with real IPC on the main loop, especially under store-sync traffic
   // (F11). Full devtools richness is kept; only the native forward is dropped.
+  //
+  // The same reasoning applies to the bridge's own lifecycle chatter, which now
+  // also goes through originalConsole: init, getWindow/open/openInstance,
+  // handler registration, replay and the ready banner. Those run on cold paths
+  // that fire per window — and every pool spare is a window — so each warm-up
+  // was shipping several log messages across the bridge before the page had
+  // done anything. What deliberately still forwards: dead-letter and
+  // buffered-unhandled warnings, the double-init warning, and log.error. Those
+  // are real faults, they are rare, and they are worth seeing in the native
+  // terminal without devtools open.
   // log.error (below) still forwards: bridge errors are rare and worth seeing in
   // the native terminal.
   const log = {
@@ -229,7 +239,7 @@
         });
       },
       init: () => {
-        console.log("PBJS Script Init (Unified)");
+        originalConsole.log("PBJS Script Init (Unified)");
         if (window.pbjs.isDarkMode()) {
           document.documentElement.classList.add("dark");
         } else {
@@ -246,7 +256,7 @@
         return window
           .pbjsNativeGetWindow(windowName)
           .then((winData) => {
-            console.log(
+            originalConsole.log(
               "pbjs.getWindow(" + windowName + ") raw data:",
               winData
             );
@@ -271,7 +281,7 @@
               ...winObj,
               open: function (params) {
                 const param = this.id || winObj.id || windowName;
-                console.log(
+                originalConsole.log(
                   "[PBJS] open called for:",
                   param,
                   "with params:",
@@ -285,7 +295,7 @@
                       ? JSON.stringify(params)
                       : undefined;
 
-                    console.log(
+                    originalConsole.log(
                       "[PBJS] calling pbjsNativeOpenWindow with:",
                       stringParam,
                       paramJson
@@ -297,7 +307,7 @@
 
                     promise
                       .then((result) => {
-                        console.log("[PBJS] open native result:", result);
+                        originalConsole.log("[PBJS] open native result:", result);
                         if (!result) {
                           resolve(false);
                           return;
@@ -464,7 +474,7 @@
                 this.isWindowReady(windowName)
                   .then((isReady) => {
                     if (isReady) {
-                      console.log(
+                      originalConsole.log(
                         "[PBJS] waitForWindow resolving for " + windowName,
                         win
                       );
@@ -899,7 +909,7 @@
           throw new TypeError("Handler must be a function");
 
         const key = windowName + ":" + name;
-        console.log("[PBJS] Registered handler for: " + key);
+        originalConsole.log("[PBJS] Registered handler for: " + key);
         handlers.set(key, handler);
         replayUnhandledMessages();
       },
@@ -910,7 +920,7 @@
         if (typeof handler !== "function")
           throw new TypeError("Handler must be a function");
 
-        console.log("[PBJS] Registered global handler for: *:" + name);
+        originalConsole.log("[PBJS] Registered global handler for: *:" + name);
         handlers.set("*:" + name, handler);
         replayUnhandledMessages();
       },
@@ -946,7 +956,7 @@
 
     // Signal Readiness
     window.pbjsReady = true;
-    console.log(
+    originalConsole.log(
       "%c✓ PBJS Bridge Ready %c" + WINDOW_NAME,
       "color: #4CAF50; font-weight: bold; font-size: 1.1em",
       "color: #2196F3; font-weight: bold"
@@ -960,7 +970,7 @@
 
   function replayUnhandledMessages() {
     if (unhandledMessages.length === 0) return;
-    console.log(
+    originalConsole.log(
       "[PBJS] Replaying " + unhandledMessages.length + " unhandled messages..."
     );
 
@@ -1110,12 +1120,29 @@
       const handler = handlers.get(key) || handlers.get(globalKey);
 
       if (!handler) {
-        // Special Case: IGNORE close-window messages if unhandled
-        // Do NOT buffer them, as they will hang if no handler exists.
+        // close-window with no onCloseWindow handler: AUTO-APPROVE, right now.
+        //
+        // Neither of the other two options is safe. Buffering is wrong — the
+        // close protocol has no replay point, so the message would just sit
+        // there. Staying silent (what this did before) is worse: the host sets
+        // a single global ClosingScope when it sends the check and clears it
+        // only on a reply, so one unanswered check wedges the close path for
+        // EVERY window — every later close click is silently consumed and the
+        // app cannot be quit. No handler means no opinion, and no opinion
+        // means no veto. Mirrors the host's own not-ready branch, which
+        // already auto-approves for the same reason (SendCloseCheck).
         if (msg.name === "close-window") {
-          console.warn(
-            "[PBJS] Ignored unhandled close-window message (will not buffer)"
-          );
+          if (msg.requestId !== undefined && window.pbjsNativeReply) {
+            window.pbjsNativeReply(
+              JSON.stringify({
+                requestId: msg.requestId,
+                toWindow: msg.fromWindow,
+                fromWindow: WINDOW_NAME,
+                data: JSON.stringify({ success: true }),
+                isGetAll: false,
+              })
+            );
+          }
           return;
         }
 

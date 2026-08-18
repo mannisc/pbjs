@@ -1,0 +1,68 @@
+name: CI
+
+# The hosted half of the gate. Everything here runs on a GitHub-hosted runner
+# and therefore also on pull requests from forks.
+#
+# What is deliberately NOT here: `pbcompiler --check`. The PureBasic compiler
+# cannot legitimately run on a public hosted runner —
+#
+#   * the free version caps source files at 800 lines EACH (not cumulatively),
+#     and modules/JSWindow.pb alone is ~3,500, so it answers "Error: Source too
+#     big for the Free version." and exits 1. No arrangement of this repo fits,
+#     and reshaping the file layout to satisfy it is not worth doing;
+#   * the full version is a login-gated download under a per-user licence, so
+#     installing it on a public runner is at best an unanswered licensing
+#     question — and secrets are not exposed to fork PRs anyway, so the job
+#     would silently skip on exactly the PRs a public repo most needs it for.
+#
+# The real compiler check therefore lives in purebasic.yml, on a self-hosted
+# runner, opt-in. `check-sources.mjs` below is an honest weaker substitute here,
+# not a stand-in: it catches the two defect classes that actually shipped
+# (a host-only UseModule, a wrong IncludeBinary path) by reading the tree.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  example:
+    name: Example builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: reactExample/main-window/package-lock.json
+
+      - name: Install
+        working-directory: reactExample/main-window
+        run: npm ci
+
+      # No lint step yet, deliberately. `npm run lint` currently reports 16
+      # pre-existing errors in the example — 15 of them `any` in global.d.ts,
+      # which is what an untyped bridge's hand-written typings look like.
+      # Roadmap 2.9 (G6) replaces those typings wholesale; adding the step now
+      # would mean a workflow that is red on its first run, and making it
+      # non-blocking would be a green check that verifies nothing. Add it with
+      # 2.9, when it can pass.
+
+      - name: Build
+        working-directory: reactExample/main-window
+        run: npm run build
+
+      # The .pb embeds this with IncludeBinary; if the build stops producing it,
+      # the example stops compiling and the failure would otherwise surface only
+      # on a developer's machine.
+      - name: Assert the embedded artifact exists
+        working-directory: reactExample/main-window
+        run: test -f dist/index.html
+
+      # Runs AFTER the build so the IncludeBinary target is present and the
+      # include check is exercised in full.
+      - name: Static source checks
+        run: node ci/check-sources.mjs

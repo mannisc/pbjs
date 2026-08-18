@@ -40,6 +40,8 @@ This README is the **complete handbook**. For a one-screen orientation see
 10. [Cross-window state sync (Zustand & friends)](#10-cross-window-state-sync)
 11. [Conventions & gotchas](#11-conventions--gotchas)
 12. [File map](#12-file-map)
+13. [Example](#13-example)
+14. [Licence](#14-licence)
 
 ---
 
@@ -426,10 +428,61 @@ pbjs/
 │   │                              CloseJSWindow (lifecycle push)
 │   └── WindowManager.pb           event loop integration
 ├── pbjsFileSystem/                separate window.fs bridge (own handshake)
-├── reactExample/, *.pb examples
+├── reactExample/ + pbjsExample.pb  the one canonical example (see below)
+├── LICENSE    (MIT)
 ├── README.md  (this file)
 └── CLAUDE.md  (one-screen summary)
 ```
 
 Deeper design notes & the improvement-plan audit live in the host app's
 `iplan/pbjs.md` and `iplan/pbjszustand.md`.
+
+---
+
+## 13. Example
+
+`pbjsExample.pb` is the **single canonical sample** — two pbjs windows plus a
+plain PureBasic window driving them. It embeds the built web app with
+`IncludeBinary`, and `reactExample/main-window/dist/` is gitignored, so the web
+app must be built **before** the `.pb` will compile:
+
+```bash
+cd reactExample/main-window
+npm install
+npm run build          # produces dist/index.html (vite-plugin-singlefile)
+```
+
+Then compile `pbjsExample.pb` from the repo root with the PureBasic IDE or
+`pbcompiler`. Skipping the npm build fails at compile time with
+`Included file not found: reactExample/main-window/dist/index.html`.
+
+### Checks
+
+```bash
+ci/check-purebasic.sh      # syntax-check pbjs standalone + the example
+node ci/check-sources.mjs  # include paths + host-only modules (no compiler needed)
+```
+
+`ci/check-purebasic.sh` finds your PureBasic install (or honours
+`PUREBASIC_HOME`) and checks `ci/standalone-check.pb` — a file that includes
+pbjs **and nothing else**. That is the one check worth having: pbjs is
+developed as a nested repo inside a host app, so a dependency on a host-only
+symbol compiles fine for its author and fails for everyone else.
+
+To run both before every push:
+
+```bash
+ln -sf ../../ci/pre-push .git/hooks/pre-push
+```
+
+⚠ The compiler checks need a **licensed** PureBasic — the free version caps
+source files at 800 lines each and `modules/JSWindow.pb` is ~3,500. That is
+also why CI only builds the example and runs the compiler-free checks; the
+`pbcompiler` job (`.github/workflows/purebasic.yml`) is written for a
+self-hosted runner and stays dormant until one is registered.
+
+---
+
+## 14. Licence
+
+MIT — see [LICENSE](LICENSE).

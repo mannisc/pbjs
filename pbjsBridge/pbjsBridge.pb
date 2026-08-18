@@ -65,31 +65,85 @@ Module JSBridge
   EndProcedure
   
   Procedure.s GetJSWindowNameByID(window.i)
-    ForEach JSWindows()
-      If JSWindows()\Window = window
-        ProcedureReturn JSWindows()\Name
-      EndIf
-    Next
+    If FindMapElement(JSWindows(), Str(window))
+      ProcedureReturn JSWindows()\Name
+    EndIf
     ProcedureReturn ""
   EndProcedure
+
+  ; Resolve a window NAME straight to its JSWindow record, or 0.
+  ;
+  ; JSWindows() is keyed by Str(window handle), so every "find the one window
+  ; whose \Window = x" scan in this router was an O(n) walk standing in for two
+  ; O(1) map hits — on the hot path of every send, get and reply.
+  ;
+  ; FindMapElement, never JSWindows(key): a bare map () access INSERTS the key
+  ; when it is missing, and a ghost element here would be a phantom window in
+  ; every broadcast loop for the rest of the run.
+  Procedure.i GetJSWindowPtrByName(windowName.s)
+    If Not FindMapElement(WindowsByName(), windowName)
+      ProcedureReturn 0
+    EndIf
+    Protected handle.i = WindowsByName()
+    If Not FindMapElement(JSWindows(), Str(handle))
+      ProcedureReturn 0
+    EndIf
+    ProcedureReturn @JSWindows()
+  EndProcedure
   
-  Procedure.s EscapeJSON(text.s)
-    Protected result.s
+  ; Escape a string so it is a valid JSON string body (RFC 8259) — and nothing
+  ; more. Use this for a VALUE going INTO a hand-built JSON frame (a window
+  ; name, a handler name, an error message). For the finished frame on its way
+  ; into an injected JS literal, use EscapeJSON below.
+  ;
+  ; Ported from pbjsFileSystem.pb, which already had to solve exactly this: JSON
+  ; forbids ANY raw C0 control character (U+0000..U+001F) inside a string
+  ; literal, not just the three that used to be handled here. An unescaped one
+  ; makes JSON.parse throw "Bad control character in string literal" inside
+  ; pbjsHandleMessage — where the catch only logs, so the message (a store-sync
+  ; patch, a reply) is silently dropped. Control characters reach here from the
+  ; native side, which assembles JSON by hand: an ESC in a terminal title, a
+  ; pasted control char in a window or handler name.
+  ;
+  ; Deliberately NO single-quote escaping: \' is not valid JSON, and this
+  ; result is destined for a JSON document, not a JS literal.
+  Procedure.s EscapeJSONValue(text.s)
+    Protected result.s, c.i
+    ; Backslash first, before any \-escape below introduces one of its own,
+    ; then the double quote.
     result = ReplaceString(text, Chr(92), Chr(92)+Chr(92))
     result = ReplaceString(result, Chr(34), Chr(92)+Chr(34))
-    result = ReplaceString(result, Chr(13), Chr(92)+"r")
+    ; Named short escapes for the common control characters.
+    result = ReplaceString(result, Chr(8),  Chr(92)+"b")
+    result = ReplaceString(result, Chr(9),  Chr(92)+"t")
     result = ReplaceString(result, Chr(10), Chr(92)+"n")
-    result = ReplaceString(result, Chr(9), Chr(92)+"t")
-    ; Escape single quotes LAST (after the backslash pass above, so the
-    ; backslash we introduce here is not doubled). Every caller wraps the
-    ; result in a single-quoted JS string literal — pbjsHandleMessage('...') —
-    ; so an unescaped apostrophe in any payload (e.g. "Tim's shell") would
-    ; terminate the literal and throw a SyntaxError, silently dropping the
-    ; message. `\'` is a valid escape inside single-quoted JS strings and the
-    ; inner JSON stays intact after JS un-escapes it. (Same pattern already
-    ; used in pbjsFileSystem.pb.)
-    result = ReplaceString(result, Chr(39), Chr(92)+Chr(39))
+    result = ReplaceString(result, Chr(12), Chr(92)+"f")
+    result = ReplaceString(result, Chr(13), Chr(92)+"r")
+    ; Every remaining C0 character as \u00XX. A raw NUL cannot survive in a PB
+    ; string, so the range starts at 1.
+    For c = 1 To 31
+      Select c
+        Case 8, 9, 10, 12, 13
+          ; already handled as \b \t \n \f \r above
+        Default
+          result = ReplaceString(result, Chr(c), Chr(92)+"u00" + RSet(Hex(c), 2, "0"))
+      EndSelect
+    Next
     ProcedureReturn result
+  EndProcedure
+
+  ; Escape a finished JSON frame for embedding in a SINGLE-QUOTED JS string
+  ; literal — pbjsHandleMessage('...') / pbjsHandleResponse('...'), which is how
+  ; every native→JS message is delivered.
+  ;
+  ; That is the JSON escaping above plus one JS-literal concern: an unescaped
+  ; apostrophe in any payload ("Tim's shell") would terminate the literal and
+  ; throw a SyntaxError, dropping the message. `\'` is a valid escape inside a
+  ; single-quoted JS string and the inner JSON is intact once JS un-escapes it.
+  ; It goes LAST, after the backslash pass, so the backslash introduced here is
+  ; not itself doubled.
+  Procedure.s EscapeJSON(text.s)
+    ProcedureReturn ReplaceString(EscapeJSONValue(text), Chr(39), Chr(92)+Chr(39))
   EndProcedure
   
   Procedure FlushPendingMessages(*JSWindow.JSWindow)
@@ -158,24 +212,19 @@ Module JSBridge
       paramsJson = GetJSONString(GetJSONMember(JSONValue(json), "params"))
       dataJson = GetJSONString(GetJSONMember(JSONValue(json), "data"))
       
-      messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"" + fromWindow + 
-                    ~"\",\"name\":\"" + name + 
-                    ~"\",\"params\":" + paramsJson + 
+      messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"" + EscapeJSONValue(fromWindow) +
+                    ~"\",\"name\":\"" + EscapeJSONValue(name) +
+                    ~"\",\"params\":" + paramsJson +
                     ~",\"data\":" + dataJson + ~"}"
-      
-      Protected targetWindow.i = GetJSWindowByName(toWindow)
-      If targetWindow > -1
-        ForEach JSWindows()
-          If JSWindows()\Window = targetWindow
-            script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
-            If JSWindows()\Ready
-               Sink::Exec(JSWindows()\Sink, script)
-            Else
-               QueuePending(@JSWindows(), script)
-            EndIf
-            Break
-          EndIf
-        Next
+
+      Protected *Target.JSWindow = GetJSWindowPtrByName(toWindow)
+      If *Target
+        script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
+        If *Target\Ready
+          Sink::Exec(*Target\Sink, script)
+        Else
+          QueuePending(*Target, script)
+        EndIf
       EndIf
       
       FreeJSON(json)
@@ -199,37 +248,32 @@ Module JSBridge
       dataJson = GetJSONString(GetJSONMember(JSONValue(json), "data"))
       requestId = GetJSONInteger(GetJSONMember(JSONValue(json), "requestId"))
       
-      messageJson = ~"{\"type\":\"get\",\"fromWindow\":\"" + fromWindow + 
-                    ~"\",\"name\":\"" + name + 
-                    ~"\",\"params\":" + paramsJson +   
-                    ~",\"data\":" + dataJson + 
+      messageJson = ~"{\"type\":\"get\",\"fromWindow\":\"" + EscapeJSONValue(fromWindow) +
+                    ~"\",\"name\":\"" + EscapeJSONValue(name) +
+                    ~"\",\"params\":" + paramsJson +
+                    ~",\"data\":" + dataJson +
                     ~",\"requestId\":" + Str(requestId) + ~"}"
       
-      Protected targetWindow.i = GetJSWindowByName(toWindow)
-      If targetWindow > -1
-        ForEach JSWindows()
-          If JSWindows()\Window = targetWindow
-            If Not JSWindows()\Open
-              ; Window is registered but currently closed.
-              ; Set flag and break — error response is sent below.
-              windowNotOpen = #True
-            Else
-              script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
-              If JSWindows()\Ready
-                 Sink::Exec(JSWindows()\Sink, script)
-              Else
-                 QueuePending(@JSWindows(), script)
-              EndIf
-            EndIf
-            Break
+      Protected *Target.JSWindow = GetJSWindowPtrByName(toWindow)
+      If *Target
+        If Not *Target\Open
+          ; Window is registered but currently closed — the error response
+          ; below is sent instead.
+          windowNotOpen = #True
+        Else
+          script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
+          If *Target\Ready
+            Sink::Exec(*Target\Sink, script)
+          Else
+            QueuePending(*Target, script)
           EndIf
-        Next
+        EndIf
       EndIf
       
       ; Send immediate error back to caller when target window is not found or not open.
       ; Both cases use the same response path so the caller's .catch() fires right away
       ; instead of waiting for the 30s pending-request timeout.
-      If targetWindow = -1 Or windowNotOpen
+      If *Target = 0 Or windowNotOpen
         Protected errorMsg.s
         If windowNotOpen
           errorMsg = "Window not open: " + toWindow
@@ -237,21 +281,16 @@ Module JSBridge
           errorMsg = "Window not found: " + toWindow
         EndIf
         
-        Protected sourceWindow.i = GetJSWindowByName(fromWindow)
-        If sourceWindow > -1
-          ForEach JSWindows()
-            If JSWindows()\Window = sourceWindow
-              script = "pbjsHandleResponse('" + EscapeJSON(~"{\"requestId\":" + Str(requestId) + 
-                                                           ~",\"fromWindow\":\"" + toWindow + 
-                                                           ~"\",\"data\":{\"error\":\"" + errorMsg + ~"\"}}") + "');"
-               If JSWindows()\Ready
-                 Sink::Exec(JSWindows()\Sink, script)
-               Else
-                 QueuePending(@JSWindows(), script)
-               EndIf
-               Break
-            EndIf
-          Next
+        Protected *Source.JSWindow = GetJSWindowPtrByName(fromWindow)
+        If *Source
+          script = "pbjsHandleResponse('" + EscapeJSON(~"{\"requestId\":" + Str(requestId) +
+                                                       ~",\"fromWindow\":\"" + EscapeJSONValue(toWindow) +
+                                                       ~"\",\"data\":{\"error\":\"" + EscapeJSONValue(errorMsg) + ~"\"}}") + "');"
+          If *Source\Ready
+            Sink::Exec(*Source\Sink, script)
+          Else
+            QueuePending(*Source, script)
+          EndIf
         EndIf
       EndIf
       
@@ -274,11 +313,11 @@ Module JSBridge
       paramsJson = GetJSONString(GetJSONMember(JSONValue(json), "params"))
       dataJson = GetJSONString(GetJSONMember(JSONValue(json), "data"))
       
-      messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"" + fromWindow + 
-                    ~"\",\"name\":\"" + name + 
-                    ~"\",\"params\":" + paramsJson + 
+      messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"" + EscapeJSONValue(fromWindow) +
+                    ~"\",\"name\":\"" + EscapeJSONValue(name) +
+                    ~"\",\"params\":" + paramsJson +
                     ~",\"data\":" + dataJson + ~"}"
-      
+
       script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
 
       ForEach JSWindows()
@@ -326,22 +365,17 @@ Module JSBridge
         EndIf
       Next
       
-      sourceWindow = GetJSWindowByName(fromWindow)
-      If sourceWindow > -1
-        ForEach JSWindows()
-          If JSWindows()\Window = sourceWindow
-            script = "pbjsSetGetAllExpectedCount(" + Str(requestId) + ", " + Str(count) + ");"
-            Sink::Exec(JSWindows()\Sink, script)
-            Break
-          EndIf
-        Next
+      Protected *Source.JSWindow = GetJSWindowPtrByName(fromWindow)
+      If *Source
+        script = "pbjsSetGetAllExpectedCount(" + Str(requestId) + ", " + Str(count) + ");"
+        Sink::Exec(*Source\Sink, script)
       EndIf
       
       If count > 0
-        messageJson = ~"{\"type\":\"getAll\",\"fromWindow\":\"" + fromWindow + 
-                      ~"\",\"name\":\"" + name + 
-                      ~"\",\"params\":" + paramsJson + 
-                      ~",\"data\":" + dataJson + 
+        messageJson = ~"{\"type\":\"getAll\",\"fromWindow\":\"" + EscapeJSONValue(fromWindow) +
+                      ~"\",\"name\":\"" + EscapeJSONValue(name) +
+                      ~"\",\"params\":" + paramsJson +
+                      ~",\"data\":" + dataJson +
                       ~",\"requestId\":" + Str(requestId) + ~"}"
         
         script = "pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
@@ -397,16 +431,7 @@ Module JSBridge
           ProcedureReturn
         EndIf
         ; --- SYSTEM MESSAGE HANDLING (e.g. Close Check) ---
-        Protected *SourceJSWindow.JSWindow = 0
-        Protected sourceWindowID.i = GetJSWindowByName(fromWindow)
-        If sourceWindowID > -1
-           ForEach JSWindows()
-             If JSWindows()\Window = sourceWindowID
-               *SourceJSWindow = @JSWindows()
-               Break
-             EndIf
-           Next
-        EndIf
+        Protected *SourceJSWindow.JSWindow = GetJSWindowPtrByName(fromWindow)
         
         If *SourceJSWindow
           ; Check response data
@@ -448,24 +473,19 @@ Module JSBridge
         ; -----------------------------------------------
       Else
       
-        responseJson = ~"{\"requestId\":" + Str(requestId) + 
-                       ~",\"fromWindow\":\"" + fromWindow + 
-                       ~"\",\"data\":" + dataJson + 
+        responseJson = ~"{\"requestId\":" + Str(requestId) +
+                       ~",\"fromWindow\":\"" + EscapeJSONValue(fromWindow) +
+                       ~"\",\"data\":" + dataJson +
                        ~",\"isGetAll\":" + Str(isGetAll) + ~"}"
         
-        Protected targetWindow.i = GetJSWindowByName(toWindow)
-        If targetWindow > -1
-          ForEach JSWindows()
-            If JSWindows()\Window = targetWindow
-              script = "pbjsHandleResponse('" + EscapeJSON(responseJson) + "');"
-              If JSWindows()\Ready
-                 Sink::Exec(JSWindows()\Sink, script)
-              Else
-                 QueuePending(@JSWindows(), script)
-              EndIf
-              Break
-            EndIf
-          Next
+        Protected *ReplyTarget.JSWindow = GetJSWindowPtrByName(toWindow)
+        If *ReplyTarget
+          script = "pbjsHandleResponse('" + EscapeJSON(responseJson) + "');"
+          If *ReplyTarget\Ready
+            Sink::Exec(*ReplyTarget\Sink, script)
+          Else
+            QueuePending(*ReplyTarget, script)
+          EndIf
         EndIf
       
       EndIf
@@ -531,8 +551,20 @@ Module JSBridge
   Procedure SendCloseCheck(*JSWindow.JSWindow)
     Debug "[SEND_CLOSE_CHECK] ENTER. Window=" + *JSWindow\Name
     If *JSWindow And Sink::IsValid(*JSWindow\Sink)
-      Protected requestId.i = ElapsedMilliseconds() 
-      
+      ; Same counter SendSystemRequest uses — NOT ElapsedMilliseconds(), which
+      ; this used to be. RequestClose issues a check to every in-scope window in
+      ; one tight loop, so same-millisecond collisions are routine, not rare:
+      ; N windows could all be asked with the SAME requestId. It happened to be
+      ; harmless only because close replies are routed by SOURCE WINDOW rather
+      ; than by id — a coincidence, and a trap for anyone extending the protocol
+      ; to correlate replies properly.
+      NextSystemRequestId + 1
+      If NextSystemRequestId <= 0
+        NextSystemRequestId = 1
+      EndIf
+      Protected requestId.i = NextSystemRequestId
+
+
       Protected messageJson.s
       messageJson = ~"{\"type\":\"get\",\"fromWindow\":\"system\",\"name\":\"close-window\",\"params\":{},\"data\":{},\"requestId\":" + Str(requestId) + "}"
       
@@ -566,7 +598,7 @@ Module JSBridge
   Procedure SendSystemMessage(*JSWindow.JSWindow, name.s, paramsJson.s)
     If *JSWindow And Sink::IsValid(*JSWindow\Sink)
       Protected messageJson.s
-      messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"system\",\"name\":\"" + name +
+      messageJson = ~"{\"type\":\"send\",\"fromWindow\":\"system\",\"name\":\"" + EscapeJSONValue(name) +
                     ~"\",\"params\":" + paramsJson + ~",\"data\":{}}"
       Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
       If *JSWindow\Ready
@@ -595,7 +627,7 @@ Module JSBridge
     PendingSystemRequests(Str(requestId))\Name = requestName
 
     Protected messageJson.s
-    messageJson = ~"{\"type\":\"get\",\"fromWindow\":\"system\",\"name\":\"" + requestName +
+    messageJson = ~"{\"type\":\"get\",\"fromWindow\":\"system\",\"name\":\"" + EscapeJSONValue(requestName) +
                   ~"\",\"params\":" + paramsJson + ~",\"data\":{},\"requestId\":" + Str(requestId) + "}"
     Protected script.s = "if(window.pbjsHandleMessage) window.pbjsHandleMessage('" + EscapeJSON(messageJson) + "');"
     If *JSWindow\Ready
@@ -645,18 +677,19 @@ Module JSBridge
   ; ============================================================================
   
   
+  ; Everything in the bridge script that does NOT vary per window, decoded and
+  ; substituted once. Only the window name is per-instance.
+  ;
+  ; This used to be rebuilt from scratch on every call: a UTF-8 decode of the
+  ; whole embedded script plus three or four full-string ReplaceStrings. It is
+  ; called once per window created — and every pool spare is a window, so
+  ; warming a pool paid for it repeatedly, on the UI thread, for a result that
+  ; differed only in one identifier.
+  Global bridgeTemplate.s = ""
+  Global bridgeTemplateDnd.s = ""   ; the DnD flag the cached template was built with
+
   Procedure.s PrepateBridgeScript(windowName.s)
-    
-    Protected bodyPos.i, bodyEndPos.i, initScript.s, bridgeScriptWithName.s
-    
-    
-    ; Load the bridge script
-    Define *buffer = ?BridgeScript
-    Define size.i = ?EndBridgeScript - ?BridgeScript
-    bridgeScript = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
-    
-    bridgeScript = ReplaceString(bridgeScript, "_WINDOW_NAME_INJECTED_BY_NATIVE_", windowName)
-    
+
     Protected osName.s
     CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
       osName = "mac"
@@ -668,8 +701,6 @@ Module JSBridge
       osName = "other"
     CompilerEndIf 
     
-    bridgeScript = ReplaceString(bridgeScript, "_OS_NAME_INJECTED_BY_NATIVE_", osName)
-
     ; Synchronous "is the DnD service actually live" flag — read once at page
     ; load, before pbjs.drag exists as an object at all. DndServiceDeclare.pb
     ; (included ahead of this file) exposes IsEnabled() precisely so this
@@ -683,8 +714,23 @@ Module JSBridge
     Else
       dndEnabled = "0"
     EndIf
-    bridgeScript = ReplaceString(bridgeScript, "_DND_ENABLED_INJECTED_BY_NATIVE_", dndEnabled)
-    ProcedureReturn bridgeScript
+
+    ; Build the invariant part once. Keyed on the DnD flag as well as on
+    ; "have we built it": DndService::Init() may run after the first window is
+    ; created, and a template cached before that would report the service as
+    ; unavailable to every later window.
+    If bridgeTemplate = "" Or bridgeTemplateDnd <> dndEnabled
+      Protected *buffer = ?BridgeScript
+      Protected size.i = ?EndBridgeScript - ?BridgeScript
+      Protected built.s = PeekS(*buffer, size, #PB_UTF8|#PB_ByteLength)
+      built = ReplaceString(built, "_OS_NAME_INJECTED_BY_NATIVE_", osName)
+      built = ReplaceString(built, "_DND_ENABLED_INJECTED_BY_NATIVE_", dndEnabled)
+      bridgeTemplate    = built
+      bridgeTemplateDnd = dndEnabled
+    EndIf
+
+    ; The only genuinely per-window substitution.
+    ProcedureReturn ReplaceString(bridgeTemplate, "_WINDOW_NAME_INJECTED_BY_NATIVE_", windowName)
   EndProcedure
   
   Procedure.s WithBridgeScript(html.s, windowName.s)

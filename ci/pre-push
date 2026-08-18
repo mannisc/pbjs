@@ -1,0 +1,35 @@
+#!/usr/bin/env sh
+# =============================================================================
+# git pre-push hook — the everyday gate for the .pb sources.
+# =============================================================================
+# Install:  ln -sf ../../ci/pre-push .git/hooks/pre-push
+# Skip once:  git push --no-verify
+#
+# This exists because the compiler check cannot run on a GitHub-hosted runner
+# (see .github/workflows/ci.yml). For a library this size that is not much of a
+# loss: the leak it guards against — pbjs depending on a symbol that only exists
+# in the host app it is developed inside — is introduced by the person editing
+# pbjs, which is exactly who this hook runs for. It takes well under a second.
+#
+# Degrades rather than blocks: with no PureBasic installed it runs the
+# compiler-free checks and says so, instead of refusing the push.
+# =============================================================================
+
+set -eu
+
+repo=$(git rev-parse --show-toplevel)
+cd "$repo"
+
+echo "[pre-push] static source checks"
+node ci/check-sources.mjs
+
+if ci/purebasic-home.sh >/dev/null 2>&1; then
+  echo "[pre-push] pbcompiler syntax check"
+  ci/check-purebasic.sh
+else
+  echo "[pre-push] PureBasic not found — skipping the compiler check."
+  echo "           Set PUREBASIC_HOME to run it. The self-hosted CI job"
+  echo "           (.github/workflows/purebasic.yml) covers this if enabled."
+fi
+
+echo "[pre-push] OK"

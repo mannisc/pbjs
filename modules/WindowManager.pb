@@ -6,7 +6,17 @@
 DeclareModule WindowManager
   
   Prototype.i HandleMainEvent(Event.i, Window.i, Gadget.i, Type.i)
-  Prototype.i MaxSizeChangedEvent(*Window, widht, height)
+  ; Fired once (not per window) when the desktop bounding box GROWS — a display
+  ; was attached, or the laptop was docked into a larger one. The webview
+  ; gadgets are created at the startup maximum and must be re-sized to the new
+  ; one, which is JSWindow's business, not this module's; JSWindow registers
+  ; through SetMaxSizeChangedHandler below.
+  ;
+  ; This replaced a per-window *MaxSizeChangedProc field that NOTHING ever
+  ; assigned — the poll detected the change and handed it to a null pointer, so
+  ; docking into a bigger display left every webview smaller than its window
+  ; could grow (a maximized window showed a bare stripe down the right/bottom).
+  Prototype.i MaxSizeChangedHandler(width, height)
   Prototype.i ProtoHideWindow(*Window)
   Prototype.i ProtoOpenWindow(*Window)
   Prototype.i ProtoHandleEvent(Event.i, Window.i, Gadget.i, Type.i)
@@ -16,11 +26,29 @@ DeclareModule WindowManager
   Prototype.i ShouldKeepRunning()
   Prototype.i HandleNetworkEvent(netEvent.i, netClient.i)
 
+  ; Called just BEFORE a managed window's list element is physically freed, with
+  ; the AppWindow pointer about to become invalid. Anything holding that pointer
+  ; must drop it here — JSWindow registers a handler to null out its
+  ; JSWindows()\Parent and JSTemplates()\Parent references.
+  ;
+  ; This hook is what makes removal safe at all. Until now the list never
+  ; actually shrank (the DeleteElement guarding it was unreachable — see
+  ; HandleWindowEvent), so raw AppWindow pointers stayed valid by accident.
+  Prototype.i ManagedWindowRemoving(*Window)
+
   Structure AppWindow
     Title.s
     Window.i
+    ; Native handle, captured at AddManagedWindow time. WindowID() is
+    ; unrecoverable once the window is closed, so the key needed to remove this
+    ; window's ManagedWindowsHandles() entry has to be kept here — reading it at
+    ; removal time is what made the old cleanup impossible.
+    Hwnd.i
+    ; Marked by ForgetManagedWindow, freed by SweepRemovedWindows. Removal is
+    ; deferred because callers are almost always inside a ForEach over this very
+    ; list (HandleWindowEvent → HandleEvent → CloseJSWindow).
+    PendingRemoval.b
     *HandleProc.ProtoHandleEvent
-    *MaxSizeChangedProc.MaxSizeChangedEvent
     *HideProc.ProtoHideWindow
     *CloseProc.ProtoCloseWindow
     *CleanupProc.ProtoCleanupWindow
@@ -42,7 +70,18 @@ DeclareModule WindowManager
   Declare CleanupManagedWindows()
   Declare CloseManagedWindows()
   Declare GetManagedWindowFromWindowHandle(hWnd)
+  ; Drop a window from the registries. Call this ONLY when the window is really
+  ; destroyed — never for a window that is merely hidden, and in particular
+  ; never for a pool spare or a recycled template instance, which are hidden and
+  ; reused and must keep both their registry entries. JSWindow calls it from the
+  ; teardown branch of CloseJSWindow, past the recycle early-return.
+  Declare ForgetManagedWindow(*Window.AppWindow)
+  Declare SetManagedWindowRemovingHandler(*proc)
+  Declare SweepRemovedWindows()
   Declare WindowMaxSizeChanged()
+  ; Install the desktop-grew handler (see Prototype MaxSizeChangedHandler).
+  ; One handler for the whole app; JSWindow registers itself.
+  Declare SetMaxSizeChangedHandler(*proc)
   Declare UpdateMaxDesktopSize()
   Declare HandleWindowEvent(Event, EventWindow, EventGadget,EventType)
   
@@ -69,8 +108,25 @@ Module WindowManager
   
   
   Global OSVersion = OSVersion()
-  
-  
+
+  ; Set via SetMaxSizeChangedHandler; called by WindowMaxSizeChanged.
+  Global MaxSizeChangedProc.MaxSizeChangedHandler = 0
+
+  ; Set via SetManagedWindowRemovingHandler; called by SweepRemovedWindows.
+  Global ManagedWindowRemovingProc.ManagedWindowRemoving = 0
+  ; Non-zero only while removals are outstanding, so the per-tick sweep is a
+  ; single integer test in the overwhelmingly common case.
+  Global PendingRemovalCount = 0
+  ; Which PB window currently carries #Timer_CheckDesktop. The timer belongs to
+  ; a window, so it dies with it — if that window is the one being removed, the
+  ; desktop poll has to be re-homed or it stops silently (and with it the
+  ; monitor-topology response).
+  Global TimerWindow = 0
+  ; Set when the window carrying #Timer_CheckDesktop is removed; consumed by
+  ; SweepRemovedWindows, which re-arms the timer on a surviving window.
+  Global TimerNeedsRehome = #False
+
+
   Procedure InitWindowManager()
     Global NewMap ManagedWindowsHandles.HandleInfo()
     Global NewList ManagedWindows.AppWindow()
@@ -86,14 +142,105 @@ Module WindowManager
     ManagedWindows()\HideProc = *HideProc
     ManagedWindows()\CloseProc = *CloseProc
     ManagedWindows()\CleanupProc = *CleanupProc
-    ManagedWindowsHandles(Str(WindowID(window)))\Window = @ManagedWindows()
-    
+    ManagedWindows()\Hwnd = WindowID(window)
+    ManagedWindows()\PendingRemoval = #False
+    ManagedWindowsHandles(Str(ManagedWindows()\Hwnd))\Window = @ManagedWindows()
+
     If Not TimerAdded
       TimerAdded = #True
+      TimerWindow = window
       AddWindowTimer(window, #Timer_CheckDesktop, 500)
-    EndIf 
-    
+    EndIf
+
     ProcedureReturn @ManagedWindows()
+  EndProcedure
+
+  Procedure SetManagedWindowRemovingHandler(*proc)
+    ManagedWindowRemovingProc = *proc
+  EndProcedure
+
+  ; Take a destroyed window out of the registries.
+  ;
+  ; ⚠ Destroyed, not hidden. A pool spare and a recycled template instance are
+  ; both hidden-but-alive and are re-shown later by OpenInstance; calling this
+  ; for one of those would strip the handle-map entry that routes its native
+  ; events and leave the pool holding a window the manager no longer knows.
+  ; CloseJSWindow's recycle path returns before the teardown that calls this.
+  Procedure ForgetManagedWindow(*Window.AppWindow)
+    If *Window = 0 Or *Window\PendingRemoval
+      ProcedureReturn
+    EndIf
+
+    ; Keyed by the handle captured at Add time: WindowID() cannot be read back
+    ; once the window is gone, and this map is the one that actually bites —
+    ; the OS recycles native handles, so a stale entry lets a NEW window alias a
+    ; dead AppWindow and route its events into freed memory.
+    If *Window\Hwnd And FindMapElement(ManagedWindowsHandles(), Str(*Window\Hwnd))
+      DeleteMapElement(ManagedWindowsHandles(), Str(*Window\Hwnd))
+    EndIf
+
+    ; The desktop poll lives on ONE window (whichever was added first), so it
+    ; dies with that window and nothing reports a timer that stopped. Only flag
+    ; it here — re-homing has to look at the list, and every caller of this
+    ; procedure is already inside a ForEach over it. PureBasic lists have a
+    ; single current-element pointer, so a nested walk would derail the outer
+    ; loop. SweepRemovedWindows does the re-home, outside any iteration and
+    ; after the dead entries are actually gone.
+    If TimerAdded And TimerWindow = *Window\Window
+      TimerWindow = 0
+      TimerNeedsRehome = #True
+    EndIf
+
+    *Window\PendingRemoval = #True
+    PendingRemovalCount + 1
+  EndProcedure
+
+  ; Physically free everything ForgetManagedWindow marked. Runs from the event
+  ; loop, i.e. outside any ForEach over ManagedWindows() — which is the whole
+  ; reason removal is two-phase.
+  Procedure SweepRemovedWindows()
+    If PendingRemovalCount = 0
+      ProcedureReturn
+    EndIf
+
+    ; Index-walked rather than ForEach: PureBasic's DeleteElement leaves the
+    ; current-element pointer somewhere version-dependent, and this loop must
+    ; not depend on which.
+    Protected i = 0
+    While i < ListSize(ManagedWindows())
+      SelectElement(ManagedWindows(), i)
+      If ManagedWindows()\PendingRemoval
+        ; Last chance for anyone holding this pointer to drop it — after
+        ; DeleteElement it is freed memory (JSWindow\Parent, JSTemplates\Parent).
+        If ManagedWindowRemovingProc
+          ManagedWindowRemovingProc(@ManagedWindows())
+        EndIf
+        Debug "[WM] SweepRemovedWindows: freeing '" + ManagedWindows()\Title + "'"
+        DeleteElement(ManagedWindows())
+      Else
+        i + 1
+      EndIf
+    Wend
+
+    PendingRemovalCount = 0
+
+    ; Re-arm the desktop poll on a survivor. Safe here and nowhere else: the
+    ; dead records are gone, so this cannot pick a window that is about to be
+    ; freed, and nothing is iterating the list.
+    If TimerNeedsRehome
+      TimerNeedsRehome = #False
+      ForEach ManagedWindows()
+        If IsWindow(ManagedWindows()\Window)
+          TimerWindow = ManagedWindows()\Window
+          AddWindowTimer(TimerWindow, #Timer_CheckDesktop, 500)
+          Break
+        EndIf
+      Next
+      If TimerWindow = 0
+        ; No window left to host it; the next AddManagedWindow re-arms.
+        TimerAdded = #False
+      EndIf
+    EndIf
   EndProcedure
   
   Procedure OpenManagedWindow(*Window.AppWindow,manualOpen=#False)
@@ -126,14 +273,21 @@ Module WindowManager
               ; Show window instantly (no animation) by positioning it off-screen
               Protected minValue = -1000000000 ;lowest min value possible
               SetWindowPos_(hWnd, 0, minValue, minValue, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW | #SWP_NOACTIVATE)
-              ; Now paint while it's "visible" (but off-screen)
-              Protected rect.RECT
-              Protected hdc = GetDC_(hWnd)
-              GetClientRect_(hWnd, @rect)
-              FillRect_(hdc, @rect, brush)
-              ReleaseDC_(hWnd, hdc)
+              ; Force a paint while the window is "visible" but off-screen.
+              ;
+              ; A GetDC/GetClientRect/FillRect/ReleaseDC block used to sit here.
+              ; It was dead code: the brush it filled with was never assigned, so
+              ; FillRect got a NULL HBRUSH and drew nothing. The two Redraw calls
+              ; below are what actually paints, and they always were.
               UpdateWindow_(hWnd)
               RedrawWindow_(hWnd, #Null, #Null, #RDW_UPDATENOW | #RDW_ERASE | #RDW_INVALIDATE | #RDW_ALLCHILDREN)
+              ; ⚠ Blocks the main thread for two frames. It buys the compositor
+              ; time to present the off-screen paint before the move below, and
+              ; it is the reason this path looks flash-free on Win11. Left as-is
+              ; deliberately: it is a timing value on a platform not available
+              ; here, so changing it would be a guess dressed as a cleanup.
+              ; Revisit with 2.5 (the scheduler), which can replace the block
+              ; with a deferred event instead of shortening it.
               Delay(32) ; 16 -  frame at 60fps
                         ; NOW move to correct position WITH animation
               SetWindowPos_(hWnd, 0, winRect\left, winRect\top, 0, 0, #SWP_NOSIZE | #SWP_NOZORDER | #SWP_SHOWWINDOW)
@@ -178,6 +332,7 @@ Module WindowManager
   ; CloseProc that tears the WebView down.
   Procedure HideAllManagedWindows()
     ForEach ManagedWindows()
+      If ManagedWindows()\PendingRemoval : Continue : EndIf
       If ManagedWindows()\Open
         HideManagedWindow(@ManagedWindows())
         ; A managed window without a HideProc would otherwise stay Open and
@@ -191,6 +346,12 @@ Module WindowManager
   EndProcedure
 
 
+  ; ⚠ Deliberately does NOT deregister the window, even though the name suggests
+  ; it might. CloseProc is free to decide this "close" is really a RECYCLE:
+  ; JSWindow's CloseJSWindow hides a template instance and hands it back to the
+  ; pool, returning a live window that must keep both registry entries and will
+  ; be re-shown by a later OpenInstance. Only the code that truly tears a window
+  ; down knows the difference, so it calls ForgetManagedWindow itself.
   Procedure CloseManagedWindow(*Window.AppWindow)
     Debug "[WM] CloseManagedWindow: title='" + *Window\Title + "' Open=" + Str(*Window\Open)
     If *Window\Window
@@ -204,6 +365,7 @@ Module WindowManager
   
   Procedure CloseManagedWindows()
     ForEach ManagedWindows()
+      If ManagedWindows()\PendingRemoval : Continue : EndIf
       CloseManagedWindow(@ManagedWindows())
     Next
   EndProcedure
@@ -213,6 +375,8 @@ Module WindowManager
   Procedure CleanupManagedWindows()
     NewList Windows()
     ForEach ManagedWindows()
+      ; Already torn down and awaiting the sweep — its PB window is gone.
+      If ManagedWindows()\PendingRemoval : Continue : EndIf
       If ManagedWindows()\Open
         AddElement(Windows())
         Windows() = ManagedWindows()\Window
@@ -270,20 +434,32 @@ Module WindowManager
       If Event = #PB_Event_CloseWindow
         Debug "[WM] HandleWindowEvent: CLOSE for EventWindow=" + Str(EventWindow)
       EndIf
+      Protected KeepWindow.i
       ForEach ManagedWindows()
+        If ManagedWindows()\PendingRemoval : Continue : EndIf
         If ManagedWindows()\HandleProc
 
+          ; #CustomWindowEvent reaches even a non-Open window on purpose: that is
+          ; how a pool spare still receives #Event_Prepare_Complete and friends
+          ; while it sits hidden and unclaimed.
           If Event = #CustomWindowEvent Or ManagedWindows()\Open
-            If EventWindow = ManagedWindows()\Window And
-               KeepWindow = CallFunctionFast(ManagedWindows()\HandleProc, @ManagedWindows(), Event,EventGadget,EventType)
+            If EventWindow = ManagedWindows()\Window
+              ; This used to read `... And KeepWindow = CallFunctionFast(...)`,
+              ; which in PureBasic is a COMPARISON, not an assignment. KeepWindow
+              ; was always 0 there, so the test was `0 = <handler result>`; every
+              ; handler returns #True, so the body below — including the removal
+              ; — was unreachable. Written honestly it is a call, then a test.
+              KeepWindow = CallFunctionFast(ManagedWindows()\HandleProc, @ManagedWindows(), Event, EventGadget, EventType)
               If Event = #PB_Event_CloseWindow
                 Debug "[WM] HandleWindowEvent: dispatched close to '" + ManagedWindows()\Title + "' KeepWindow=" + Str(KeepWindow)
               EndIf
               If Not KeepWindow
-                Debug "[WM] HandleWindowEvent: DeleteElement for '" + ManagedWindows()\Title + "'"
-                DeleteElement(ManagedWindows())
-                Break
+                ; Deregister rather than DeleteElement here: we are inside the
+                ; ForEach, and the handle map has to go with the list entry.
+                Debug "[WM] HandleWindowEvent: forgetting '" + ManagedWindows()\Title + "'"
+                ForgetManagedWindow(@ManagedWindows())
               EndIf
+              Break
             EndIf
           EndIf
         EndIf
@@ -326,9 +502,15 @@ Module WindowManager
       If *ShouldKeepRunning <> 0
         OpenedWindowExists = CallFunctionFast(*ShouldKeepRunning) 
       EndIf 
+      ; Free anything deregistered during this tick's dispatch. Must happen
+      ; here: every caller of ForgetManagedWindow is itself inside a ForEach
+      ; over ManagedWindows(), so the actual DeleteElement cannot run there.
+      SweepRemovedWindows()
+
       If Not OpenedWindowExists
         ForEach ManagedWindows()
-          If ManagedWindows()\Open 
+          If ManagedWindows()\PendingRemoval : Continue : EndIf
+          If ManagedWindows()\Open
             OpenedWindowExists = #True
             Break
           EndIf
@@ -382,13 +564,15 @@ Module WindowManager
   EndProcedure
   
   
+  Procedure SetMaxSizeChangedHandler(*proc)
+    MaxSizeChangedProc = *proc
+  EndProcedure
+
   Procedure WindowMaxSizeChanged()
-    ForEach ManagedWindows()
-      If ManagedWindows()\Window And ManagedWindows()\MaxSizeChangedProc
-        CallFunctionFast(ManagedWindows()\MaxSizeChangedProc)
-      EndIf
-    Next 
-  EndProcedure 
+    If MaxSizeChangedProc
+      CallFunctionFast(MaxSizeChangedProc, MaxDesktopWidth, MaxDesktopHeight)
+    EndIf
+  EndProcedure
 EndModule
 
 ; IDE Options = PureBasic 6.21 - C Backend (MacOS X - arm64)

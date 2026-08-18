@@ -28,6 +28,7 @@ DeclareModule JSWindow
     #Event_Prepare_Uncloak
     #Event_Show_WebView
     #Event_Force_Content_Visible
+    #Event_Close_Watchdog
   EndEnumeration
   Enumeration #PB_Event_FirstCustomValue
     #JSWindow_Behaviour_HideWindow
@@ -154,6 +155,12 @@ DeclareModule JSWindow
     CascadeX.i
     CascadeY.i
 
+    ; Last payload handed to pbjsUpdateScale, so an identical one can be
+    ; dropped instead of re-injected. See UpdateWebViewScale.
+    LastScaleW.i
+    LastScaleH.i
+    LastScaleMax.b
+
   EndStructure
   
   Global NewMap JSWindows.JSWindow()
@@ -225,9 +232,12 @@ EndDeclareModule
 
 Module JSWindow
   UseModule OsTheme
-  UseModule Ptym
-  
-  Declare UpdateWebViewScale(gadget, width, height)
+  ; Build-mode flags (#PBJS_DevMode, #PBJS_EnableDevTools) — pbjsConfig.pb.
+  ; PB modules cannot see top-level constants, so this UseModule is what makes
+  ; them visible here at all.
+  UseModule PbjsConfig
+
+  Declare UpdateWebViewScale(gadget, width, height, force.b = #False)
   Declare HandleEvent(*Window.AppWindow, Event.i, Gadget.i, Type.i)
   Declare ForceContentVisible(window)
   Declare JSIsWindowOpen(JsonParameters.s)
@@ -297,6 +307,16 @@ Module JSWindow
   ; handshake before #Event_Prepare_Complete fires anyway (replaces the old
   ; prepare thread's 200 × 10 ms poll — see PrepareJSWindow).
   #PBJS_PrepareReadyTimeoutMs = 2000
+
+  ; How long a close-veto check may go unanswered before the close is treated
+  ; as DECLINED and the pending scope is cleared. See CheckCloseWatchdog.
+  ;
+  ; Deliberately generous: an onCloseWindow handler is allowed to be slow —
+  ; async work, a "save your changes?" prompt awaiting the user. Firing early
+  ; would close a window out from under a legitimate handler still deciding,
+  ; which is a data-loss bug, whereas firing late costs a few seconds on a page
+  ; that is already broken. 4 s sits clear of any handler doing real work.
+  #PBJS_CloseCheckTimeoutMs = 4000
 
   ; "#rrggbb" for a PureBasic RGB() colour. The injected page style needs the
   ; host's theme background as CSS so the document canvas is already painted in
@@ -380,24 +400,45 @@ Module JSWindow
     PostEventAfterDelay(window, delayMs, #Event_Content_Ready)
   EndProcedure
   
-  Procedure LogToDebugFile(message.s)
-    Protected logDir.s = GetCurrentDirectory() + "logs/"
-    Protected filename.s = logDir + "debug.log"
-    
-    If FileSize(logDir) <> -2
-      CreateDirectory(logDir)
-    EndIf
-    
-    Protected file = OpenFile(#PB_Any, filename, #PB_File_Append)
-    If Not file
-      file = CreateFile(#PB_Any, filename)
-    EndIf
-    
-    If file
-      WriteStringN(file, "[PBJS] " + FormatDate("%hh:%ii:%ss", Date()) + " " + message)
-      CloseFile(file)
-    EndIf
-  EndProcedure
+  ; Append one line to logs/debug.log — DEV BUILDS ONLY.
+  ;
+  ; It opens and closes the file per line, and it is called from the ready path
+  ; that every window and every pool spare runs through, so in a shipped build
+  ; it was paying filesystem syscalls per window for output nobody reads. Worse,
+  ; it wrote into GetCurrentDirectory() — wherever the app happened to be
+  ; launched from, which for an installed app may be read-only or not the user's
+  ; to write to.
+  ;
+  ; Compiled out entirely in release: the macro body is empty, so the calls and
+  ; even their string concatenation disappear rather than becoming no-op calls.
+  CompilerIf #PBJS_DevMode
+    Procedure LogToDebugFileImpl(message.s)
+      Protected logDir.s = GetCurrentDirectory() + "logs/"
+      Protected filename.s = logDir + "debug.log"
+
+      If FileSize(logDir) <> -2
+        CreateDirectory(logDir)
+      EndIf
+
+      Protected file = OpenFile(#PB_Any, filename, #PB_File_Append)
+      If Not file
+        file = CreateFile(#PB_Any, filename)
+      EndIf
+
+      If file
+        WriteStringN(file, "[PBJS] " + FormatDate("%hh:%ii:%ss", Date()) + " " + message)
+        CloseFile(file)
+      EndIf
+    EndProcedure
+
+    Macro LogToDebugFile(message)
+      LogToDebugFileImpl(message)
+    EndMacro
+  CompilerElse
+    ; No procedure at all, and the argument expression is never evaluated.
+    Macro LogToDebugFile(message)
+    EndMacro
+  CompilerEndIf
   Procedure JSReadyState(JsonParameters.s)
     LogToDebugFile("JSReadyState Raw: " + JsonParameters)
     
@@ -952,13 +993,35 @@ Module JSWindow
 
 
 
-  Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height)
+  ; force: re-send even if the payload is unchanged. Only the monitor-topology
+  ; response needs it — there the gadget's backing size changed while the
+  ; window's dimensions did not, so the page must be told again.
+  Procedure UpdateWebViewScale(*JSWindow.JSWindow, width, height, force.b = #False)
 
     ; Third argument is the maximized flag, so a page-drawn maximize/restore
     ; button can flip its icon without polling. Extra arg is ignored by any
     ; older consumer that only declared (w, h).
-    Protected maximizedArg.s = "false"
+    Protected maximized.b = #False
     If GetWindowState(*JSWindow\Window) = #PB_Window_Maximize
+      maximized = #True
+    EndIf
+
+    ; Drop a repeat of the payload we last sent. Two independent sources feed
+    ; this per resize step on Windows — the WM_SIZE branch of WindowCallback and
+    ; PureBasic's own #PB_Event_SizeWindow — so a drag could inject the same
+    ; script twice per frame, and WM_SIZE also fires for moves and state changes
+    ; that leave the size alone. Deduping here rather than at either call site
+    ; covers both without depending on which of the two actually runs. (The mac
+    ; frame observer already does this locally; this is the same idea at the
+    ; shared choke point.)
+    If Not force
+      If width = *JSWindow\LastScaleW And height = *JSWindow\LastScaleH And maximized = *JSWindow\LastScaleMax
+        ProcedureReturn
+      EndIf
+    EndIf
+
+    Protected maximizedArg.s = "false"
+    If maximized
       maximizedArg = "true"
     EndIf
     Protected script$ = "if(window.pbjsUpdateScale) window.pbjsUpdateScale(" + Str(width) + "," + Str(height) + "," + maximizedArg + ");"
@@ -979,9 +1042,86 @@ Module JSWindow
     If Not IsGadget(*JSWindow\WebViewGadget) Or width = 0 Or height = 0
       ProcedureReturn
     EndIf
+
+    ; Recorded only once the send actually happens — the early returns above
+    ; (headless, minimised, zero-size) must not poison the cache, or the next
+    ; genuine update with those same numbers would be dropped.
+    *JSWindow\LastScaleW   = width
+    *JSWindow\LastScaleH   = height
+    *JSWindow\LastScaleMax = maximized
+
     WebViewExecuteScript(*JSWindow\WebViewGadget, script$)
   EndProcedure
   
+  ; A managed window's AppWindow record is about to be freed. Drop every
+  ; reference this module holds to it, or the next parent-walk dereferences
+  ; freed memory.
+  ;
+  ; This matters now in a way it never did before: until the dispatch condition
+  ; in HandleWindowEvent was fixed, the list never actually shrank, so these raw
+  ; pointers stayed valid by accident. `\Parent` is walked by HideJSWindow,
+  ; RequestClose, ResetCloseChecks and CheckCloseProgress — all of which follow
+  ; the chain upward and read `*Current\Window`.
+  Procedure HandleManagedWindowRemoving(*Window.AppWindow)
+    If *Window = 0 : ProcedureReturn : EndIf
+
+    ForEach JSWindows()
+      If JSWindows()\Parent = *Window
+        JSWindows()\Parent = 0
+      EndIf
+    Next
+
+    ; Templates outlive every instance they build, so a template still pointing
+    ; at a dead parent would hand it to every future spare.
+    ForEach JSTemplates()
+      If JSTemplates()\Parent = *Window
+        JSTemplates()\Parent = 0
+      EndIf
+    Next
+  EndProcedure
+
+  ; ---------------------------------------------------------------------------
+  ;- Monitor topology changed (the desktop bounding box grew)
+  ; ---------------------------------------------------------------------------
+  ; Every webview gadget is created ONCE at the startup desktop maximum
+  ; (CreateJSWindow: WebViewGadget(..., MaxDesktopWidth, MaxDesktopHeight)) and
+  ; is then only ever repositioned, never resized — the oversize-and-clip trick
+  ; that keeps live resizing smooth. Attach a bigger display and that ceiling is
+  ; suddenly too low: a window can now grow past its own webview, so a maximized
+  ; window paints the page over part of its surface and leaves a bare stripe
+  ; down the right and bottom edges.
+  ;
+  ; WindowManager already detected this and called into a per-window callback
+  ; field that nothing ever assigned. This is the consumer that was missing.
+  ; Registered from CreateJSWindow (WindowManager is included first, so it
+  ; cannot reach into this module by itself).
+  ;
+  ; Only w/h are touched: x/y carry real state elsewhere (spares are parked far
+  ; off-screen before content is ready, and #Event_Content_Ready brings them
+  ; back to 0,0), so #PB_Ignore both.
+  Procedure HandleMaxDesktopSizeChanged(width, height)
+    Debug "[JSWindow] desktop grew to " + Str(width) + "x" + Str(height) + " — resizing webviews"
+    If width <= 0 Or height <= 0
+      ProcedureReturn
+    EndIf
+
+    ForEach JSWindows()
+      If MapKey(JSWindows()) = "" : Continue : EndIf
+      If JSWindows()\Headless : Continue : EndIf          ; browser tab owns its own viewport
+      If Not IsGadget(JSWindows()\WebViewGadget) : Continue : EndIf
+
+      ResizeGadget(JSWindows()\WebViewGadget, #PB_Ignore, #PB_Ignore, width, height)
+
+      ; The page sizes itself off pbjsUpdateScale, not off the gadget, so the
+      ; CSS variables have to be re-sent or the layout keeps the old ceiling.
+      ; Forced: the window's own dimensions have NOT changed here — only the
+      ; gadget behind it did — so the ordinary dedupe would drop this.
+      If IsWindow(JSWindows()\Window)
+        UpdateWebViewScale(@JSWindows(), WindowWidth(JSWindows()\Window), WindowHeight(JSWindows()\Window), #True)
+      EndIf
+    Next
+  EndProcedure
+
   Procedure GetWebView(*Window.AppWindow)
     Protected windowKey.s = Str(*Window\Window)
     If FindMapElement(JSWindows(), windowKey)
@@ -1506,6 +1646,20 @@ Module JSWindow
     PostEvent(#CustomWindowEvent, *Args\Window, 0, #Event_Loaded_Html, *Args)
   EndProcedure
 
+  ; Decoded embedded HTML, keyed by its source range. Every window built from
+  ; the same template decodes byte-identical bytes, so a pool of N spares paid
+  ; for N decodes of the same multi-megabyte string.
+  ;
+  ; MAIN THREAD ONLY — read by StartLoadHtml, written by the #Event_Loaded_Html
+  ; handler, both of which run there. The worker thread still never touches a
+  ; map, which is the invariant the whole threading scheme rests on (PB maps
+  ; share one current-element pointer, and a bare read inserts).
+  Global NewMap DecodedHtmlCache.s()
+
+  Procedure.s HtmlCacheKey(*htmlStart, *htmlEnd)
+    ProcedureReturn Str(*htmlStart) + ":" + Str(*htmlEnd)
+  EndProcedure
+
   ; Main-thread spawner: resolves the html source range while JSWindows() is
   ; safe to read.
   Procedure StartLoadHtml(*JSWindow.JSWindow)
@@ -1513,6 +1667,16 @@ Module JSWindow
     *Args\Window    = *JSWindow\Window
     *Args\HtmlStart = *JSWindow\HtmlStart
     *Args\HtmlEnd   = *JSWindow\HtmlEnd
+
+    ; Cache hit: skip both the decode and the thread. The event still carries
+    ; the payload, so the handler downstream is identical either way.
+    Protected key.s = HtmlCacheKey(*Args\HtmlStart, *Args\HtmlEnd)
+    If FindMapElement(DecodedHtmlCache(), key)
+      *Args\Html = DecodedHtmlCache()
+      PostEvent(#CustomWindowEvent, *Args\Window, 0, #Event_Loaded_Html, *Args)
+      ProcedureReturn
+    EndIf
+
     If CreateThread(@LoadHtml(), *Args) = 0
       FreeStructure(*Args)
     EndIf
@@ -1544,6 +1708,12 @@ Module JSWindow
   
   Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False)
 
+    ; WindowManager polls the desktop bounding box but cannot call into this
+    ; module (it is included first), so the responses are registered from here.
+    ; Idempotent — each handler is a single global, not a list.
+    SetMaxSizeChangedHandler(@HandleMaxDesktopSizeChanged())
+    SetManagedWindowRemovingHandler(@HandleManagedWindowRemoving())
+
     Protected parentWindowID = 0
     If *Parent And IsWindow(*Parent\Window)
       parentWindowID = WindowID(*Parent\Window)
@@ -1561,7 +1731,14 @@ Module JSWindow
       If webWindow
         sink = Sink::RegisterHeadless(windowName)
       Else
-        webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
+        ; Devtools are a build decision, not a default — this page holds the
+        ; full native binding set. #PBJS_EnableDevTools (pbjsConfig.pb) follows
+        ; dev mode unless the host opts a release build in deliberately.
+        CompilerIf #PBJS_EnableDevTools
+          webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight, #PB_WebView_Debug)
+        CompilerElse
+          webViewGadget = WebViewGadget(#PB_Any, 0, 0, MaxDesktopWidth, MaxDesktopHeight)
+        CompilerEndIf
         sink = webViewGadget
       EndIf
 
@@ -1679,7 +1856,7 @@ Module JSWindow
         EndIf
       CompilerEndIf
 
-      CompilerIf Not #Debug_On
+      CompilerIf Not #PBJS_DevMode
         If Not webWindow
           CompilerIf #PB_Compiler_OS = #PB_OS_Windows Or #PB_Compiler_OS = #PB_OS_Linux
             ResizeGadget(webViewGadget,-1000000000,1000000000,#PB_Ignore,#PB_Ignore)
@@ -1725,7 +1902,7 @@ Module JSWindow
       EndIf
       PbjsStartupTraceMark("webview window created: " + windowName)
 
-      CompilerIf  #Debug_On; remote debugging
+      CompilerIf  #PBJS_DevMode; remote debugging
         PreparePbjsBasicScript(*JSWindow.JSWindow)
 
 
@@ -2052,10 +2229,25 @@ Module JSWindow
       *T = PoolRefillQueue()
       DeleteElement(PoolRefillQueue())
     EndIf
+    Protected remaining = ListSize(PoolRefillQueue())
     UnlockMutex(PoolRefillMutex)
 
     If *T And ListSize(*T\PoolHandles()) < *T\PoolTargetSize
       CreateAndPrepareSpare(*T)
+    EndIf
+
+    ; Keep draining. RefillPoolAsync enqueues one entry per missing spare but
+    ; posts a SINGLE event, and this handler consumes exactly one entry — so
+    ; with poolTargetSize > 1 the rest sat in the queue until some unrelated
+    ; future refill happened to post again. The knob was advertised and did
+    ; nothing past 1.
+    ;
+    ; Re-posting instead of looping here is deliberate: one spare per loop tick
+    ; preserves the creation stagger, which is what keeps warming the pool from
+    ; blocking the UI thread in a burst. The queue strictly shrinks (the entry
+    ; is always removed above), so this terminates.
+    If remaining > 0
+      PostEvent(#CustomWindowEvent, 0, 0, #Event_Pool_Refill)
     EndIf
   EndProcedure
 
@@ -2446,7 +2638,7 @@ Module JSWindow
             *JSWindow\Ready = #False
             *JSWindow\Visible = #False
             *JSWindow\NeedsReload = #False  ; cleared again by JSReadyState after reload completes
-            CompilerIf #Debug_On
+            CompilerIf #PBJS_DevMode
               Sink::Exec(*JSWindow\Sink, "window.location.reload();")
             CompilerElse
               If *JSWindow\Headless
@@ -2565,7 +2757,17 @@ Module JSWindow
         EndIf
       CompilerEndIf
       If IsWindow(*Window\Window)
+        ; Name→handle map: same aliasing hazard as the native-handle map. PB
+        ; reuses window NUMBERS, so a stale name entry can resolve to a
+        ; different, live window and route another page's messages into it.
+        If *JSWindow And FindMapElement(WindowsByName(), *JSWindow\Name)
+          DeleteMapElement(WindowsByName(), *JSWindow\Name)
+        EndIf
         DeleteMapElement(JSWindows(), Str(*Window\Window))
+        ; The one place that knows this is a real teardown and not a recycle —
+        ; the recycle path returned long before here. Marks the AppWindow for
+        ; removal; WindowManager frees it from the event loop.
+        ForgetManagedWindow(*Window)
         CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
           ; Enqueue CloseWindow on the main GCD queue so it runs AFTER any
           ; in-flight webview.h `resolve` block (FIFO ordering). See the comment
@@ -2592,6 +2794,23 @@ Module JSWindow
           DeleteMapElement(TemplateInstances(), lookupKey)
         EndIf
       EndIf
+
+      ; Drop this window from the pool list if it was a spare. Without this the
+      ; handle of a DESTROYED spare stays in PoolHandles() forever, and since
+      ; RefillPoolAsync sizes the shortfall as
+      ;   need = PoolTargetSize - ListSize(PoolHandles())
+      ; the stale entry makes an empty pool look full: need <= 0, no refill,
+      ; ever. OpenInstance's claim loop skips the dead handle safely, so the
+      ; symptom is not a crash — it is a pool that quietly stops warming and
+      ; every open falling back to the slow cold path.
+      ForEach *T\PoolHandles()
+        If *T\PoolHandles() = *Window\Window
+          Debug "[CloseJSWindow] Pruned destroyed spare " + Str(*Window\Window) + " from pool"
+          DeleteElement(*T\PoolHandles())
+          Break
+        EndIf
+      Next
+
       RefillPoolAsync(*T)
     EndIf
   EndProcedure
@@ -2671,7 +2890,8 @@ Module JSWindow
   Procedure CancelClose(Reason.s="")
      Debug "CANCEL CLOSE: " + Reason
      ResetCloseChecks(ClosingScope)
-     ClosingScope = 0 
+     ClosingScope = 0
+     CloseWatchdogArmedAt = 0
   EndProcedure
 
   Procedure CheckCloseProgress()
@@ -2748,22 +2968,95 @@ Module JSWindow
       Else
         Protected *RootJS.JSWindow = JSWindows(Str(ClosingScope))
         If *RootJS
-           *RootJS\BypassCloseCheck = #True 
+           *RootJS\BypassCloseCheck = #True
            PostEvent(#PB_Event_CloseWindow, ClosingScope, 0)
-        EndIf 
+        EndIf
         ClosingScope = 0
-      EndIf 
-    EndIf 
-    
+        CloseWatchdogArmedAt = 0
+      EndIf
+    EndIf
+
+  EndProcedure
+
+  ; ---------------------------------------------------------------------------
+  ;- Close-veto watchdog
+  ; ---------------------------------------------------------------------------
+  ; RequestClose sends a close check to every in-scope window and sets the
+  ; single global ClosingScope. Progress happens ONLY when a reply arrives
+  ; (HandleReply → CheckCloseProgress). So a window that never replies — a hung
+  ; page, a handler stuck on a promise that never settles — leaves ClosingScope
+  ; set forever, and because RequestClose returns 0 while a scope is pending,
+  ; EVERY later close click on EVERY window is silently consumed. The app
+  ; becomes unquittable with no error anywhere the user can see.
+  ;
+  ; The watchdog ends that state, and it ends it as DECLINED: an unanswered
+  ; check is not consent. The window stays open; the scope is cleared so the
+  ; close path works again, and the next close click starts a fresh round (which
+  ; will also time out while the page stays hung — by design). There is
+  ; deliberately NO "click again to force it" escape hatch: a page that has not
+  ; answered may be mid-save, and pbjs will not throw that away on a guess. A
+  ; genuinely wedged app is the OS's problem to kill, not this module's.
+  ;
+  ; No timer object and no generation counter: the arm TIME is the generation.
+  ; A stale post from a completed round finds either ClosingScope = 0, or a
+  ; newer round whose elapsed time has not run out yet — and no-ops either way.
+  Global CloseWatchdogArmedAt.q = 0
+
+  Procedure ArmCloseWatchdog(Scope)
+    CloseWatchdogArmedAt = ElapsedMilliseconds()
+
+    ; The post needs some live window to be delivered to; the handler acts on
+    ; the global scope, not on that window. Prefer the scope window itself,
+    ; fall back to any open one (Scope = -1 is the whole app).
+    Protected deliverTo.i = 0
+    If Scope > 0 And IsWindow(Scope)
+      deliverTo = Scope
+    Else
+      ForEach JSWindows()
+        If MapKey(JSWindows()) = "" : Continue : EndIf
+        If IsWindow(JSWindows()\Window) And JSWindows()\Visible
+          deliverTo = JSWindows()\Window
+          Break
+        EndIf
+      Next
+    EndIf
+
+    If deliverTo
+      PostEventAfterDelay(deliverTo, #PBJS_CloseCheckTimeoutMs, #Event_Close_Watchdog)
+    Else
+      ; Nothing left to deliver to — nothing can reply either, so the scope
+      ; would never clear. Drop it now rather than arming a timer into the void.
+      Debug "[CLOSE_WATCHDOG] no live window to arm on; clearing scope"
+      CancelClose("no window available to answer the close check")
+    EndIf
+  EndProcedure
+
+  Procedure CheckCloseWatchdog()
+    If ClosingScope = 0
+      ProcedureReturn   ; round already finished
+    EndIf
+    If CloseWatchdogArmedAt = 0
+      ProcedureReturn
+    EndIf
+    ; A newer round re-armed after this post was scheduled: its own watchdog is
+    ; still pending and owns the deadline.
+    If ElapsedMilliseconds() - CloseWatchdogArmedAt < #PBJS_CloseCheckTimeoutMs
+      ProcedureReturn
+    EndIf
+
+    Debug "[CLOSE_WATCHDOG] no reply within " + Str(#PBJS_CloseCheckTimeoutMs) +
+          "ms for scope " + Str(ClosingScope) + " — treating as declined"
+    CloseWatchdogArmedAt = 0
+    CancelClose("close check timed out after " + Str(#PBJS_CloseCheckTimeoutMs) + "ms")
   EndProcedure
 
   Procedure RequestClose(Scope)
     Debug "[REQUEST_CLOSE] ENTER. Scope=" + Str(Scope) + " ClosingScope=" + Str(ClosingScope)
-    
+
     If ClosingScope <> 0
        ProcedureReturn 0
     EndIf
-    
+
     ClosingScope = Scope
     
     Protected CheckStarted = #False 
@@ -2819,14 +3112,24 @@ Module JSWindow
     Next 
     
     If Not CheckStarted
-      ProcedureReturn #True 
-    EndIf 
-    
-    ProcedureReturn #False 
-    
+      ; No window was asked anything, so no reply can ever arrive — and it is
+      ; CheckCloseProgress/CancelClose, both reply-driven, that clear the scope.
+      ; Leaving it set here (what this did before) wedges every later close for
+      ; the rest of the run, by the same mechanism as an unanswered check but
+      ; without even a check outstanding. Nothing is pending: drop it now.
+      ClosingScope = 0
+      CloseWatchdogArmedAt = 0
+      ProcedureReturn #True
+    EndIf
+
+    ; Checks are in flight. From here the ONLY things that can clear
+    ; ClosingScope are a reply (CheckCloseProgress / CancelClose) and this.
+    ArmCloseWatchdog(Scope)
+    ProcedureReturn #False
+
   EndProcedure
   
-  CompilerIf #Debug_On
+  CompilerIf #PBJS_DevMode
     
     Global DEBUGMODEoldLocation.s
     Global DEBUGMODEinjectStartupOnce = #False 
@@ -2890,7 +3193,7 @@ Module JSWindow
     
     *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
     
-    CompilerIf #Debug_On
+    CompilerIf #PBJS_DevMode
       ; Headless windows are bootstrapped attach-driven (HandleHeadlessAttach),
       ; not by this event-driven retry loop; the location poll is equally
       ; meaningless for a browser tab (reload detection = proxy re-attach).
@@ -2949,9 +3252,18 @@ Module JSWindow
             Protected *LoadArgs.LoadHtmlArgs = EventData()
             If *LoadArgs
               *JSWindow\Html = *LoadArgs\Html
+              ; Populate the decode cache here, on the main thread, so the next
+              ; window built from this same embedded range skips the decode
+              ; entirely (StartLoadHtml). Costs one extra copy of a string the
+              ; process is holding anyway; saves a full multi-MB UTF-8 decode
+              ; per pool spare.
+              Protected htmlKey.s = HtmlCacheKey(*LoadArgs\HtmlStart, *LoadArgs\HtmlEnd)
+              If *LoadArgs\Html <> "" And Not FindMapElement(DecodedHtmlCache(), htmlKey)
+                DecodedHtmlCache(htmlKey) = *LoadArgs\Html
+              EndIf
               FreeStructure(*LoadArgs)
             EndIf
-            CompilerIf Not #Debug_On
+            CompilerIf Not #PBJS_DevMode
               ; Headless: no gadget, page comes from the browser (plan C7).
               ; (LoadHtml is never started for headless windows; belt & braces.)
               If Not *JSWindow\Headless
@@ -3074,6 +3386,12 @@ Module JSWindow
             If Not *JSWindow\Ready
               PostEvent(#CustomWindowEvent, *Window\Window, 0, #Event_Content_Ready)
             EndIf
+
+          Case #Event_Close_Watchdog
+            ; A close check went unanswered. Acts on the global close scope,
+            ; not on this window — this window is only the delivery vehicle
+            ; the post needed. See CheckCloseWatchdog.
+            CheckCloseWatchdog()
 
           Case #Event_Prepare_Complete
             ; Posted by JSReadyState (page ready) or by the prepare timeout
@@ -3278,7 +3596,7 @@ Module JSWindow
   ; ===========================================================================
   ; A browser tab (re)connected for a headless window. Replays the EXACT
   ; dev-reload bootstrap this module already uses for Vite-served pages (the
-  ; #Debug_On retry block above): binds first, then __pbjsAdded reset,
+  ; #PBJS_DevMode retry block above): binds first, then __pbjsAdded reset,
   ; PreRenderJS (window.startupSettings), StartupJS (pbjsDocumentReady →
   ; callbackReadyState), WindowJS, and the pbjs bridge script. Everything
   ; after that — JSReadyState → Ready → FlushPendingMessages → Content_Ready →

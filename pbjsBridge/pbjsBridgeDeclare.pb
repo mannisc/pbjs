@@ -11,7 +11,15 @@ DeclareModule JSBridge
   Declare GetJSWindowByName(windowName.s)
   Declare.s GetJSWindowNameByID(window.i)
   Declare.s GetStartUpJS(windowName.s)
+  ; Escape a finished JSON frame for a single-quoted JS string literal (JSON
+  ; escaping + \' ). This is the injection-site escaper.
   Declare.s EscapeJSON(text.s)
+  ; Escape one VALUE going into a hand-built JSON frame — RFC 8259 only, no
+  ; \' (which is not valid JSON). Exported because the host has to build
+  ; `paramsJson` itself for SendSystemMessage / SendSystemRequest; use this
+  ; rather than rolling a partial escaper, which is how raw control characters
+  ; got into frames in the first place.
+  Declare.s EscapeJSONValue(text.s)
   Declare SendParameters(*JSWindow, paramsJson.s)
   Declare SendCloseCheck(*JSWindow)
   ; Native-owned system requests use the normal PBJS request/reply transport,

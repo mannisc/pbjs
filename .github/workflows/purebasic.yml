@@ -1,0 +1,53 @@
+name: PureBasic
+
+# The real gate: pbcompiler --check against a LICENSED PureBasic install.
+#
+# ⚠ This workflow does nothing until you register a self-hosted runner. It is
+# checked in configured-but-dormant on purpose — the alternative was a job that
+# silently skips, which reads as green while checking nothing.
+#
+# WHY SELF-HOSTED. See the long note in ci.yml: the free compiler physically
+# cannot compile this repo (800-line-per-file cap vs. a 3,500-line module), and
+# the licensed one is a per-user, login-gated download. A self-hosted runner on
+# a machine that already has your licence installed sidesteps both.
+#
+# ⚠ SECURITY. GitHub's own guidance: only use self-hosted runners with private
+# repositories, because a fork of a public repo can otherwise run arbitrary code
+# on your machine. That is why this workflow triggers on `push` to branches in
+# THIS repo and on manual dispatch only — never on `pull_request`, which is the
+# trigger a fork controls. Do not add one.
+#
+# SETUP: repo Settings → Actions → Runners → New self-hosted runner, run the
+# config.sh it gives you (the token is valid for one hour), then `./run.sh` or
+# install it as a service. PureBasic must be installed for the runner's user;
+# ci/purebasic-home.sh finds it, or set PUREBASIC_HOME in the runner's env.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  syntax-check:
+    name: pbcompiler --check
+    runs-on: self-hosted
+    # Fork pushes cannot reach this, but be explicit rather than rely on it.
+    if: github.repository_owner == 'mannisc'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: reactExample/main-window/package-lock.json
+
+      # Built first so pbjsExample.pb's IncludeBinary target exists and the
+      # example is checked too rather than skipped.
+      - name: Build the example web app
+        working-directory: reactExample/main-window
+        run: npm ci && npm run build
+
+      - name: Syntax-check pbjs standalone and the example
+        run: ci/check-purebasic.sh
