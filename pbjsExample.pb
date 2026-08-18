@@ -100,7 +100,10 @@ Module Execute
 
    
 
-    WindowManager::RunEventLoop(@HandleMainEvent(),@KeepRunning()) 
+    ; Third slot is ShouldKeepRunning — the second is the network-event hook
+    ; (web mode). Passing KeepRunning in the wrong slot silently disables it:
+    ; NetworkServerEvent() never fires here, so it would never be called.
+    WindowManager::RunEventLoop(@HandleMainEvent(), 0, @KeepRunning())
    
    
  EndProcedure

@@ -23,9 +23,11 @@ DeclareModule OsTheme
   
   Global themeBackgroundColor = lightThemeBackgroundColor
   Global themeForegroundColor = lightThemeForegroundColor
-  
-  #Debug_On = #PB_Compiler_Debugger  
-  
+
+  ; Build-mode flags used to live here (#Debug_On). They now live in
+  ; pbjsConfig.pb — a theming module is not where anyone auditing content
+  ; loading or devtools exposure would think to look. See #PBJS_DevMode.
+
 EndDeclareModule
 
 Module OsTheme
