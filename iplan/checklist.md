@@ -284,6 +284,8 @@ Everything below was run, not assumed.
 | `tests/pb/run.sh` — native router harness | ✅ 77 assertions, 0 failed |
 | R3 re-introduced (short escapes + the `\u00XX` sweep removed) | ✅ native fails 12 assertions; jsdom round trip fails 7, with the production symptom — an empty `seen`, the message silently gone |
 | Fixture regenerated from the restored escaper, suites re-run | ✅ green again; `pbjsBridge.pb` byte-identical to `origin/main` |
+| Fixture-drift guard: `HandleSend`'s field order swapped (same JSON, different bytes) | ✅ both harnesses still pass — and `ci/pre-push` fails on the fixture diff, which is exactly the case the guard exists for: an escaper change that leaves the jsdom job asserting yesterday's wire format and still green |
+| `ci/pre-push` end to end | ✅ exit 0 — static checks, 112 jsdom tests, both syntax checks, the native harnesses, clean fixture diff |
 | `ci/check-sources.mjs` with `tests/` in the tree | ✅ 20 sources, 22 includes, 12 modules |
 | `ci/check-purebasic.sh` — standalone + example | ✅ both OK |
 | **Vynce host** `main.pb --check` | ✅ 11,143 lines — the harness adds no host-visible surface |
