@@ -29,7 +29,7 @@ This README is the **complete handbook**. For a one-screen orientation see
 ## Table of contents
 
 1. [Architecture (3 layers)](#1-architecture)
-2. [Getting started](#2-getting-started)
+2. [Getting started — hosting pbjs, and the page side](#2-getting-started)
 3. [Request/response — `invoke` / `handle`](#3-requestresponse--invoke--handle)
 4. [Fire-and-forget — `send` / `sendAll`](#4-fire-and-forget--send--sendall)
 5. [Broadcast request/response — `invokeAll`](#5-broadcast-requestresponse--invokeall)
@@ -75,21 +75,150 @@ visibility, and pool prep.
 
 ## 2. Getting started
 
-The bridge builds `window.pbjs` and dispatches a `pbjs-ready` DOM event. In a web
-app, use a thin typed wrapper around `window.pbjs` (Vynce ships
-`react/shared/services/Pbjs.ts`, imported as `pbjs`). All examples below use that
-wrapper; the raw `window.pbjs` API is identical in shape.
+Two sides: the PureBasic host that owns the windows, and the page that talks to
+`window.pbjs`. Run the example first — it is both halves, working:
 
-```ts
-import { pbjs } from "@shared/services/Pbjs";
-
-await pbjs.waitForReady();           // resolves on the pbjs-ready event
-console.log(pbjs.windowName, pbjs.os); // e.g. "main-window", "windows"
+```bash
+./build.sh --run          # build.cmd on Windows
 ```
 
-The wrapper **defers** calls until ready (handlers are never dropped), so in
-practice you can register handlers without awaiting first. Awaiting is still the
-clearest pattern for imperative call sites.
+That builds the web app, compiles `pbjsExample.pb`, and launches it: a plain
+PureBasic window with two buttons, driving two pbjs windows. You should see the
+web app in the first window, and the buttons open and resize the second.
+
+### 2.1 Hosting pbjs — the PureBasic side
+
+Five things, all of them load-bearing. Nothing here is optional, and the ways
+each one fails are given because none of them announces itself.
+
+**1 · Include it.** `pbjs.pb` pulls in everything in the right order:
+
+```purebasic
+XIncludeFile "pbjs/pbjs.pb"
+```
+
+If your app has its own modules that route through `Sink` or `WindowManager`,
+include those two **before** your module and leave the rest to `pbjs.pb`:
+
+```purebasic
+XIncludeFile "pbjs/modules/WindowManager.pb"
+XIncludeFile "pbjs/modules/JSSink.pb"
+XIncludeFile "your/module.pb"          ; may now use Sink:: / WindowManager::
+XIncludeFile "pbjs/pbjs.pb"            ; skips the two above, includes the rest
+```
+
+**Only those two.** `pbjs.pb` reaches `WindowManager.pb` and `JSSink.pb` with
+`XIncludeFile`, so it skips them when they are already in — whichever directive
+you used. Everything else it reaches with a plain `IncludeFile`, so pre-including
+one of those includes it twice; `OsTheme.pb` in front of `pbjs.pb` stops the
+compile with `Module already declared: OsTheme`.
+
+`XIncludeFile` on your side is still the safer habit — it is what lets *your*
+tree include the file from more than one place. (`JSSink.pb` survives a plain
+double include anyway, being guarded on `Defined(Sink, #PB_Module)`;
+`WindowManager.pb` is not, and does not.)
+
+`pbjsConfig.pb` is the exception in the other direction: it is guarded on
+`Defined(PbjsConfig, #PB_Module)`, so a host **can** declare that module first to
+override the build flags. `-co PBJS_DevMode=1` on the compiler command line
+works too. What does **not** work is writing `#PBJS_DevMode = 0` at the top level
+of your `main.pb`: PureBasic modules cannot see top-level constants at all, so it
+is silently ignored — no error, no warning, no effect.
+
+**2 · Initialise before creating any window.**
+
+```purebasic
+OsTheme::InitOsTheme()
+WindowManager::InitWindowManager()
+```
+
+**3 · Create windows, and give them content from a `DataSection`.** The page is
+embedded in the executable, not read from disk:
+
+```purebasic
+*Window = JSWindow::CreateJSWindow("main-window", 100, 100, 900, 600, "My App",
+                                   #PB_Window_SystemMenu | #PB_Window_SizeGadget,
+                                   ?MainWindow, ?EndMainWindow)
+JSWindow::OpenJSWindow(*Window)
+
+DataSection
+  MainWindow:
+  IncludeBinary "web/dist/index.html"
+  EndMainWindow:
+EndDataSection
+```
+
+The two labels bracket the bytes; pbjs decodes them as UTF-8 and injects the
+bridge script into the `<body>` tag. A single-file build is the point — one HTML
+document with the CSS and JS inlined (the example uses
+`vite-plugin-singlefile`), because there is no server and no second request.
+
+**4 · Dispatch pbjs's own events from your main event handler.** This is the
+step that is easy to miss and silent when missed:
+
+```purebasic
+Procedure.i HandleMainEvent(Event.i, EventWindow.i, EventGadget.i, EventType.i)
+  JSWindow::HandlePoolRefillEvent(Event)      ; multi-instance pool warming
+  JSWindow::HandleDeferredCloseEvent(Event)   ; macOS: deferred CloseWindow
+  JSWindow::HandleDeferredReleaseEvent(Event) ; macOS: deferred WKWebView release
+  ; … your own handling; return non-zero to consume the event
+  ProcedureReturn 0
+EndProcedure
+```
+
+Omit the first and `openInstance` still works but never gets a warm spare, so
+every open takes the cold path. Omit the other two on macOS and windows fail to
+close properly — `CloseWindow` cannot be called from inside the
+`WaitWindowEvent` stack, and a `WKWebView` released too early takes pending
+`postMessage` blocks with it. All three are no-ops for events that are not
+theirs, so dispatching them unconditionally is correct.
+
+⚠ `pbjsExample.pb` does **not** dispatch these — it uses no templates, so it
+never needed the first, and it is small enough to have got away without the
+other two. Do not read the example as the contract here; read this.
+
+**5 · Run the loop, then clean up.**
+
+```purebasic
+WindowManager::RunEventLoop(@HandleMainEvent(), 0, @KeepRunning())
+WindowManager::CleanupManagedWindows()
+```
+
+The three slots are `(HandleMainEvent, HandleNetworkEvent, ShouldKeepRunning)`.
+The middle one is the network hook for web mode; pass `0` if you have none.
+Getting the order wrong is silent — passing `ShouldKeepRunning` in the second
+slot means it is called only when `NetworkServerEvent()` fires, which for most
+apps is never. (That exact bug lived in this repo's own example.)
+
+`RunEventLoop` returns when no managed window is open any more and
+`ShouldKeepRunning` says so too.
+
+### 2.2 In the page — the JavaScript side
+
+The bridge script builds `window.pbjs`, sets `window.pbjsReady`, and dispatches a
+`pbjs-ready` DOM event:
+
+```js
+if (!window.pbjsReady) {
+  await new Promise((r) => window.addEventListener("pbjs-ready", r, { once: true }));
+}
+console.log(window.pbjs.windowName, window.pbjs.os); // "main-window", "mac"
+```
+
+Register your handlers as early as you can — an inbound message that arrives
+before its handler is buffered and replayed, but a single-target request whose
+handler never appears is dead-lettered after a grace (§9).
+
+> **A note on the examples below.** They are written against a thin typed
+> wrapper, which is the shape most apps end up with. `invoke`, `handle`,
+> `handleAll`, `send`, `sendAll`, `getWindow`, `waitForWindow`, `openInstance`,
+> `onCloseWindow`, `stats` and the `dnd*` calls are all on `window.pbjs`
+> unchanged. Two things in this document are **not**: `pbjs.channel` (§6) and
+> `pbjs.waitForReady` / `waitForFSReady` (§8) are wrapper conveniences over the
+> primitives above, and the wrapper also unwraps `invoke`'s `{ success }`
+> envelope so you get the bare value. Each of those is flagged where it appears.
+> Roadmap step 2.9 ships a supported wrapper and the typings to go with it; until
+> then, write the thin layer yourself or call `window.pbjs` directly.
 
 ---
 
@@ -219,6 +348,12 @@ Multicasts to every other window and resolves when all expected windows reply
 
 ## 6. Pub/sub topics — `channel`
 
+> ⚠ **Wrapper-only.** `channel` is not on `window.pbjs`. It is a small layer over
+> `sendAll` + `handleAll` — one reserved message name per topic, a local
+> subscriber set, and the sender filtered out — that every multi-window app ends
+> up writing. Described here because the shape is worth copying; roadmap 2.9
+> ships it.
+
 A `BroadcastChannel`-like layer over `send`/`sendAll` that **decouples senders
 from concrete window names** and allows **multiple local subscribers per topic**
 (which raw `handleAll` does not).
@@ -311,6 +446,11 @@ the per-transition log at `$TMPDIR/pbjs_dnd_debug.log`.
 ---
 
 ## 8. Lifecycle & readiness
+
+> ⚠ **`waitForReady` and `waitForFSReady` are wrapper-only** — they are not on
+> `window.pbjs`. The primitives they wrap are: `window.pbjsReady` plus the
+> `pbjs-ready` event (§2.2), and `window.fs` plus the `pbjs-fs-ready` event.
+> Everything else in this section is the real bridge.
 
 ```ts
 await pbjs.waitForReady();      // pbjs core ready (pbjs-ready event)
@@ -453,44 +593,60 @@ genuine commands.
 
 ```
 pbjs/
-├── pbjs.pb                       entry/init for the bridge module
+├── pbjs.pb                        include THIS — pulls in everything, in order
+├── pbjsConfig.pb                  build flags (#PBJS_DevMode, #PBJS_EnableDevTools)
 ├── pbjsBridge/
 │   ├── pbjsBridgeScript.js        ← the injected JS bridge (window.pbjs)
 │   ├── pbjsBridge.pb              ← native router (Get/GetAll/Send/SendAll/Reply,
 │   │                                EscapeJSON, QueuePending, NotifyWindowEvent)
-│   └── pbjsBridgeDeclare.pb        module interface
+│   └── pbjsBridgeDeclare.pb       module interface
 ├── modules/
 │   ├── JSWindow.pb                window registry, templates, pool, JSReadyState,
 │   │                              CloseJSWindow (lifecycle push)
-│   └── WindowManager.pb           event loop integration
+│   ├── WindowManager.pb           event loop integration
+│   ├── JSSink.pb                  per-window script/callback routing (web mode)
+│   ├── OsTheme.pb                 dark-mode detection + window colours
+│   └── DndService.pb / DragBadge.pb   cross-window drag & drop (macOS)
 ├── pbjsFileSystem/                separate window.fs bridge (own handshake)
-├── reactExample/ + pbjsExample.pb  the one canonical example (see below)
+├── webviewBaseUrl/                spike: giving the webview a real origin (3.2)
+├── reactExample/ + pbjsExample.pb  the one canonical example (§13)
+├── build.sh / build.cmd           build the example end to end
+├── tests/                         jsdom + native harnesses — tests/README.md
+├── ci/                            the checks; ci/pre-push is the everyday gate
+├── iplan/                         roadmap.md (the plan), checklist.md (what happened)
 ├── LICENSE    (MIT)
 ├── README.md  (this file)
 └── CLAUDE.md  (one-screen summary)
 ```
-
-`iplan/` holds the roadmap this library is being worked through
-(`roadmap.md`) and what each step actually did (`checklist.md`).
 
 ---
 
 ## 13. Example
 
 `pbjsExample.pb` is the **single canonical sample** — two pbjs windows plus a
-plain PureBasic window driving them. It embeds the built web app with
-`IncludeBinary`, and `reactExample/main-window/dist/` is gitignored, so the web
-app must be built **before** the `.pb` will compile:
+plain PureBasic window driving them.
 
 ```bash
-cd reactExample/main-window
-npm install
-npm run build          # produces dist/index.html (vite-plugin-singlefile)
+./build.sh --run          # build.cmd on Windows
 ```
 
-Then compile `pbjsExample.pb` from the repo root with the PureBasic IDE or
-`pbcompiler`. Skipping the npm build fails at compile time with
-`Included file not found: reactExample/main-window/dist/index.html`.
+Both steps, in order: the web app, then the executable. The order matters. The
+`.pb` embeds the built page with `IncludeBinary` and
+`reactExample/main-window/dist/` is gitignored, so on a fresh clone compiling
+first fails with `Included file not found:
+reactExample/main-window/dist/index.html`. That is the single most common way a
+first build of this repo goes wrong, which is why it is a script.
+
+By hand, if you would rather:
+
+```bash
+cd reactExample/main-window && npm ci && npm run build   # -> dist/index.html
+cd ../.. && pbcompiler pbjsExample.pb --output pbjsExample
+```
+
+⚠ Read the example for the *shape* of a host, not for the contract: it uses no
+multi-instance templates, so it never dispatches the three `JSWindow::Handle*Event`
+calls §2.1 requires. Those are in §2.1 for a reason.
 
 ### Checks
 
