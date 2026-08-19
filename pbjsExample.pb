@@ -74,12 +74,27 @@ Module Execute
     
         
 
-    *Window1 = JSWindow::CreateJSWindow("main-window",600, 100, 600, 400, "PBJS JS Example 1",   #PB_Window_SystemMenu | #PB_Window_SizeGadget |  #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget,  mainWindowHtmlStart, mainWindowHtmlStop ,#JSWindow_Behaviour_HideWindow)
+    ; ⚠ The 10th argument is *Parent, NOT CloseBehaviour. Passing
+    ; #JSWindow_Behaviour_HideWindow here is what this line used to do, and it
+    ; segfaulted on the spot: the behaviour constants are an Enumeration from
+    ; #PB_Event_FirstCustomValue, so the value is 0x10000 — non-zero, so the
+    ; `If *Parent And IsWindow(*Parent\Window)` guard let it through and the
+    ; dereference read 0x10008. Pass the parent explicitly, then the behaviour.
+    *Window1 = JSWindow::CreateJSWindow("main-window", 600, 100, 600, 400, "PBJS JS Example 1",
+                                        #PB_Window_SystemMenu | #PB_Window_SizeGadget |
+                                        #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget,
+                                        mainWindowHtmlStart, mainWindowHtmlStop,
+                                        0, #JSWindow_Behaviour_HideWindow)
     
     
-    *Window2 = JSWindow::CreateJSWindow("sub-window",500, 50, 700, 600, "PBJS JS Example 2", 
-                                        #PB_Window_SystemMenu | #PB_Window_SizeGadget | 
-                                        #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget, mainWindowHtmlStart, mainWindowHtmlStop, #JSWindow_Behaviour_HideWindow, @WindowLoaded())
+    ; Same slots. @WindowLoaded() is *WindowReadyCallback, the 12th argument —
+    ; it used to land in CloseBehaviour, so the callback was never called and
+    ; the close behaviour was a function pointer.
+    *Window2 = JSWindow::CreateJSWindow("sub-window", 500, 50, 700, 600, "PBJS JS Example 2",
+                                        #PB_Window_SystemMenu | #PB_Window_SizeGadget |
+                                        #PB_Window_MinimizeGadget | #PB_Window_MaximizeGadget,
+                                        mainWindowHtmlStart, mainWindowHtmlStop,
+                                        0, #JSWindow_Behaviour_HideWindow, @WindowLoaded())
    
     
    
