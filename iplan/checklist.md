@@ -41,7 +41,7 @@ Companion to [roadmap.md](roadmap.md). One row per roadmap step.
 | 2.7 | R10 + F4 + F5 — API sharp edges | [~] | **F4 and F5a done; R10, F5b and F5c not.** F4: `options.timeoutMs` on `invoke`, default unchanged at 30 000. A value that is not a positive finite number **falls back to the default** rather than producing a request that never times out — `0`, `NaN`, `"500"` and `Infinity` would each do that with a bare read, and all four are pinned by tests. Given to `invokeAll` as well, against the roadmap's letter: it is the one call that fans out to N windows and so the one most likely to want its own deadline, and the asymmetry would just be a trap. F5a: `handle` **and** `handleAll` warn on replace (the roadmap names only `handleAll`; both have the identical silent failure) — but **not** when the same function re-registers, because React effects re-run and StrictMode double-invokes them in development, and a warning that fires on ordinary remounts is one people learn to ignore. It forwards to native, like the dead-letter warning: a real fault, rare, worth seeing without devtools. `stats()` gains `handlersReplaced`. 25 new jsdom tests. **Not done, and why:** F5b (`alreadyOpen` on the `openInstance` result) and F5c (pool state in `stats()` + runtime `poolTargetSize`) both need new native surface in `JSWindow.pb`, and the pool is exactly what the harnesses cannot reach (Deviations §7) — they would ship compile-verified only, which is the state 2.1 exists to get out of. R10 (activation control) is a three-platform change including a macOS 14 deprecated-API migration, with no way to verify any of it from here. |
 | 2.8 | G3 + G2 — The host contract, written down | [ ] | Not in this batch. |
 | 2.9 | G6 — Ship the typed wrapper + complete typings | [ ] | Not in this batch. |
-| 2.10 | G4 + G5 — De-Vynce the library; fix the doc dead-ends | [ ] | Not in this batch. |
+| 2.10 | G4 + G5 — De-Vynce the library; fix the doc dead-ends | [x] | **G4:** `VYNCE_DND` → `PBJS_DND`, `VYNCE_DND_DEBUG` → `PBJS_DND_DEBUG`, `$TMPDIR/vynce_dnd_debug.log` → `pbjs_dnd_debug.log`, plus the three comments elsewhere that named them. No compat shim, per the roadmap. Nothing in the host *sets* either variable — the four Vynce-side mentions are comments and docs — so the rename is functionally inert there, but those four are now stale and need a host-side follow-up (see "Left for a human"). **G5:** all 12 dead pointers removed. Not by moving the documents: they total ~4,100 lines of Vynce planning material about Vynce's web mode, and copying them here would create four large duplicates that drift immediately. Instead each pointer was **replaced by the fact it stood in for**, or by a live `README §n` reference — a reader of the library gets the information rather than a path they cannot open. One of the twelve, `iplan/startupREVIEWED.md`, no longer exists in **either** repo, which is the finding in miniature. **Found while doing it, and bigger than G5:** README §7 documented drag & drop as `pbjs.drag.start` / `pbjs.drag.registerTarget` / `pbjs.drag.available` — that is Vynce's wrapper shape, not `window.pbjs`, which exposes flat `pbjs.dndStart` / `dndRegisterTarget` / `dndAvailable`. Rewritten to the real API. See "Deviations" §10: it is the same defect as G6's, and wider than either finding states. |
 
 ## Phase 3 — New surface, origin/packaging, structure
 
@@ -234,6 +234,37 @@ the pointer as a **callback argument** (`WindowLoaded` / `WindowClosing` in
 Vynce's `main.pb`), never by name. The harness therefore does its own two map
 hits rather than widening the library's public surface for a test's benefit.
 
+### 10 · The README documents a wrapper that is not in this repo (2.10, feeds 2.9)
+
+G6 (2.9) says the typings cover ~30% of the surface and are stale. The problem
+is wider than typings, and wider than G6 states: **`README.md` documents methods
+that do not exist on `window.pbjs` at all.** They are Vynce's
+`react/shared/services/Pbjs.ts` wrapper, which does not ship here.
+
+| Documented in README | On `window.pbjs`? |
+|---|---|
+| `pbjs.channel(name)` — §6, a whole section | ❌ wrapper-only |
+| `pbjs.waitForReady()` / `waitForFSReady()` — §8 | ❌ wrapper-only |
+| `pbjs.setWindowTitle()` / `focusWindow()` — §7 | ❌ **native exists, JS wrapper does not** — `pbjsNativeSetWindowTitle` and `pbjsNativeFocusWindow` are bound in `JSWindow.pb`, and nothing in the bridge script calls them |
+| `pbjs.drag.start` / `.registerTarget` / `.available` — §7 | ❌ the real names are flat: `pbjs.dndStart`, `dndRegisterTarget`, `dndAvailable` |
+
+Also bound natively and unreachable from the bridge script:
+`pbjsNativeStartWindowDrag`, `pbjsNativeSetWindowState`,
+`pbjsNativeGetWindowMetrics`.
+
+The DnD paragraph was corrected in 2.10, because G5 is precisely about not
+leaving a reader with something they cannot use. The rest is 2.9's job and
+changes its shape: it is not "complete the typings", it is **decide what
+`window.pbjs` is**, then make the README describe that and the typings match.
+The cheapest coherent answer is probably to add the thin missing wrappers
+(`setWindowTitle`, `focusWindow`, and friends already have their natives) and
+ship `channel`/`waitForReady` in the typed client 2.9 calls for — but that is a
+design call, not a mechanical one.
+
+Also spotted: Vynce's wrapper declares `waitForWindow(name, maxAttempts?)` while
+the bridge's second parameter is a **timeout in milliseconds**. No caller passes
+it, so nothing is broken today; it is a typings bug for 2.9.
+
 ### 4 · Bugs found that the roadmap did not list
 
 Turned up while verifying the steps above; all fixed, none of them optional if
@@ -325,6 +356,11 @@ it, and the split is worth reading precisely (Deviations §7):
 - **Install the hook**: `ln -sf ../../ci/pre-push .git/hooks/pre-push`.
 - **Install the test deps once**: `cd tests && npm ci`. Without them `ci/pre-push`
   says so and skips the bridge suite rather than failing the push.
+- **Update the four Vynce-side mentions of `VYNCE_DND` / `VYNCE_DND_DEBUG`**
+  (2.10 / G4): `docs/dnd.md`, `main.pb:1367`, `react/shared/global.d.ts` and
+  `react/shared/services/Pbjs.ts`. All four are comments or prose — nothing in
+  the host *sets* either variable — so the rename breaks no behaviour, but those
+  four now name flags that no longer exist. Host repo, separate change.
 - **Register the self-hosted runner** is now what gates the *native* harness too
   (2.1), not only the syntax check: `.github/workflows/purebasic.yml` runs
   `tests/pb/run.sh` and then `git diff --exit-code` on the fixture, so a stale

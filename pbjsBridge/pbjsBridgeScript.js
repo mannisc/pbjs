@@ -10,7 +10,7 @@
   const WINDOW_NAME = "_WINDOW_NAME_INJECTED_BY_NATIVE_";
   const OS_NAME = "_OS_NAME_INJECTED_BY_NATIVE_";
   // Read once at page load, before pbjs.drag exists as an object — reports
-  // whether DndService actually started (host has it / VYNCE_DND!=0 / mac /
+  // whether DndService actually started (host has it / PBJS_DND!=0 / mac /
   // not web mode), not just whether the pbjsNativeDnd* functions exist (they
   // exist as no-op-ish natives regardless of Enabled).
   const DND_ENABLED = "_DND_ENABLED_INJECTED_BY_NATIVE_" === "1";
@@ -804,7 +804,7 @@
 
       // Fire-and-forget broadcast to every window except the sender. Same
       // no-reply semantics as send(). This is the cheap primitive for events,
-      // presence, and store-sync patches (see iplan/pbjszustand.md).
+      // presence, and store-sync patches (README §10).
       //
       // Note: unlike invoke()/send(), there is no single target to wait on, so
       // the readiness cache (F3) does not apply here. The native router already

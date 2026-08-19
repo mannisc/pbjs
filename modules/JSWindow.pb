@@ -37,7 +37,6 @@ DeclareModule JSWindow
   
   ; webWindow: #True = HEADLESS window (web mode) — real invisible PB window,
   ; NO WebViewGadget; the page runs in a browser tab bridged via Sink hooks.
-  ; See iplan/webversion/plan.md (D3/D5).
   Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False)
   ; Set an opaque JS string to inject before this window's content/React loads.
   ; pbjs injects it verbatim and never interprets it — the app owns its meaning.
@@ -200,13 +199,14 @@ DeclareModule JSWindow
   Declare CheckCloseProgress()
   Declare CancelClose(Reason.s="")
 
-  ; Multi-instance public API. See plan iplan/agent-window-multi-instance/plan.md.
+  ; Multi-instance public API: a template is a window recipe, and OpenInstance
+  ; materializes (or focuses) one named instance of it, claiming a pre-warmed
+  ; spare from the pool when there is one. README §7.
   Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1, webMode.b = #False)
 
   ; Web mode: browser tab (re)attached / detached for a headless window —
   ; called by the app's proxy layer (WebProxy). Attach replays binds and the
   ; dev-reload bootstrap sequence; detach resets Ready so messages buffer.
-  ; See iplan/webversion/plan.md §5.5.
   Declare HandleHeadlessAttach(windowName.s)
   Declare HandleHeadlessDetach(windowName.s)
   Declare.i FindTemplate(templateName.s)
@@ -392,7 +392,7 @@ Module JSWindow
       CompilerElse
         ; Windows: was 100ms. An early show is flash-safe — the window bg is
         ; pre-set to themeBackgroundColor and the body sits at opacity:0 until
-        ; pbjs-document-ready (iplan/startupREVIEWED.md #6).
+        ; pbjs-document-ready.
         delayMs = 24
       CompilerEndIf
     EndIf
@@ -1725,7 +1725,6 @@ Module JSWindow
       ; Headless (web-mode) window: real invisible PB window — all identity /
       ; geometry / close plumbing keeps working — but NO WebViewGadget; the
       ; page runs in a browser tab and traffic routes through the Sink hooks.
-      ; See iplan/webversion/plan.md D3.
       Protected webViewGadget = 0
       Protected sink.i
       If webWindow
@@ -3601,7 +3600,6 @@ Module JSWindow
   ; callbackReadyState), WindowJS, and the pbjs bridge script. Everything
   ; after that — JSReadyState → Ready → FlushPendingMessages → Content_Ready →
   ; WindowLoaded — is the untouched existing handshake.
-  ; iplan/webversion/plan.md §5.5.
   Procedure HandleHeadlessAttach(windowName.s)
     If Not FindMapElement(WindowsByName(), windowName)
       Debug "[JSWindow] HandleHeadlessAttach: unknown window '" + windowName + "'"

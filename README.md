@@ -278,17 +278,35 @@ message — register it early so the first message isn't missed:
 pbjs.handleAll("handleParameters", (_e, params) => setState(params));
 ```
 
-**Cross-window drag & drop** (`pbjs.drag`) is a separate, generic service
-layered on top of this transport — not part of the core API above. A source
-window starts a session (`pbjs.drag.start`), native tracks the cursor and
-hit-tests the topmost window across the whole desktop (a 15ms timer, not
-client-rect math), and any window can register as a drop target
-(`pbjs.drag.registerTarget`) for typed payloads. macOS only today; every
-consumer feature-detects (`pbjs.drag.available`) and degrades gracefully
-elsewhere. Canonical doc (protocol, native architecture, release semantics):
-`docs/dnd.md` in the main vynce repo — not duplicated here since it's a
-consumer-side doc, not a `pbjs` API reference concern; the native half
-(`DndService.pb`, `DragBadge.pb`) does live in this repo though.
+**Cross-window drag & drop** is a separate, generic service layered on top of
+this transport — not part of the core API above. A source window starts a
+session, native tracks the cursor and hit-tests the topmost window across the
+whole desktop (a 15 ms timer, not client-rect math), and any window can register
+as a drop target for typed payloads.
+
+On `window.pbjs` the calls are flat, and every one resolves to the native
+reply parsed from JSON:
+
+```ts
+if (pbjs.dndAvailable) {                       // the service is actually live
+  const { sessionId } = await pbjs.dndStart({ type, payloadJson, badge });
+  await pbjs.dndUpdateBadge(sessionId, badge);
+  await pbjs.dndSetZoneActive(sessionId, true);
+  await pbjs.dndDrop(sessionId);               // or dndCancel(sessionId)
+}
+await pbjs.dndRegisterTarget(["agent-tab"]);   // …and dndUnregisterTarget()
+```
+
+`dndAvailable` reports whether `DndService` *started* — host has it, `PBJS_DND`
+is not `0`, macOS, not web mode — not merely whether the natives exist, which
+they do regardless. macOS only today; feature-detect and degrade elsewhere.
+
+The native half lives here (`modules/DndService.pb`, `modules/DragBadge.pb`)
+and each carries its protocol and release-semantics notes in its own header —
+that is the reference, since a consumer of pbjs has no other repo to open.
+
+Flags: `PBJS_DND=0` disables the service outright; `PBJS_DND_DEBUG=0` turns off
+the per-transition log at `$TMPDIR/pbjs_dnd_debug.log`.
 
 ---
 
@@ -452,8 +470,8 @@ pbjs/
 └── CLAUDE.md  (one-screen summary)
 ```
 
-Deeper design notes & the improvement-plan audit live in the host app's
-`iplan/pbjs.md` and `iplan/pbjszustand.md`.
+`iplan/` holds the roadmap this library is being worked through
+(`roadmap.md`) and what each step actually did (`checklist.md`).
 
 ---
 

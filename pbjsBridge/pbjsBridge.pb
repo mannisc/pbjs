@@ -706,7 +706,7 @@ Module JSBridge
     ; (included ahead of this file) exposes IsEnabled() precisely so this
     ; module doesn't need the full DndService body in scope. Lets
     ; PbjsDragService.available report the real answer (host without
-    ; DndService / VYNCE_DND=0 / non-mac / web mode) instead of only "does
+    ; DndService / PBJS_DND=0 / non-mac / web mode) instead of only "does
     ; the native function exist", which stays true even when disabled.
     Protected dndEnabled.s
     If DndService::IsEnabled()
