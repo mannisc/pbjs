@@ -1,0 +1,142 @@
+[
+  {
+    "id": "plain",
+    "label": "an ordinary message",
+    "vehicle": "send",
+    "handler": "updateAgent",
+    "fromWindow": "main-window",
+    "params": {},
+    "data": {"id":1},
+    "script": "pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"main-window\\\",\\\"name\\\":\\\"updateAgent\\\",\\\"params\\\":{},\\\"data\\\":{\\\"id\\\":1}}');"
+  },
+  {
+    "id": "apostrophe",
+    "label": "an apostrophe would terminate the JS literal",
+    "vehicle": "send",
+    "handler": "rename'd",
+    "fromWindow": "main-window",
+    "params": {},
+    "data": {"title":"ok"},
+    "script": "pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"main-window\\\",\\\"name\\\":\\\"rename\\'d\\\",\\\"params\\\":{},\\\"data\\\":{\\\"title\\\":\\\"ok\\\"}}');"
+  },
+  {
+    "id": "quote-in-name",
+    "label": "a double quote inside the handler name",
+    "vehicle": "send",
+    "handler": "say\"hi\"",
+    "fromWindow": "main-window",
+    "params": {},
+    "data": {"ok":true},
+    "script": "pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"main-window\\\",\\\"name\\\":\\\"say\\\\\\\"hi\\\\\\\"\\\",\\\"params\\\":{},\\\"data\\\":{\\\"ok\\\":true}}');"
+  },
+  {
+    "id": "quote-in-source",
+    "label": "a double quote in the SOURCE window name",
+    "vehicle": "send",
+    "handler": "ping",
+    "fromWindow": "weird\"window",
+    "params": {},
+    "data": {"v":1},
+    "script": "pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"weird\\\\\\\"window\\\",\\\"name\\\":\\\"ping\\\",\\\"params\\\":{},\\\"data\\\":{\\\"v\\\":1}}');"
+  },
+  {
+    "id": "backslash-in-name",
+    "label": "a backslash in the handler name",
+    "vehicle": "send",
+    "handler": "path\\sep",
+    "fromWindow": "main-window",
+    "params": {},
+    "data": {"v":1},
+    "script": "pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"main-window\\\",\\\"name\\\":\\\"path\\\\\\\\sep\\\",\\\"params\\\":{},\\\"data\\\":{\\\"v\\\":1}}');"
+  },
+  {
+    "id": "c0-in-name",
+    "label": "ESC and BEL in a handler name",
+    "vehicle": "send",
+    "handler": "term\u001Bx\u0007",
+    "fromWindow": "main-window",
+    "params": {},
+    "data": {"v":1},
+    "script": "pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"main-window\\\",\\\"name\\\":\\\"term\\\\u001Bx\\\\u0007\\\",\\\"params\\\":{},\\\"data\\\":{\\\"v\\\":1}}');"
+  },
+  {
+    "id": "c0-in-source",
+    "label": "backspace and form feed in the source window name",
+    "vehicle": "send",
+    "handler": "ping",
+    "fromWindow": "win\b\fdow",
+    "params": {},
+    "data": {"v":1},
+    "script": "pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"win\\\\b\\\\fdow\\\",\\\"name\\\":\\\"ping\\\",\\\"params\\\":{},\\\"data\\\":{\\\"v\\\":1}}');"
+  },
+  {
+    "id": "unicode",
+    "label": "non-ASCII must survive the UTF-8 round trip",
+    "vehicle": "send",
+    "handler": "grüße",
+    "fromWindow": "main-window",
+    "params": {},
+    "data": {"text":"grüße — 日本語 🎉"},
+    "script": "pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"main-window\\\",\\\"name\\\":\\\"grüße\\\",\\\"params\\\":{},\\\"data\\\":{\\\"text\\\":\\\"grüße — 日本語 🎉\\\"}}');"
+  },
+  {
+    "id": "esc-sequence",
+    "label": "a real ANSI escape sequence, as a terminal title carries",
+    "vehicle": "system",
+    "handler": "terminalTitle",
+    "fromWindow": "system",
+    "params": {"title":"\u001B]0;build done\u0007"},
+    "data": {},
+    "script": "if(window.pbjsHandleMessage) window.pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"system\\\",\\\"name\\\":\\\"terminalTitle\\\",\\\"params\\\":{\\\"title\\\":\\\"\\\\u001B]0;build done\\\\u0007\\\"},\\\"data\\\":{}}');"
+  },
+  {
+    "id": "c0-controls",
+    "label": "backspace, form feed and ESC in one host-built value",
+    "vehicle": "system",
+    "handler": "terminalTitle",
+    "fromWindow": "system",
+    "params": {"title":"a\bb\fc\u001Bd"},
+    "data": {},
+    "script": "if(window.pbjsHandleMessage) window.pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"system\\\",\\\"name\\\":\\\"terminalTitle\\\",\\\"params\\\":{\\\"title\\\":\\\"a\\\\bb\\\\fc\\\\u001Bd\\\"},\\\"data\\\":{}}');"
+  },
+  {
+    "id": "all-c0",
+    "label": "every C0 character in one value",
+    "vehicle": "system",
+    "handler": "terminalTitle",
+    "fromWindow": "system",
+    "params": {"title":"\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000B\f\r\u000E\u000F\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001A\u001B\u001C\u001D\u001E\u001F"},
+    "data": {},
+    "script": "if(window.pbjsHandleMessage) window.pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"system\\\",\\\"name\\\":\\\"terminalTitle\\\",\\\"params\\\":{\\\"title\\\":\\\"\\\\u0001\\\\u0002\\\\u0003\\\\u0004\\\\u0005\\\\u0006\\\\u0007\\\\b\\\\t\\\\n\\\\u000B\\\\f\\\\r\\\\u000E\\\\u000F\\\\u0010\\\\u0011\\\\u0012\\\\u0013\\\\u0014\\\\u0015\\\\u0016\\\\u0017\\\\u0018\\\\u0019\\\\u001A\\\\u001B\\\\u001C\\\\u001D\\\\u001E\\\\u001F\\\"},\\\"data\\\":{}}');"
+  },
+  {
+    "id": "apostrophe-value",
+    "label": "an apostrophe in a host-built value",
+    "vehicle": "system",
+    "handler": "rename",
+    "fromWindow": "system",
+    "params": {"title":"Tim's shell"},
+    "data": {},
+    "script": "if(window.pbjsHandleMessage) window.pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"system\\\",\\\"name\\\":\\\"rename\\\",\\\"params\\\":{\\\"title\\\":\\\"Tim\\'s shell\\\"},\\\"data\\\":{}}');"
+  },
+  {
+    "id": "backslash-value",
+    "label": "a Windows path in a host-built value",
+    "vehicle": "system",
+    "handler": "openPath",
+    "fromWindow": "system",
+    "params": {"title":"C:\\Users\\me"},
+    "data": {},
+    "script": "if(window.pbjsHandleMessage) window.pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"system\\\",\\\"name\\\":\\\"openPath\\\",\\\"params\\\":{\\\"title\\\":\\\"C:\\\\\\\\Users\\\\\\\\me\\\"},\\\"data\\\":{}}');"
+  },
+  {
+    "id": "newline-tab",
+    "label": "newline and tab, which have short escapes",
+    "vehicle": "system",
+    "handler": "log",
+    "fromWindow": "system",
+    "params": {"title":"line1\nline2\tend"},
+    "data": {},
+    "script": "if(window.pbjsHandleMessage) window.pbjsHandleMessage('{\\\"type\\\":\\\"send\\\",\\\"fromWindow\\\":\\\"system\\\",\\\"name\\\":\\\"log\\\",\\\"params\\\":{\\\"title\\\":\\\"line1\\\\nline2\\\\tend\\\"},\\\"data\\\":{}}');"
+  }
+]

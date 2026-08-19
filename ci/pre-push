@@ -23,13 +23,34 @@ cd "$repo"
 echo "[pre-push] static source checks"
 node ci/check-sources.mjs
 
+if [ -d tests/node_modules ]; then
+  echo "[pre-push] bridge tests (jsdom)"
+  (cd tests && npm test --silent)
+else
+  echo "[pre-push] tests/node_modules missing — skipping the bridge tests."
+  echo "           Install them once:  cd tests && npm ci"
+fi
+
 if ci/purebasic-home.sh >/dev/null 2>&1; then
   echo "[pre-push] pbcompiler syntax check"
   ci/check-purebasic.sh
+
+  echo "[pre-push] native harnesses"
+  tests/pb/run.sh >/dev/null
+
+  # The harness rewrites the fixture the jsdom suite asserts against. A stale
+  # committed copy still passes over there, while testing yesterday's wire
+  # format — so catch the drift here, where it can still be committed.
+  if ! git diff --quiet -- tests/fixtures/native-frames.json; then
+    echo "[pre-push] tests/fixtures/native-frames.json changed — the router now" >&2
+    echo "           emits different frames. Review and commit it." >&2
+    exit 1
+  fi
 else
-  echo "[pre-push] PureBasic not found — skipping the compiler check."
-  echo "           Set PUREBASIC_HOME to run it. The self-hosted CI job"
-  echo "           (.github/workflows/purebasic.yml) covers this if enabled."
+  echo "[pre-push] PureBasic not found — skipping the compiler check and the"
+  echo "           native harnesses. Set PUREBASIC_HOME to run them. The"
+  echo "           self-hosted CI job (.github/workflows/purebasic.yml) covers"
+  echo "           this if enabled."
 fi
 
 echo "[pre-push] OK"

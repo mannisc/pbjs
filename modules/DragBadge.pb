@@ -6,7 +6,7 @@
 ; (one code path for every OS): rounded chip, terminal glyph, one-line label,
 ; optional hint text per style.
 ;
-; Styles (mirror iplan/cross-window-dnd/plan.md §1):
+; Styles — what the badge promises will happen on release:
 ;   #Style_NewWindow — over desktop / foreign apps: release opens a new window
 ;   #Style_Revert    — over an app window outside any drop zone: release reverts
 ;

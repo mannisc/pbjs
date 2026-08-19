@@ -3,7 +3,32 @@
 ;-  Window Dark Mode Support
 ;=====================================================================
 DeclareModule OsTheme
+  ; Fired when the OS theme actually CHANGES (not on every check). The colours
+  ; below are already updated when it runs. JSWindow registers a handler that
+  ; repaints every window and broadcasts updateDarkMode() to every page —
+  ; OsTheme is included first and cannot reach either, hence the hook, same
+  ; pattern as WindowManager's SetMaxSizeChangedHandler.
+  Prototype.i ThemeChangedHandler(isDark.i)
+  Declare SetThemeChangedHandler(*proc)
+
+  ; The cached answer. Detection runs ONCE, at InitOsTheme, and after that this
+  ; is a variable read.
+  ;
+  ; It used to run per call, and the callers made that expensive: every window
+  ; created asks (PreparePbjsBasicScript -> IsDarkModeActive), and every pool
+  ; spare is a window — so warming a pool spawned `defaults` three times on
+  ; macOS, or up to three processes EACH on Linux (gsettings x2, gdbus). The
+  ; cache is what makes the answer free; RefreshDarkMode is how it is allowed to
+  ; change.
   Declare IsDarkModeActive()
+  ; Re-run detection. If the answer changed, update the colours and fire the
+  ; ThemeChangedHandler. Answers #True when something changed.
+  ;
+  ; Called by the platform watchers and by WindowManager's 5 s service tick
+  ; (macOS/Windows only — see ServiceTick for why Linux is excluded).
+  Declare.i RefreshDarkMode()
+  ; Detect without touching the cache or firing anything.
+  Declare.i DetectDarkMode()
   ; For Windows
   CompilerIf #PB_Compiler_OS = #PB_OS_Windows
     Declare ApplyThemeToWinHandle(hWnd)
@@ -33,12 +58,61 @@ EndDeclareModule
 Module OsTheme
   
   Global NewMap StaticControlThemeProcs()
-  
+
+  ; #False until InitOsTheme has run. Guards against a cache read that would
+  ; answer "light" simply because nobody had looked yet.
+  Global ThemeDetected = #False
+  Global ThemeChangedProc.ThemeChangedHandler = 0
+
+  Procedure SetThemeChangedHandler(*proc)
+    ThemeChangedProc = *proc
+  EndProcedure
+
+  ; Apply a detected value to the exported colours. Split out so detection,
+  ; caching and the colour side-effect are three separate things.
+  Procedure ApplyThemeColors(isDark.i)
+    If isDark
+      themeBackgroundColor = darkThemeBackgroundColor
+      themeForegroundColor = darkThemeForegroundColor
+    Else
+      themeBackgroundColor = lightThemeBackgroundColor
+      themeForegroundColor = lightThemeForegroundColor
+    EndIf
+  EndProcedure
+
   Procedure InitOsTheme()
-    IsDarkModeActive()
+    IsDarkModeActiveCached = DetectDarkMode()
+    ThemeDetected = #True
+    ApplyThemeColors(IsDarkModeActiveCached)
   EndProcedure 
-  
+
+  ; The cached read. Detection happens at InitOsTheme and in RefreshDarkMode.
+  ;
+  ; The lazy first detection is a safety net for a host that forgot
+  ; InitOsTheme() — it keeps the old behaviour (an answer, not a wrong default)
+  ; without keeping the old cost.
   Procedure IsDarkModeActive()
+    If Not ThemeDetected
+      InitOsTheme()
+    EndIf
+    ProcedureReturn IsDarkModeActiveCached
+  EndProcedure
+
+  Procedure.i RefreshDarkMode()
+    Protected isDark.i = DetectDarkMode()
+    If ThemeDetected And isDark = IsDarkModeActiveCached
+      ProcedureReturn #False
+    EndIf
+    IsDarkModeActiveCached = isDark
+    ThemeDetected = #True
+    ApplyThemeColors(isDark)
+    If ThemeChangedProc
+      ThemeChangedProc(isDark)
+    EndIf
+    ProcedureReturn #True
+  EndProcedure
+
+  Procedure.i DetectDarkMode()
     CompilerIf #PB_Compiler_OS = #PB_OS_Windows
       
       Protected key, result = 0, value.l, size = SizeOf(Long)
@@ -50,17 +124,45 @@ Module OsTheme
       EndIf
       
     CompilerElseIf #PB_Compiler_OS = #PB_OS_MacOS
-      Define mode$, result
-      result = RunProgram("/usr/bin/defaults", "read -g AppleInterfaceStyle", "", #PB_Program_Open | #PB_Program_Read)
-      If result
-        mode$ = ReadProgramString(result)
-        CloseProgram(result)
+      ; NSApp.effectiveAppearance — in-process, no subprocess (roadmap 2.4).
+      ;
+      ; This used to be RunProgram("/usr/bin/defaults", "read -g
+      ; AppleInterfaceStyle"), a fork + exec + pipe read, once per window
+      ; created. It is also the more correct answer: effectiveAppearance
+      ; reflects what the APP is actually drawing with, so an app that has
+      ; overridden its appearance reads true here and did not before.
+      ;
+      ; The `defaults` path is kept as a fallback for the one case that can
+      ; still occur: NSApp is nil before the shared application exists (a
+      ; console tool linking this module, or a very early call).
+      Define mode$, result, determined = #False
+      Define app, appearance, nameObj, namePtr, name$
+
+      app = CocoaMessage(0, 0, "NSApplication sharedApplication")
+      If app
+        appearance = CocoaMessage(0, app, "effectiveAppearance")
+        If appearance
+          nameObj = CocoaMessage(0, appearance, "name")
+          If nameObj
+            namePtr = CocoaMessage(0, nameObj, "UTF8String")
+            If namePtr
+              name$ = PeekS(namePtr, -1, #PB_UTF8)
+              ; "NSAppearanceNameDarkAqua" / "NSAppearanceNameVibrantDark" —
+              ; every dark variant carries "Dark", every light one does not.
+              result = Bool(FindString(name$, "Dark") > 0)
+              determined = #True
+            EndIf
+          EndIf
+        EndIf
       EndIf
-      
-      If mode$ = "Dark"
-        result = #True 
-      Else
-        result = #False 
+
+      If Not determined
+        Define prog = RunProgram("/usr/bin/defaults", "read -g AppleInterfaceStyle", "", #PB_Program_Open | #PB_Program_Read)
+        If prog
+          mode$ = ReadProgramString(prog)
+          CloseProgram(prog)
+        EndIf
+        result = Bool(mode$ = "Dark")
       EndIf
     CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
       Protected isDark = #False
@@ -218,14 +320,7 @@ Module OsTheme
       result = isDark
     CompilerEndIf
     
-    If result
-      themeBackgroundColor = darkThemeBackgroundColor
-      themeForegroundColor = darkThemeForegroundColor
-    Else
-      themeBackgroundColor = lightThemeBackgroundColor
-      themeForegroundColor = lightThemeForegroundColor
-    EndIf 
-    IsDarkModeActiveCached = result
+    ; Detection only — the caller decides what to do with the answer.
     ProcedureReturn result
   EndProcedure
   

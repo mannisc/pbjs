@@ -37,7 +37,6 @@ DeclareModule JSWindow
   
   ; webWindow: #True = HEADLESS window (web mode) — real invisible PB window,
   ; NO WebViewGadget; the page runs in a browser tab bridged via Sink hooks.
-  ; See iplan/webversion/plan.md (D3/D5).
   Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False)
   ; Set an opaque JS string to inject before this window's content/React loads.
   ; pbjs injects it verbatim and never interprets it — the app owns its meaning.
@@ -200,13 +199,14 @@ DeclareModule JSWindow
   Declare CheckCloseProgress()
   Declare CancelClose(Reason.s="")
 
-  ; Multi-instance public API. See plan iplan/agent-window-multi-instance/plan.md.
+  ; Multi-instance public API: a template is a window recipe, and OpenInstance
+  ; materializes (or focuses) one named instance of it, claiming a pre-warmed
+  ; spare from the pool when there is one. README §7.
   Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1, webMode.b = #False)
 
   ; Web mode: browser tab (re)attached / detached for a headless window —
   ; called by the app's proxy layer (WebProxy). Attach replays binds and the
   ; dev-reload bootstrap sequence; detach resets Ready so messages buffer.
-  ; See iplan/webversion/plan.md §5.5.
   Declare HandleHeadlessAttach(windowName.s)
   Declare HandleHeadlessDetach(windowName.s)
   Declare.i FindTemplate(templateName.s)
@@ -330,45 +330,27 @@ Module JSWindow
   EndProcedure
 
   ; ---------------------------------------------------------------------------
-  ; Sleep-and-post timer threads.
+  ; Delayed events.
   ;
-  ; The ONLY work a JSWindow worker thread may do is sleep, then post an event
-  ; (the ShowGadgetThread pattern). Everything else — JSWindows() lookups,
-  ; state checks, UI calls — must happen on the main thread: either before the
-  ; spawn (resolved into *Args by the caller) or in the handler of the posted
-  ; event. PB maps are not thread-safe: all lookups share one current-element
-  ; pointer, and reading a missing key even inserts an element — so a
-  ; thread-side JSWindows() access racing a main-thread add/delete corrupts
-  ; the map or dereferences a freed element.
-  Structure DelayedEventArgs
-    Window.i
-    DelayMs.i
-    EventType.i
-  EndStructure
-
-  Procedure DelayedEventThread(*Args.DelayedEventArgs)
-    Protected window    = *Args\Window
-    Protected delayMs   = *Args\DelayMs
-    Protected eventType = *Args\EventType
-    FreeStructure(*Args)
-    If delayMs > 0
-      Delay(delayMs)
-    EndIf
-    If IsWindow(window)
-      PostEvent(#CustomWindowEvent, window, 0, eventType)
-    EndIf
-  EndProcedure
-
-  ; Main-thread spawner for DelayedEventThread.
-  Procedure PostEventAfterDelay(window, delayMs, eventType)
-    Protected *Args.DelayedEventArgs = AllocateStructure(DelayedEventArgs)
-    *Args\Window    = window
-    *Args\DelayMs   = delayMs
-    *Args\EventType = eventType
-    If CreateThread(@DelayedEventThread(), *Args) = 0
-      FreeStructure(*Args)
-    EndIf
-  EndProcedure
+  ; PostEventAfterDelay lives in WindowManager now (roadmap 2.5) and is in scope
+  ; here through the UseModule at the top of this file. Every call below is
+  ; unchanged; what changed is underneath.
+  ;
+  ; It used to spawn a THREAD PER CALL whose whole job was to sleep and then
+  ; PostEvent — two to four per window prepare/open (the prepare timeout pair on
+  ; Windows, the content-ready delay, the reveal watchdogs). The thread was
+  ; carefully written to touch nothing but its own arguments, because PB maps
+  ; are not thread-safe: all lookups share one current-element pointer and
+  ; reading a missing key even INSERTS an element, so a thread-side JSWindows()
+  ; access racing a main-thread add corrupts the map. That constraint is gone
+  ; with the threads.
+  ;
+  ; The reason it moved is not the thread count, though: a sleeping thread
+  ; cannot be cancelled, so its post outlived its window and landed on whatever
+  ; PB window number had been recycled in the meantime. The latches that absorb
+  ; those stale posts (PrepareWaiting) exist BECAUSE of that. Now
+  ; ForgetManagedWindow cancels a window's pending events, so the stale post is
+  ; not absorbed — it never happens.
 
   ; Runs on the MAIN thread (called from JSReadyState): it reads JSWindows(),
   ; which no worker thread may touch. Only the sleep-and-post is threaded.
@@ -392,7 +374,7 @@ Module JSWindow
       CompilerElse
         ; Windows: was 100ms. An early show is flash-safe — the window bg is
         ; pre-set to themeBackgroundColor and the body sits at opacity:0 until
-        ; pbjs-document-ready (iplan/startupREVIEWED.md #6).
+        ; pbjs-document-ready.
         delayMs = 24
       CompilerEndIf
     EndIf
@@ -1706,13 +1688,64 @@ Module JSWindow
   
   
   
+  ; WindowManager asks for a re-check; OsTheme answers whether anything changed
+  ; and, if so, calls HandleThemeChanged below. A wrapper rather than passing
+  ; @OsTheme::RefreshDarkMode() directly, because PureBasic's @ operator cannot
+  ; take a module-qualified procedure address.
+  Procedure.i RecheckOsTheme()
+    ProcedureReturn OsTheme::RefreshDarkMode()
+  EndProcedure
+
+  ; The OS theme changed (roadmap 2.4 / R7). OsTheme has already updated
+  ; themeBackgroundColor and themeForegroundColor; this repaints the native
+  ; chrome and tells every page.
+  ;
+  ; The page half is what the finding was about: the bridge has shipped
+  ; registerDarkModeChangeHandler / updateDarkMode from the start and NOTHING on
+  ; the native side ever called them, so a mid-run theme flip left every window
+  ; on the theme it had at launch. This is the missing caller.
+  Procedure.i HandleThemeChanged(isDark.i)
+    Protected flag.s = "false"
+    If isDark
+      flag = "true"
+    EndIf
+    Protected script.s = "if(window.pbjs&&window.pbjs.updateDarkMode){window.pbjs.updateDarkMode(" + flag + ");}"
+
+    ForEach JSWindows()
+      If MapKey(JSWindows()) = "" : Continue : EndIf
+
+      ; Native chrome first — it is what shows through before the page repaints,
+      ; and for a window that is not ready it is the only half that can happen.
+      If Not JSWindows()\Headless And IsWindow(JSWindows()\Window)
+        SetWindowColor(JSWindows()\Window, OsTheme::themeBackgroundColor)
+        CompilerIf #PB_Compiler_OS = #PB_OS_Windows
+          OsTheme::ApplyThemeToWinHandle(WindowID(JSWindows()\Window))
+        CompilerEndIf
+      EndIf
+
+      ; Only a window whose page is up can be told. One that is not — a warming
+      ; pool spare, a window mid-load — picks the theme up on its own at load
+      ; (pbjs.init reads prefers-color-scheme), so there is nothing to queue.
+      If JSWindows()\Ready And Sink::IsValid(JSWindows()\Sink)
+        Sink::Exec(JSWindows()\Sink, script)
+      EndIf
+    Next
+    ProcedureReturn #True
+  EndProcedure
+
   Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False)
 
-    ; WindowManager polls the desktop bounding box but cannot call into this
-    ; module (it is included first), so the responses are registered from here.
+    ; WindowManager and OsTheme are both included before this module and cannot
+    ; call into it, so the responses are registered from here.
     ; Idempotent — each handler is a single global, not a list.
     SetMaxSizeChangedHandler(@HandleMaxDesktopSizeChanged())
     SetManagedWindowRemovingHandler(@HandleManagedWindowRemoving())
+    ; Two halves of the same wiring: WindowManager decides WHEN to re-check the
+    ; theme (its service tick and its per-OS watchers) but cannot reach OsTheme;
+    ; OsTheme decides IF anything changed but cannot reach the windows. This
+    ; module is the only one that sees both.
+    SetThemeRecheckHandler(@RecheckOsTheme())
+    OsTheme::SetThemeChangedHandler(@HandleThemeChanged())
 
     Protected parentWindowID = 0
     If *Parent And IsWindow(*Parent\Window)
@@ -1725,7 +1758,6 @@ Module JSWindow
       ; Headless (web-mode) window: real invisible PB window — all identity /
       ; geometry / close plumbing keeps working — but NO WebViewGadget; the
       ; page runs in a browser tab and traffic routes through the Sink hooks.
-      ; See iplan/webversion/plan.md D3.
       Protected webViewGadget = 0
       Protected sink.i
       If webWindow
@@ -2997,9 +3029,11 @@ Module JSWindow
   ; answered may be mid-save, and pbjs will not throw that away on a guess. A
   ; genuinely wedged app is the OS's problem to kill, not this module's.
   ;
-  ; No timer object and no generation counter: the arm TIME is the generation.
-  ; A stale post from a completed round finds either ClosingScope = 0, or a
-  ; newer round whose elapsed time has not run out yet — and no-ops either way.
+  ; The arm TIME is the generation. Since 2.5 a re-arm also CANCELS the previous
+  ; round's pending event, so this is belt-and-braces rather than the whole
+  ; mechanism — but it is kept, because cancelling cannot reach a post that PB
+  ; has already moved into its event queue. A stale post then finds either
+  ; ClosingScope = 0, or a newer round whose elapsed time has not run out.
   Global CloseWatchdogArmedAt.q = 0
 
   Procedure ArmCloseWatchdog(Scope)
@@ -3022,6 +3056,11 @@ Module JSWindow
     EndIf
 
     If deliverTo
+      ; 2.5: cancel the previous round's watchdog rather than relying on the
+      ; arm-time check to no-op it. That check stays as a second line of defence
+      ; — it costs nothing and it also covers a post that was already in PB's
+      ; event queue when this ran, which cancelling cannot reach.
+      CancelDelayedEvent(deliverTo, #Event_Close_Watchdog)
       PostEventAfterDelay(deliverTo, #PBJS_CloseCheckTimeoutMs, #Event_Close_Watchdog)
     Else
       ; Nothing left to deliver to — nothing can reply either, so the scope
@@ -3549,6 +3588,23 @@ Module JSWindow
           If ResizeDrainHook : CallFunctionFast(ResizeDrainHook) : EndIf
           ProcedureReturn #True
 
+        Case $007E ; WM_DISPLAYCHANGE
+          ; Roadmap 2.3: a display was attached, removed, or changed resolution.
+          ; This is what replaced polling ExamineDesktops() twice a second.
+          ; WindowManager owns the response (it also runs on the 5 s belt-and-
+          ; braces tick), so this is only the trigger.
+          WindowManager::ServiceTick()
+
+        Case $001A ; WM_SETTINGCHANGE (== WM_WININICHANGE)
+          ; Roadmap 2.4: LParam names the changed setting; "ImmersiveColorSet"
+          ; is the one Windows sends on a light/dark flip. Anything else here is
+          ; a different setting entirely and must not cost a registry read.
+          If LParam
+            If PeekS(LParam, -1, #PB_Unicode) = "ImmersiveColorSet"
+              OsTheme::RefreshDarkMode()
+            EndIf
+          EndIf
+
         Case $0231 ; WM_ENTERSIZEMOVE — modal loop begins
           Debug "[JSWIN-CB] WM_ENTERSIZEMOVE hwnd=" + Str(hWnd) + " t=" + Str(ElapsedMilliseconds())
           ; Cover the held-still case (no WM_SIZE): WM_TIMER is the only message
@@ -3601,7 +3657,6 @@ Module JSWindow
   ; callbackReadyState), WindowJS, and the pbjs bridge script. Everything
   ; after that — JSReadyState → Ready → FlushPendingMessages → Content_Ready →
   ; WindowLoaded — is the untouched existing handshake.
-  ; iplan/webversion/plan.md §5.5.
   Procedure HandleHeadlessAttach(windowName.s)
     If Not FindMapElement(WindowsByName(), windowName)
       Debug "[JSWindow] HandleHeadlessAttach: unknown window '" + windowName + "'"

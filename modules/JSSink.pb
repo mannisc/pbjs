@@ -13,7 +13,7 @@
 ; pbjsBridge / JSWindow / ptym / pbjsFileSystem route through it and stay
 ; transport-unaware. With no hooks installed (standalone pbjs builds, native
 ; mode) headless sinks are inert no-ops and real sinks behave byte-identically
-; to the direct calls. Design: iplan/webversion/plan.md §3.3, §0.5.
+; to the direct calls.
 ;
 ; Threading: everything here is main-thread only (all existing exec/bind call
 ; sites are main-thread — plan C9). No locking on purpose.

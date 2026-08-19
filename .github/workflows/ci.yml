@@ -66,3 +66,33 @@ jobs:
       # include check is exercised in full.
       - name: Static source checks
         run: node ci/check-sources.mjs
+
+  bridge:
+    name: Bridge tests (jsdom)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tests/package-lock.json
+
+      - name: Install
+        working-directory: tests
+        run: npm ci
+
+      # pbjsBridgeScript.js under a fake native, in jsdom — buffering and
+      # replay, the dead-letter grace, AbortSignal, the lifecycle push, the
+      # invokeAll count protocol, and the close-veto auto-approve.
+      #
+      # This job also runs the CROSS-LANGUAGE escaping round trip
+      # (js/native-frames.test.js): it evaluates real frames emitted by the
+      # PureBasic router, replayed from the committed
+      # tests/fixtures/native-frames.json. That is why the fixture is committed
+      # — it is the only way this half of the seam can be checked on a runner
+      # with no PureBasic compiler. Regenerate it with tests/pb/run.sh.
+      - name: Run
+        working-directory: tests
+        run: npm test

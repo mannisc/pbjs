@@ -408,7 +408,7 @@ Module JSFileSystem
   ; ============================================================================
   
   ; webViewGadget is a Sink handle (real gadget or negative headless handle —
-  ; web mode routes via Sink, iplan/webversion/plan.md).
+  ; web mode routes via Sink).
   Procedure InitializeFileSystem(window.i, webViewGadget.i)
     Protected contextId.s = Str(window)
     Contexts(contextId)\Window = window

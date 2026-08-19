@@ -9,7 +9,7 @@
 ; (DragBadge.pb), and routing dnd:* messages between windows over the normal
 ; pbjs transport.
 ;
-; Protocol (canonical doc: vynce docs/dnd.md; plan: iplan/cross-window-dnd/):
+; Protocol (the JS side of it is README §7):
 ;   JS → native (Sink binds, all windows):
 ;     pbjsNativeDndStart(win, specJson)        → {sessionId} | {error}
 ;     pbjsNativeDndDrop(win, sessionId)        → {pending:true} | {error}
@@ -36,9 +36,9 @@
 ; other platforms Init() leaves the service disabled and the JS natives report
 ; "unavailable", which makes the web layer fall back to its legacy behavior.
 ;
-; Debug: $TMPDIR/vynce_dnd_debug.log (disable with VYNCE_DND_DEBUG=0) — one
-; line per state transition, mirroring the graph-debug (gdlog) pattern.
-; Feature flag: VYNCE_DND=0 disables the whole service.
+; Debug: $TMPDIR/pbjs_dnd_debug.log (disable with PBJS_DND_DEBUG=0) — one
+; line per state transition.
+; Feature flag: PBJS_DND=0 disables the whole service.
 
 Module DndService
   UseModule JSWindow
@@ -568,19 +568,19 @@ Module DndService
     If Initialized : ProcedureReturn : EndIf
     Initialized = #True
     ResetState()
-    ; Registered unconditionally (ahead of the VYNCE_DND/platform gate below):
+    ; Registered unconditionally (ahead of the PBJS_DND/platform gate below):
     ; TargetTypes() can be populated on any platform/flag state (registerTarget
     ; natives aren't themselves gated on Enabled), so the cleanup should apply
     ; the same way regardless of whether the rest of the service is live.
     JSWindow::RegisterWindowClosingObserver(@WindowClosing())
     CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-      If GetEnvironmentVariable("VYNCE_DND") = "0"
+      If GetEnvironmentVariable("PBJS_DND") = "0"
         ProcedureReturn
       EndIf
-      If GetEnvironmentVariable("VYNCE_DND_DEBUG") = "0"
+      If GetEnvironmentVariable("PBJS_DND_DEBUG") = "0"
         DebugEnabled = #False
       EndIf
-      DebugPath = GetTemporaryDirectory() + "vynce_dnd_debug.log"
+      DebugPath = GetTemporaryDirectory() + "pbjs_dnd_debug.log"
       DragBadge::Init()
       If DragBadge::GetWindow() = 0
         DLog("[Init] badge window creation failed — service disabled")

@@ -1,0 +1,5 @@
+# Build outputs from build.sh / build.cmd. The example's own dist/ is ignored
+# by reactExample/main-window/.gitignore.
+/pbjsExample
+/pbjsExample.exe
+.DS_Store

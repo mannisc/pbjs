@@ -10,7 +10,7 @@
   const WINDOW_NAME = "_WINDOW_NAME_INJECTED_BY_NATIVE_";
   const OS_NAME = "_OS_NAME_INJECTED_BY_NATIVE_";
   // Read once at page load, before pbjs.drag exists as an object — reports
-  // whether DndService actually started (host has it / VYNCE_DND!=0 / mac /
+  // whether DndService actually started (host has it / PBJS_DND!=0 / mac /
   // not web mode), not just whether the pbjsNativeDnd* functions exist (they
   // exist as no-op-ish natives regardless of Enabled).
   const DND_ENABLED = "_DND_ENABLED_INJECTED_BY_NATIVE_" === "1";
@@ -32,6 +32,21 @@
   const DEAD_LETTER_GRACE_MS = 5000;
   let deadLetterCount = 0;
 
+  // F4: how long a request waits for its reply before rejecting. Overridable
+  // per call with options.timeoutMs — a store hydration and a "did you save?"
+  // round trip do not deserve the same deadline, and 30 s is far too long to
+  // discover that a handler is wedged.
+  const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+
+  // A caller-supplied timeout, or the default. Anything that is not a positive
+  // finite number falls back rather than producing a request that never times
+  // out (timeoutMs: 0 / NaN / "5s" would each do that with a bare read).
+  function requestTimeoutFrom(options) {
+    const ms = options && options.timeoutMs;
+    if (typeof ms === "number" && isFinite(ms) && ms > 0) return ms;
+    return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+
   // F9: standard AbortError for cancelled invoke() calls (DOMException where
   // available, falling back to a named Error).
   function makeAbortError() {
@@ -52,6 +67,15 @@
   // returns an immediate native error instead, so it stays cached and keeps
   // failing fast (and routes correctly once reopened). (Finding F3.)
   const readyWindows = new Set();
+
+  // P6: pending waitForWindow() calls, keyed by the name being waited on, so the
+  // host's pbjsWindowEvent(name, "ready") push can settle them directly instead
+  // of a poll noticing several hundred milliseconds later.
+  const windowWaiters = new Map();
+  // Fallback re-probe interval. Deliberately slow — the push is the primary
+  // signal and this only has to cover the gap described on waitForWindow.
+  // Override at runtime with window.pbjsWaitForWindowPollMs.
+  const WAIT_FOR_WINDOW_POLL_MS = 1000;
 
   // --- NATIVE LOGGING WRAPPERS ---
   const originalConsole = {
@@ -194,6 +218,32 @@
       console.error("[PBJS] pbjsNativeGetWindow failed to appear after wait.");
     }
   };
+
+  // F5a: registering a handler for a key that already has one silently replaces
+  // it, and the loser simply stops receiving messages — no error, nothing in
+  // stats, just a feature that quietly went dead. Two subsystems claiming the
+  // same name, or a rename that missed a call site, both look like this.
+  //
+  // Re-registering the SAME function is not warned about: React effects re-run
+  // (StrictMode double-invokes them in development), and a warning that fires
+  // on ordinary remounts is one people learn to ignore.
+  //
+  // This one forwards to native rather than staying in devtools — it is a real
+  // fault, it is rare, and it is worth seeing without the inspector open.
+  let handlerReplaceCount = 0;
+  function warnOnHandlerReplace(key, handler) {
+    const existing = handlers.get(key);
+    if (!existing || existing === handler) return;
+    handlerReplaceCount++;
+    console.warn(
+      "[PBJS] Handler replaced for '" +
+        key +
+        "' on " +
+        WINDOW_NAME +
+        " — the previous one will no longer receive messages. Two owners for " +
+        "one name, or a missed removeHandler?"
+    );
+  }
 
   // --- MAIN INIT EXECUTION ---
   (async () => {
@@ -432,98 +482,108 @@
           });
       },
 
-      isWindowReady: function (windowName) {
-        if (window.pbjsNativeIsWindowReady) {
-          return window
-            .pbjsNativeIsWindowReady(windowName)
-            .then((result) => result) // Ensure Promise return
-            .catch(() => false);
-        }
-        return Promise.resolve(true); // Default to true if not defined
-      },
-
+      // Wait until `windowName` exists, resolving with its window object.
+      //
+      // P6: this used to poll getWindow every 100 ms for the full timeout — up
+      // to 60 rounds, each two native round-trips, for a window that in the
+      // ordinary case appears within one. It also called isWindowReady() on
+      // every round, which was pure ceremony: pbjsNativeIsWindowReady is bound
+      // NOWHERE on the native side (verified against every Sink::Bind call in
+      // JSWindow.pb), so the check was a hard-coded `true` and waitForWindow was
+      // an existence probe with extra steps. That surface is gone.
+      //
+      // Now: one probe, then wait for the host to say so. The host already
+      // pushes pbjsWindowEvent(name, "ready") to every peer the moment a
+      // window's page reports ready (JSWindow.pb JSReadyState ->
+      // NotifyWindowEvent), which is precisely this signal.
+      //
+      // The slow poll stays as a fallback, and it is not belt-and-braces — it
+      // covers a real gap: NotifyWindowEvent skips windows whose OWN page is
+      // not Ready yet, so a window still loading misses every push sent during
+      // its load. The opening probe covers what already existed; the poll
+      // covers a peer that became ready inside that window.
+      //
+      // A "closed"/"reloaded" push for a name being waited on deliberately does
+      // NOT reject: the caller may well be waiting for that window to come
+      // back, and the timeout is the honest deadline for that.
       waitForWindow: function (windowName, timeout = 6000) {
+        const self = this;
         return new Promise((resolve, reject) => {
-          let attempts = 0;
-          const maxAttempts = Math.floor(timeout / 100);
+          let done = false;
+          let pollTimer = null;
+          let deadlineTimer = null;
 
-          const check = () => {
-            // getWindow is now async
-            this.getWindow(windowName)
+          const finish = () => {
+            if (done) return;
+            done = true;
+            if (pollTimer) clearTimeout(pollTimer);
+            if (deadlineTimer) clearTimeout(deadlineTimer);
+            const set = windowWaiters.get(windowName);
+            if (set) {
+              set.delete(entry);
+              if (set.size === 0) windowWaiters.delete(windowName);
+            }
+          };
+
+          const entry = {
+            settle: (win) => {
+              const wasDone = done;
+              finish();
+              if (!wasDone) resolve(win);
+            },
+            fail: (err) => {
+              const wasDone = done;
+              finish();
+              if (!wasDone) reject(err);
+            },
+          };
+
+          const schedulePoll = () => {
+            if (done) return;
+            const interval =
+              typeof window.pbjsWaitForWindowPollMs === "number"
+                ? window.pbjsWaitForWindowPollMs
+                : WAIT_FOR_WINDOW_POLL_MS;
+            pollTimer = setTimeout(probe, interval);
+          };
+
+          function probe() {
+            if (done) return;
+            self
+              .getWindow(windowName)
               .then((win) => {
-                if (!win) {
-                  // win is null/undefined if not found
-                  if (attempts < maxAttempts) {
-                    attempts++;
-                    setTimeout(check, 100);
-                  } else {
-                    reject(
-                      new Error(
-                        "Window '" +
-                          windowName +
-                          "' not found after " +
-                          timeout +
-                          "ms"
-                      )
-                    );
-                  }
+                if (done) return;
+                if (win) {
+                  readyWindows.add(windowName);
+                  entry.settle(win);
                   return;
                 }
-
-                // Check ready state
-                this.isWindowReady(windowName)
-                  .then((isReady) => {
-                    if (isReady) {
-                      originalConsole.log(
-                        "[PBJS] waitForWindow resolving for " + windowName,
-                        win
-                      );
-                      // Warm the readiness cache (F3) for every waitForWindow
-                      // caller — invoke, send, and external callers alike.
-                      readyWindows.add(windowName);
-                      resolve(win);
-                    } else {
-                      if (attempts < maxAttempts) {
-                        attempts++;
-                        setTimeout(check, 100);
-                      } else {
-                        reject(
-                          new Error(
-                            "Window '" +
-                              windowName +
-                              "' not ready after " +
-                              timeout +
-                              "ms"
-                          )
-                        );
-                      }
-                    }
-                  })
-                  .catch((err) => {
-                    console.error(
-                      "[PBJS] isWindowReady error for " + windowName,
-                      err
-                    );
-                    // Treat check error as not ready -> retry?
-                    if (attempts < maxAttempts) {
-                      attempts++;
-                      setTimeout(check, 100);
-                    } else {
-                      reject(err);
-                    }
-                  });
+                schedulePoll();
               })
               .catch((err) => {
                 console.error("[PBJS] getWindow error for " + windowName, err);
-                if (attempts < maxAttempts) {
-                  attempts++;
-                  setTimeout(check, 100);
-                } else {
-                  reject(err);
-                }
+                schedulePoll();
               });
-          };
-          check();
+          }
+
+          // Registered BEFORE the first probe, so a push that lands while the
+          // probe is in flight is not missed.
+          let set = windowWaiters.get(windowName);
+          if (!set) {
+            set = new Set();
+            windowWaiters.set(windowName, set);
+          }
+          set.add(entry);
+
+          deadlineTimer = setTimeout(() => {
+            entry.fail(
+              new Error(
+                "Window '" + windowName + "' not found after " + timeout + "ms"
+              )
+            );
+          }, timeout);
+
+          probe();
         });
       },
 
@@ -548,6 +608,8 @@
         }
 
         log.invoke(windowName, name, params, data);
+
+        const timeoutMs = requestTimeoutFrom(options);
 
         // The actual native "get" dispatch + pending-request bookkeeping.
         const dispatchGet = () => {
@@ -609,7 +671,7 @@
                 log.error("invoke timeout", error);
                 settleReject(error);
               }
-            }, 30000);
+            }, timeoutMs);
 
             window.pbjsNativeGet(
               JSON.stringify({
@@ -643,7 +705,7 @@
           });
       },
 
-      invokeAll: function (name, params, data) {
+      invokeAll: function (name, params, data, options) {
         if (!name || typeof name !== "string") {
           const error = new Error("name must be a non-empty string");
           log.error("invokeAll", error);
@@ -674,9 +736,11 @@
             if (getAllPendingRequests.has(requestId)) {
               const pending = getAllPendingRequests.get(requestId);
               getAllPendingRequests.delete(requestId);
+              // Resolves, never rejects: a partial answer is more useful than an
+              // error, and the caller can see which windows are missing.
               resolve(pending.responses);
             }
-          }, 30000);
+          }, requestTimeoutFrom(options));
 
           window.pbjsNativeGetAll(
             JSON.stringify({
@@ -740,7 +804,7 @@
 
       // Fire-and-forget broadcast to every window except the sender. Same
       // no-reply semantics as send(). This is the cheap primitive for events,
-      // presence, and store-sync patches (see iplan/pbjszustand.md).
+      // presence, and store-sync patches (README §10).
       //
       // Note: unlike invoke()/send(), there is no single target to wait on, so
       // the readiness cache (F3) does not apply here. The native router already
@@ -910,6 +974,7 @@
 
         const key = windowName + ":" + name;
         originalConsole.log("[PBJS] Registered handler for: " + key);
+        warnOnHandlerReplace(key, handler);
         handlers.set(key, handler);
         replayUnhandledMessages();
       },
@@ -921,6 +986,7 @@
           throw new TypeError("Handler must be a function");
 
         originalConsole.log("[PBJS] Registered global handler for: *:" + name);
+        warnOnHandlerReplace("*:" + name, handler);
         handlers.set("*:" + name, handler);
         replayUnhandledMessages();
       },
@@ -945,7 +1011,9 @@
           unhandledBuffered: unhandledMessages.length,
           droppedUnhandled: droppedUnhandledCount,
           deadLetters: deadLetterCount,
+          handlersReplaced: handlerReplaceCount,
           readyWindows: readyWindows.size,
+          waitingForWindows: windowWaiters.size,
           handlers: handlers.size,
         };
       },
@@ -1178,6 +1246,29 @@
     }
   };
 
+  // P6: settle every waitForWindow() waiting on `windowName`. The push carries
+  // only a name, and the waiters were promised the window OBJECT, so this costs
+  // one getWindow — once for the whole set, and only when the host has just said
+  // the window can answer. If it somehow comes back empty the waiters are left
+  // alone, and their fallback poll picks them up.
+  function resolveWindowWaiters(windowName) {
+    const waiters = windowWaiters.get(windowName);
+    if (!waiters || waiters.size === 0) return;
+    // The push can arrive before init finished assigning window.pbjs.
+    if (!window.pbjs || !window.pbjs.getWindow) return;
+    window.pbjs
+      .getWindow(windowName)
+      .then((win) => {
+        if (!win) return;
+        const current = windowWaiters.get(windowName);
+        if (!current) return;
+        windowWaiters.delete(windowName);
+        readyWindows.add(windowName);
+        current.forEach((entry) => entry.settle(win));
+      })
+      .catch(() => {});
+  }
+
   // Native push (§6.5): the host calls this on every OTHER window when a window's
   // lifecycle changes, so the readiness cache stays correct AND in-flight requests
   // targeting a window that just closed/reloaded are rejected immediately instead
@@ -1187,6 +1278,7 @@
     if (!windowName || typeof windowName !== "string") return;
     if (kind === "ready") {
       readyWindows.add(windowName);
+      resolveWindowWaiters(windowName);
       return;
     }
     // closed / reloaded: the window can no longer answer outstanding requests.

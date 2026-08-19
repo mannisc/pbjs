@@ -246,8 +246,8 @@ alternate load). On Windows it also means a window's HTML no longer appears
 under `%TEMP%` at all.
 
 Consider making the base URL a host-app setting rather than hardcoding it, so a
-consumer picks its own origin. See `pbjs/iplan/suggestions.md` §4 (Route C) for
-the wider context and the per-OS route table.
+consumer picks its own origin. `iplan/roadmap.md` step 3.2 (B3) carries the
+wider context and the per-OS route table.
 
 ## What this does NOT fix
 

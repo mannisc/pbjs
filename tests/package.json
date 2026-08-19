@@ -1,0 +1,15 @@
+{
+  "name": "pbjs-tests",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Test harnesses for the pbjs bridge. See README.md.",
+  "scripts": {
+    "test": "vitest run",
+    "watch": "vitest"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1",
+    "vitest": "^3.2.4"
+  }
+}
