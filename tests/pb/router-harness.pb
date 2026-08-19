@@ -422,6 +422,108 @@ CheckEqI(JSBridge::GetJSWindowByName("nope"), -1, "unknown name -> -1")
 CheckEqI(MapSize(JSWindow::JSWindows()), 1, "no ghost element was inserted by any of that")
 
 ; ============================================================================
+;- 7b. The delayed-event scheduler  (roadmap 2.5)
+; ============================================================================
+; PostEventAfterDelay used to spawn a thread per call whose only job was to
+; sleep and then PostEvent. It is now one main-thread deadline list, which makes
+; it testable — and, more to the point, CANCELLABLE, which is the actual reason
+; it moved: a sleeping thread's post outlived its window and landed on whatever
+; PB window number had been recycled since.
+;
+; WindowManager::ServiceDelayedEvents() returns the milliseconds until the next deadline, which
+; is what RunEventLoop uses to size its WaitWindowEvent — so these assertions
+; also cover 2.2's wait computation. What is NOT covered here is the loop
+; itself: PostEvent needs a real PB window to deliver to, and this harness has
+; none. The queue's bookkeeping is the half that can be checked without a GUI.
+
+Section("scheduling and draining")
+WindowManager::CancelDelayedEvents(0)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 0, "starts empty")
+
+WindowManager::PostEventAfterDelay(0, 50, 101)
+WindowManager::PostEventAfterDelay(0, 5000, 102)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 2, "two entries queued")
+
+Define nextIn.i = WindowManager::ServiceDelayedEvents()
+Check(Bool(nextIn > 0 And nextIn <= 50), "reports the NEAREST deadline, not the furthest")
+CheckEqI(WindowManager::PendingDelayedEventCount(), 2, "nothing fired yet")
+
+Delay(70)
+nextIn = WindowManager::ServiceDelayedEvents()
+CheckEqI(WindowManager::PendingDelayedEventCount(), 1, "the due entry drained")
+Check(Bool(nextIn > 4000), "and the remaining one is still ~5 s out")
+
+Section("an empty queue means 'sleep until an event arrives'")
+WindowManager::CancelDelayedEvents(0)
+CheckEqI(WindowManager::ServiceDelayedEvents(), 0, "0 = no deadline to wake for")
+
+Section("a zero delay is due immediately, not dropped")
+WindowManager::PostEventAfterDelay(0, 0, 103)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 1, "queued")
+WindowManager::ServiceDelayedEvents()
+CheckEqI(WindowManager::PendingDelayedEventCount(), 0, "drained on the very next service")
+
+Section("a negative delay is clamped, not treated as far future")
+WindowManager::PostEventAfterDelay(0, -1000, 104)
+WindowManager::ServiceDelayedEvents()
+CheckEqI(WindowManager::PendingDelayedEventCount(), 0, "drained immediately")
+
+Section("cancellation — the point of the whole change")
+WindowManager::CancelDelayedEvents(0)
+WindowManager::PostEventAfterDelay(11, 5000, 201)
+WindowManager::PostEventAfterDelay(11, 5000, 202)
+WindowManager::PostEventAfterDelay(22, 5000, 201)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 3, "three queued across two windows")
+
+WindowManager::CancelDelayedEvent(11, 201)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 2, "one kind cancelled for one window")
+
+WindowManager::CancelDelayedEvents(11)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 1, "the rest of that window's went too")
+; The survivor is window 22's, still ~5 s out — cancelling window 11 did not
+; touch it, and did not fire it either.
+Check(Bool(WindowManager::ServiceDelayedEvents() > 4000), "…and window 22's is untouched, still pending")
+
+WindowManager::CancelDelayedEvents(22)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 0, "the other window's cancelled independently")
+
+Section("cancelling what is not there is a no-op, not a corruption")
+WindowManager::CancelDelayedEvents(999)
+WindowManager::CancelDelayedEvent(999, 1)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 0, "still empty, no crash")
+
+Section("a window forgotten by the manager loses its pending events")
+; This is the whole cancellation story end to end: ForgetManagedWindow is what
+; every teardown path calls, so a delayed event cannot outlive its window.
+WindowManager::PostEventAfterDelay(0, 5000, 301)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 1, "armed")
+Define *fake.WindowManager::AppWindow = AllocateStructure(WindowManager::AppWindow)
+*fake\Window = 0
+*fake\Hwnd = 0
+*fake\PendingRemoval = #False
+WindowManager::ForgetManagedWindow(*fake)
+CheckEqI(WindowManager::PendingDelayedEventCount(), 0, "ForgetManagedWindow cancelled it")
+FreeStructure(*fake)
+; ForgetManagedWindow bumped the removal counter for a record that is not in the
+; list; clear it so the harness's later sections are not sweeping a ghost.
+WindowManager::SweepRemovedWindows()
+
+Section("many entries, mixed deadlines")
+WindowManager::CancelDelayedEvents(0)
+Define k.i
+For k = 1 To 50
+  WindowManager::PostEventAfterDelay(0, 5000 + k, 400 + k)
+Next
+For k = 1 To 25
+  WindowManager::PostEventAfterDelay(0, 1, 500 + k)
+Next
+CheckEqI(WindowManager::PendingDelayedEventCount(), 75, "all 75 queued")
+Delay(20)
+WindowManager::ServiceDelayedEvents()
+CheckEqI(WindowManager::PendingDelayedEventCount(), 50, "exactly the 25 due ones drained")
+WindowManager::CancelDelayedEvents(0)
+
+; ============================================================================
 ;- 8. Escaping round trip — emit the fixture the jsdom side consumes
 ; ============================================================================
 ; The PB assertions above check what the escapers PRODUCE. They cannot check the
