@@ -32,7 +32,7 @@ Companion to [roadmap.md](roadmap.md). One row per roadmap step.
 
 | # | Step | Done | Info |
 |---|---|---|---|
-| 2.1 | S4 — Test harnesses (jsdom + native Sink router) | [ ] | Not in this batch. |
+| 2.1 | S4 — Test harnesses (jsdom + native Sink router) | [~] | Both harnesses built and wired into CI: **112 jsdom tests** (7 files) + **77 native assertions**. The jsdom half loads `pbjsBridgeScript.js` under a ~250-line fake native and covers buffering/replay, the bounded queue and its drop counters, the F7 dead-letter grace, AbortSignal, the §6.5 lifecycle push and orphan-reject, the readiness cache's enter/evict rules, `invokeAll`'s expected-count protocol, and R1's auto-approve. The native half drives the real `HandleSend`/`HandleGet`/`HandleSendAll`/`HandleGetAll`/`HandleReply` through `Sink::DispatchCall` — **they are module-private and reachable no other way** — covering queueing to not-ready windows, the queue cap, spare filtering (incl. that `getAll` counts exactly the windows it asks), both immediate `get` error paths, reply routing and `NotifyWindowEvent`. **A committed fixture joins the two halves** so the escaping round trip runs in hosted CI with no compiler: `tests/pb/run.sh` writes the frames the router emits, `js/native-frames.test.js` evals them in jsdom. Verified to have teeth by re-introducing R3 — 12 native assertions and 7 jsdom tests fail, the latter with the production symptom (an empty `seen`: the message silently gone). Marked `[~]` because **R4 and R6 are still uncovered** — see "Deviations" §7. |
 | 2.2 | P1 — Let the event loop sleep | [ ] | Not in this batch. |
 | 2.3 | P2 — Display-change events replace the 500 ms poll | [ ] | Not in this batch. Depends on 1.9. |
 | 2.4 | R7 + P3 — Live theme: watch it, cache it, stop forking | [ ] | Not in this batch. |
@@ -166,6 +166,74 @@ Removal is deliberately two-phase (mark in `ForgetManagedWindow`, free in
 `ForEach`, since PureBasic's `DeleteElement` leaves the current-element pointer
 somewhere version-dependent and this loop must not depend on which.
 
+### 7 · The Sink harness cannot reach R4 or R6 (2.1)
+
+The roadmap's 2.1 says the native harness covers "registry cleanup (R4's
+regression)". It cannot, and neither can it cover R6. Both live inside a real
+window lifecycle:
+
+| Finding | Where the code is | Why a headless sink cannot get there |
+|---|---|---|
+| **R4** (1.10) registry cleanup | `CloseJSWindow`'s teardown branch | there is no window to close — `Harness::AddWindow` builds a `JSWindow` record with a headless sink and no OS window |
+| **R6** (1.11) pool refill | `OpenInstance` / `RefillPoolAsync` | needs `RegisterTemplate` + real spares + the event loop that `#Event_Pool_Refill` rides |
+
+That is not a shortcoming of the seam — the seam is exactly what the roadmap
+described, and it does cover the router end to end. It is that two of the four
+targets the handover named are *not router* findings. Covering them means a
+harness that opens real windows (a bounded event loop, a trivial inline HTML
+page, then asserting `ListSize(ManagedWindows())` and the handle map return to
+baseline while a recycled instance does **not** deregister). Worth doing on its
+own terms; it is a different harness, not a wider version of this one.
+
+The other two named targets landed as follows: **R1's auto-approve** is fully
+covered in jsdom (`close-veto.test.js`), while its **4 s → declined watchdog** is
+native `JSWindow.pb` state driven by a real event loop — same category as R4/R6.
+**R3's round trip** is covered properly, in both languages.
+
+### 8 · A fixture that tests the escaper must not be written by it (2.1)
+
+Two things had to be got right before the round-trip fixture proved anything,
+and the first draft of it got both wrong:
+
+1. **The control characters must sit where they can actually occur.** `params`
+   and `data` arriving from a page were produced by `JSON.stringify` and can
+   never hold a raw C0 character. The hand-built fields can: the handler name
+   and the source window name (which `HandleSend` splices into a new frame), and
+   `paramsJson` on the native-originated path (`SendSystemMessage`), which the
+   host assembles itself — the ESC in a terminal title, verbatim. A fixture with
+   `\u001B` inside an already-serialized `data` blob is testing text; the
+   escaper never sees it. The first draft did exactly that, and passed happily
+   with R3 re-introduced.
+2. **The expected values must be written with a different escaper.** They are
+   now emitted by `Harness::JsonQuote`, a ~20-line independent implementation.
+   Recording the expectation with `JSBridge::EscapeJSONValue` — the code under
+   test — lets a broken escaper produce a fixture that agrees with itself, and
+   turns a wrong-value failure into an unparseable-file failure.
+
+### 9 · PureBasic traps met while writing the harness (2.1)
+
+Two more for the handover's list, both cost real time:
+
+- **A comparison is not an expression.** `Check(FindString(s, x) > 0, "…")` is
+  `Comparisons (=, <, >, =< and >=) are only supported with keywords like If,
+  While, Until or within Bool()`. Every such argument needs `Bool(…)`. This is
+  the same language rule behind the R4 assignment-vs-comparison bug, seen from
+  the other side.
+- **A `.pb` source file needs a UTF-8 BOM or PureBasic reads it as ASCII.** Non-
+  ASCII string literals then arrive as their individual UTF-8 bytes and are
+  re-encoded on output — `grüße` became `grÃ¼Ãe` in the generated fixture, and
+  em-dashes in section titles came out as `â`. The repo's other `.pb` files
+  carry a BOM; new ones must too. Nothing warns.
+
+Also worth recording, because it looked like a gap and is not: `FlushPendingMessages`,
+`SendParameters`, `SendCloseCheck`, `SendSystemMessage` and `SendSystemRequest`
+are all public and all take a `*JSWindow`, while the name→record lookup
+(`GetJSWindowPtrByName`) is module-private — so there is no public way to obtain
+the argument they need. That is deliberate, not an oversight: the host receives
+the pointer as a **callback argument** (`WindowLoaded` / `WindowClosing` in
+Vynce's `main.pb`), never by name. The harness therefore does its own two map
+hits rather than widening the library's public surface for a test's benefit.
+
 ### 4 · Bugs found that the roadmap did not list
 
 Turned up while verifying the steps above; all fixed, none of them optional if
@@ -208,9 +276,28 @@ Everything below was run, not assumed.
 | `ci/pre-push` hook end to end | ✅ exit 0 |
 | **Vynce host** `main.pb --check` against the modified pbjs | ✅ 10,804 lines — the `#Debug_On` removal and the `AppWindow` struct-field removal broke no host code |
 
+### Phase 2
+
+| Check | Result |
+|---|---|
+| `cd tests && npm test` — jsdom bridge suite | ✅ 112 tests, 7 files |
+| `tests/pb/run.sh` — native router harness | ✅ 77 assertions, 0 failed |
+| R3 re-introduced (short escapes + the `\u00XX` sweep removed) | ✅ native fails 12 assertions; jsdom round trip fails 7, with the production symptom — an empty `seen`, the message silently gone |
+| Fixture regenerated from the restored escaper, suites re-run | ✅ green again; `pbjsBridge.pb` byte-identical to `origin/main` |
+| `ci/check-sources.mjs` with `tests/` in the tree | ✅ 20 sources, 22 includes, 12 modules |
+| `ci/check-purebasic.sh` — standalone + example | ✅ both OK |
+| **Vynce host** `main.pb --check` | ✅ 11,143 lines — the harness adds no host-visible surface |
+
 **Not verified, and cannot be here** — all compile-verified and hand-traced
-only. The 2.1 harnesses are what would close this gap, and 1.10 in particular
-is the change that most wants them:
+only. The 2.1 harnesses were expected to close this gap; they closed **part** of
+it, and the split is worth reading precisely (Deviations §7):
+
+- **1.8 (R3) is now genuinely covered**, in both languages, by the round-trip
+  fixture — and proven to fail when the bug is put back.
+- **1.7 (R1)'s auto-approve is covered** in jsdom. Its watchdog is not.
+- **1.10 (R4) and 1.11 (R6) are still uncovered.** They live in `CloseJSWindow`
+  and `OpenInstance`, which need real windows; a headless Sink has no lifecycle.
+  What remains outstanding:
 
 - **1.9** needs physically docking into a larger display (the roadmap agrees
   automated coverage is impractical).
@@ -234,5 +321,10 @@ is the change that most wants them:
 - **Register a self-hosted runner** (1.5) if the compiler check should run in
   cloud CI; `.github/workflows/purebasic.yml` is ready and dormant until then.
 - **Install the hook**: `ln -sf ../../ci/pre-push .git/hooks/pre-push`.
-- Nothing here is committed — `iplan/` is untracked in this repo, and the rest
-  is left in the working tree for review.
+- **Install the test deps once**: `cd tests && npm ci`. Without them `ci/pre-push`
+  says so and skips the bridge suite rather than failing the push.
+- **Register the self-hosted runner** is now what gates the *native* harness too
+  (2.1), not only the syntax check: `.github/workflows/purebasic.yml` runs
+  `tests/pb/run.sh` and then `git diff --exit-code` on the fixture, so a stale
+  `tests/fixtures/native-frames.json` is caught there. Until a runner exists,
+  that drift check lives only in the pre-push hook.
