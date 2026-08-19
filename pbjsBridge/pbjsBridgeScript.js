@@ -32,6 +32,21 @@
   const DEAD_LETTER_GRACE_MS = 5000;
   let deadLetterCount = 0;
 
+  // F4: how long a request waits for its reply before rejecting. Overridable
+  // per call with options.timeoutMs — a store hydration and a "did you save?"
+  // round trip do not deserve the same deadline, and 30 s is far too long to
+  // discover that a handler is wedged.
+  const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+
+  // A caller-supplied timeout, or the default. Anything that is not a positive
+  // finite number falls back rather than producing a request that never times
+  // out (timeoutMs: 0 / NaN / "5s" would each do that with a bare read).
+  function requestTimeoutFrom(options) {
+    const ms = options && options.timeoutMs;
+    if (typeof ms === "number" && isFinite(ms) && ms > 0) return ms;
+    return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+
   // F9: standard AbortError for cancelled invoke() calls (DOMException where
   // available, falling back to a named Error).
   function makeAbortError() {
@@ -203,6 +218,32 @@
       console.error("[PBJS] pbjsNativeGetWindow failed to appear after wait.");
     }
   };
+
+  // F5a: registering a handler for a key that already has one silently replaces
+  // it, and the loser simply stops receiving messages — no error, nothing in
+  // stats, just a feature that quietly went dead. Two subsystems claiming the
+  // same name, or a rename that missed a call site, both look like this.
+  //
+  // Re-registering the SAME function is not warned about: React effects re-run
+  // (StrictMode double-invokes them in development), and a warning that fires
+  // on ordinary remounts is one people learn to ignore.
+  //
+  // This one forwards to native rather than staying in devtools — it is a real
+  // fault, it is rare, and it is worth seeing without the inspector open.
+  let handlerReplaceCount = 0;
+  function warnOnHandlerReplace(key, handler) {
+    const existing = handlers.get(key);
+    if (!existing || existing === handler) return;
+    handlerReplaceCount++;
+    console.warn(
+      "[PBJS] Handler replaced for '" +
+        key +
+        "' on " +
+        WINDOW_NAME +
+        " — the previous one will no longer receive messages. Two owners for " +
+        "one name, or a missed removeHandler?"
+    );
+  }
 
   // --- MAIN INIT EXECUTION ---
   (async () => {
@@ -568,6 +609,8 @@
 
         log.invoke(windowName, name, params, data);
 
+        const timeoutMs = requestTimeoutFrom(options);
+
         // The actual native "get" dispatch + pending-request bookkeeping.
         const dispatchGet = () => {
           return new Promise((resolve, reject) => {
@@ -628,7 +671,7 @@
                 log.error("invoke timeout", error);
                 settleReject(error);
               }
-            }, 30000);
+            }, timeoutMs);
 
             window.pbjsNativeGet(
               JSON.stringify({
@@ -662,7 +705,7 @@
           });
       },
 
-      invokeAll: function (name, params, data) {
+      invokeAll: function (name, params, data, options) {
         if (!name || typeof name !== "string") {
           const error = new Error("name must be a non-empty string");
           log.error("invokeAll", error);
@@ -693,9 +736,11 @@
             if (getAllPendingRequests.has(requestId)) {
               const pending = getAllPendingRequests.get(requestId);
               getAllPendingRequests.delete(requestId);
+              // Resolves, never rejects: a partial answer is more useful than an
+              // error, and the caller can see which windows are missing.
               resolve(pending.responses);
             }
-          }, 30000);
+          }, requestTimeoutFrom(options));
 
           window.pbjsNativeGetAll(
             JSON.stringify({
@@ -929,6 +974,7 @@
 
         const key = windowName + ":" + name;
         originalConsole.log("[PBJS] Registered handler for: " + key);
+        warnOnHandlerReplace(key, handler);
         handlers.set(key, handler);
         replayUnhandledMessages();
       },
@@ -940,6 +986,7 @@
           throw new TypeError("Handler must be a function");
 
         originalConsole.log("[PBJS] Registered global handler for: *:" + name);
+        warnOnHandlerReplace("*:" + name, handler);
         handlers.set("*:" + name, handler);
         replayUnhandledMessages();
       },
@@ -964,6 +1011,7 @@
           unhandledBuffered: unhandledMessages.length,
           droppedUnhandled: droppedUnhandledCount,
           deadLetters: deadLetterCount,
+          handlersReplaced: handlerReplaceCount,
           readyWindows: readyWindows.size,
           waitingForWindows: windowWaiters.size,
           handlers: handlers.size,

@@ -129,6 +129,7 @@ tests/
     lifecycle.test.js       §6.5 push, orphan-reject, the readiness cache
     wait-for-window.test.js P6 — push-settled waiters, the slow fallback poll
     get-all.test.js         invokeAll's expected-count protocol
+    api-edges.test.js       F4 per-request timeout, F5a handler-replace warning
     native-frames.test.js   the cross-language round trip
   pb/
     harness.pb              assertions, captured Sink traffic, fake registry

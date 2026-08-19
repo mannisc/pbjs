@@ -110,19 +110,19 @@ const reply = await pbjs.invoke("main-window", "getAgentStatus", {}, { id: 7 });
 |-----|:---:|---------|---------|
 | `params` | ✅ payload slot 1 | the receiver's handler | legacy/secondary slot — usually `{}` |
 | `data` | ✅ payload slot 2 | the receiver's handler | **the payload** (convention: put everything here) |
-| `options` | ❌ caller-local | the `invoke` wrapper itself | control bag: `{ signal }` (an `AbortSignal`) |
+| `options` | ❌ caller-local | the `invoke` wrapper itself | control bag: `{ signal, timeoutMs }` |
 
 `params` and `data` are **two payload slots that both reach the handler**
 (`handler(event, params, data)`); the receiver reads `const p = data || params`.
 The split is historical — there's no live semantic difference — so by convention
 **the payload goes in `data`** and `params` stays `{}`. `options` is a different
 kind of thing: a **local control bag the bridge consumes itself** (never
-serialized, never sent, never seen by the handler) — today just `{ signal }` for
-cancellation (below).
+serialized, never sent, never seen by the handler) — `{ signal }` for
+cancellation and `{ timeoutMs }` for the deadline (both below).
 
 - **Rejects** on: handler `throw` / `event.error(msg)`, target window
   missing/closed (immediate native error), a dead-letter (no handler after a
-  grace — §9), or the 30 s timeout. So error handling is ordinary `try/catch`.
+  grace — §9), or the timeout. So error handling is ordinary `try/catch`.
 - **Resolves to the handler's return value.** The bridge's reply carries an
   internal `{ success: value }` envelope on the wire (it's what lets the source
   tell success from error and resolve-vs-reject), but a **typed wrapper unwraps
@@ -139,11 +139,28 @@ pbjs.invoke("main-window", "search", {}, { q }, { signal: ac.signal })
 ac.abort(); // supersede
 ```
 
+- `options.timeoutMs` sets this call's deadline; the default is **30 000 ms**. A
+  store hydration and a "did you save?" round trip do not deserve the same one,
+  and 30 s is a long time to discover a wedged handler. A value that is not a
+  positive finite number falls back to the default rather than producing a
+  request that never times out. `invokeAll` takes the same option as its fourth
+  argument, and on timeout **resolves with whatever arrived** rather than
+  rejecting.
+
+```ts
+await pbjs.invoke("main-window", "ping", {}, {}, { timeoutMs: 2000 });
+const replies = await pbjs.invokeAll("getAgents", {}, {}, { timeoutMs: 5000 });
+```
+
 ### Receiver — `handle` / `handleAll`
 
 ```ts
 // handle(fromWindow, name, fn) — accept this method only from `fromWindow`
 // handleAll(name, fn)          — accept from ANY window  (the common case)
+//
+// Registering over an existing handler for the same key REPLACES it and warns:
+// the loser just stops receiving messages, with nothing to see. Re-registering
+// the same function is silent (React effects re-run). Count: stats().handlersReplaced
 pbjs.handleAll("getAgentStatus", (event, params, data) => {
   const payload = data || params;            // see the params/data note in §11
   return { status: lookup(payload.id) };     // returned value → caller's .success
