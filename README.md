@@ -231,7 +231,8 @@ This is the transport the cross-window store-sync engine runs on (§10).
 ```ts
 // Lookup / wait
 const w   = await pbjs.getWindow("terminal-window");        // PBWindow | undefined
-const w2  = await pbjs.waitForWindow("terminal-window");    // polls until present
+const w2  = await pbjs.waitForWindow("terminal-window");    // settles on the host's
+                                                            // "ready" push; 6 s default
 
 // Multi-instance templates + pre-warmed pool
 const r = await pbjs.openInstance(

@@ -127,6 +127,7 @@ tests/
     dead-letter.test.js     F7 — the grace, and what must NOT dead-letter
     invoke.test.js          dispatch, settle, timeout, F9 AbortSignal, send/sendAll
     lifecycle.test.js       §6.5 push, orphan-reject, the readiness cache
+    wait-for-window.test.js P6 — push-settled waiters, the slow fallback poll
     get-all.test.js         invokeAll's expected-count protocol
     native-frames.test.js   the cross-language round trip
   pb/

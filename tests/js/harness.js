@@ -22,11 +22,10 @@
 // WHAT IS DELIBERATELY NOT STUBBED
 // --------------------------------
 // `window.pbjsNativeIsWindowReady` is left undefined, because the host does not
-// bind it either (verified: it appears in no BindWebViewCallback call in
-// JSWindow.pb). `pbjs.isWindowReady` therefore returns its hard-coded `true`
-// fallback here exactly as it does in production — which is the whole of
-// roadmap 2.6's finding. Stubbing it would hide the thing the harness exists to
-// pin down.
+// bind it either (verified: it appears in no Sink::Bind call in JSWindow.pb).
+// That was roadmap 2.6's finding, and the bridge no longer calls it at all —
+// wait-for-window.test.js asserts as much by installing one and checking it
+// stays untouched. Stubbing it here would defeat that.
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
