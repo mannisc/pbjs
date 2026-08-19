@@ -43,6 +43,49 @@ Companion to [roadmap.md](roadmap.md). One row per roadmap step.
 | 2.9 | G6 — Ship the typed wrapper + complete typings | [ ] | Not in this batch. |
 | 2.10 | G4 + G5 — De-Vynce the library; fix the doc dead-ends | [x] | **G4:** `VYNCE_DND` → `PBJS_DND`, `VYNCE_DND_DEBUG` → `PBJS_DND_DEBUG`, `$TMPDIR/vynce_dnd_debug.log` → `pbjs_dnd_debug.log`, plus the three comments elsewhere that named them. No compat shim, per the roadmap. Nothing in the host *sets* either variable — the four Vynce-side mentions are comments and docs — so the rename is functionally inert there, but those four are now stale and need a host-side follow-up (see "Left for a human"). **G5:** all 12 dead pointers removed. Not by moving the documents: they total ~4,100 lines of Vynce planning material about Vynce's web mode, and copying them here would create four large duplicates that drift immediately. Instead each pointer was **replaced by the fact it stood in for**, or by a live `README §n` reference — a reader of the library gets the information rather than a path they cannot open. One of the twelve, `iplan/startupREVIEWED.md`, no longer exists in **either** repo, which is the finding in miniature. **Found while doing it, and bigger than G5:** README §7 documented drag & drop as `pbjs.drag.start` / `pbjs.drag.registerTarget` / `pbjs.drag.available` — that is Vynce's wrapper shape, not `window.pbjs`, which exposes flat `pbjs.dndStart` / `dndRegisterTarget` / `dndAvailable`. Rewritten to the real API. See "Deviations" §10: it is the same defect as G6's, and wider than either finding states. |
 
+### Where Phase 2 stands, and why the rest stopped here
+
+Five steps landed; five did not, for two different reasons.
+
+**2.2, 2.3, 2.4, 2.5 — verifiable only at runtime, on three platforms.** Each is
+implementable from this machine and *checkable* only by compiling, which is the
+exact state 2.1 exists to get out of. Their own acceptance criteria say so:
+
+| Step | What its *Verify* actually asks for |
+|---|---|
+| 2.2 event-loop sleep | idle wakeups in Activity Monitor before/after, plus a web-mode relay smoke test |
+| 2.3 display-change events | docking into a second display, on each of `WM_DISPLAYCHANGE` / `NSApplicationDidChangeScreenParameters` / GDK `monitors-changed` |
+| 2.4 live theme | flipping the OS theme with the app running, and `ps` showing no `defaults`/`gsettings` spawns after init |
+| 2.5 one scheduler | an open/close storm with the thread count flat, and a deliberately broken page to prove the watchdog still fires |
+
+None of that is reachable from a headless harness, and 2.5 in particular touches
+the delayed events every window's prepare/open path depends on. Shipping them
+compile-verified would be the Phase 1 pattern again, with more moving parts.
+
+**2.9 — a design decision first, not a mechanical one.** Deviations §10: the
+README does not merely have thin typings, it documents methods that are not on
+`window.pbjs` at all. So 2.9 cannot start until someone decides what the shipped
+surface *is*:
+
+- **(a) Widen `window.pbjs`** — add the thin wrappers for the natives that are
+  already bound and unreachable (`setWindowTitle`, `focusWindow`,
+  `setWindowState`, `getWindowMetrics`, `startWindowDrag`), plus `channel`,
+  `waitForReady` and `waitForFSReady` in the bridge script itself. One surface,
+  no package to publish, and the README becomes true as written. Costs bridge
+  script size on every window.
+- **(b) Ship a `@pbjs/client` package** — keep the bridge minimal and put the
+  conveniences in a typed npm module the README imports. Matches how the host
+  already works and is what 3.9 (pbjs-capacitor) would build on. Costs a
+  publishing story this repo does not have yet.
+- **(c) Neither — cut the docs back to the bridge.** Cheapest and already half
+  done (2.8/2.10 flagged the wrapper-only APIs in place); leaves every consumer
+  writing the same thin layer.
+
+(a) and (b) are not exclusive — the natives-with-no-wrapper gap is worth closing
+either way, since those are cases where the native work is *already done*.
+
+---
+
 ## Phase 3 — New surface, origin/packaging, structure
 
 | # | Step | Done | Info |
