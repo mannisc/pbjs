@@ -61,6 +61,12 @@
 ;
 ; =============================================================================
 
+; Guarded on the module already existing, so a host may reach this file from
+; more than one place. pbjs's own convention for an optional subsystem: JSSink.pb
+; is guarded the same way, WindowManager.pb is not — and a second plain include
+; of that one stops the compile with "Module already declared".
+CompilerIf Not Defined(WebViewBaseUrl, #PB_Module)
+
 DeclareModule WebViewBaseUrl
 
   ; Load html$ into the gadget with baseUrl$ as the document's origin.
@@ -673,6 +679,8 @@ Module WebViewBaseUrl
   CompilerEndIf
 
 EndModule
+
+CompilerEndIf
 
 ; IDE Options = PureBasic 6.40 (Linux - x64)
 ; CursorPosition = 219

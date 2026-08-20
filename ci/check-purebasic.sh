@@ -2,7 +2,7 @@
 # =============================================================================
 # Syntax-check pbjs with the real PureBasic compiler.
 # =============================================================================
-# Two checks:
+# Three checks:
 #
 #   1. STANDALONE — ci/standalone-check.pb includes pbjs and nothing else. This
 #      is the one that matters: pbjs is developed as a nested repo inside a host
@@ -11,7 +11,14 @@
 #      terminal. (That is not hypothetical — `UseModule Ptym` shipped exactly
 #      that way until roadmap step 1.1.)
 #
-#   2. THE EXAMPLE — pbjsExample.pb, but only if the web app has been built,
+#   2. STANDALONE + BASE URL — the same, with webviewBaseUrl/ in scope, which is
+#      how a host opts a window into a real origin. It compiles the OTHER side of
+#      JSWindow.pb's `CompilerIf Defined(WebViewBaseUrl, #PB_Module)`; nothing
+#      else here does. Skipped on Linux — that branch of webviewBaseUrl has never
+#      been compiled (webviewBaseUrl/README.md), and an optional module must not
+#      block the gate.
+#
+#   3. THE EXAMPLE — pbjsExample.pb, but only if the web app has been built,
 #      because it embeds dist/index.html with IncludeBinary and dist/ is
 #      gitignored. Skipped with a clear message rather than failing, so this
 #      script is useful on a fresh checkout.
@@ -46,7 +53,7 @@ echo
 
 fail=0
 
-echo "== 1/2  standalone (pbjs with no host in scope) =="
+echo "== 1/3  standalone (pbjs with no host in scope) =="
 if "$PBC" ci/standalone-check.pb --check; then
   echo "   OK"
 else
@@ -55,7 +62,19 @@ else
 fi
 echo
 
-echo "== 2/2  example (pbjsExample.pb) =="
+echo "== 2/3  standalone + webviewBaseUrl (the opt-in origin) =="
+if [ "$(uname -s)" = "Linux" ]; then
+  echo "   SKIPPED — webviewBaseUrl's WebKitGTK branch has never been compiled."
+  echo "   See webviewBaseUrl/README.md for the likely failures, in order."
+elif "$PBC" ci/standalone-baseurl-check.pb --check; then
+  echo "   OK"
+else
+  echo "   FAILED — pbjs does not compile with webviewBaseUrl in scope." >&2
+  fail=1
+fi
+echo
+
+echo "== 3/3  example (pbjsExample.pb) =="
 if [ -f "${root}/reactExample/main-window/dist/index.html" ]; then
   if "$PBC" pbjsExample.pb --check; then
     echo "   OK"
