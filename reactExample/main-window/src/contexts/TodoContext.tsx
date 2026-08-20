@@ -1,21 +1,9 @@
-import { createContext, useContext, useState } from "react";
+import { useState } from "react";
 import type { ReactNode } from "react";
+import { TodoContext } from "./useTodo";
+import type { Todo } from "./useTodo";
 
-interface Todo {
-  id: number;
-  text: string;
-  completed: boolean;
-}
-
-interface TodoContextType {
-  todos: Todo[];
-  addTodo: (text: string) => void;
-  toggleTodo: (id: number) => void;
-  removeTodo: (id: number) => void;
-}
-
-const TodoContext = createContext<TodoContextType | undefined>(undefined);
-
+// Only the provider is exported from here — see useTodo.ts for why.
 export function TodoProvider({ children }: { children: ReactNode }) {
   const [todos, setTodos] = useState<Todo[]>([
     { id: 1, text: "Sample Todo", completed: false },
@@ -44,12 +32,4 @@ export function TodoProvider({ children }: { children: ReactNode }) {
       {children}
     </TodoContext.Provider>
   );
-}
-
-export function useTodo() {
-  const context = useContext(TodoContext);
-  if (context === undefined) {
-    throw new Error("useTodo must be used within a TodoProvider");
-  }
-  return context;
 }

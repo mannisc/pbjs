@@ -40,13 +40,13 @@ Companion to [roadmap.md](roadmap.md). One row per roadmap step.
 | 2.6 | P6 — Push-based `waitForWindow`; delete `isWindowReady` | [x] | Exactly as the roadmap describes, and its two premises both re-verified against the tree first: `pbjsNativeIsWindowReady` appears in **no** `Sink::Bind` call in `JSWindow.pb` (so `isWindowReady` was a hard-coded `true`, and no host code calls it — grepped Vynce's `react/`), and `NotifyWindowEvent(name, "ready")` already fires from `JSReadyState` to every ready peer. `waitForWindow` now registers a waiter, probes **once**, and is settled by the push; the fallback poll drops from 100 ms to **1000 ms** (override: `window.pbjsWaitForWindowPollMs`). Cost over a 6 s wait for an absent window: **≤ 6 native calls, was up to 120** (60 rounds × `getWindow` + `isWindowReady`). The push costs one extra `getWindow` shared by every waiter on that name — it carries only a name, and waiters were promised the object. **The fallback is not belt-and-braces:** `NotifyWindowEvent` skips windows whose own page is not `Ready`, so a window still loading misses every push sent during its load; the opening probe covers what already existed, the poll covers a peer that became ready inside that gap. A `closed`/`reloaded` push deliberately does **not** reject a waiter — the caller may be waiting for exactly that window to come back. 18 new jsdom tests; `stats()` gains `waitingForWindows`. |
 | 2.7 | R10 + F4 + F5 — API sharp edges | [~] | **F4 and F5a done; R10, F5b and F5c not.** F4: `options.timeoutMs` on `invoke`, default unchanged at 30 000. A value that is not a positive finite number **falls back to the default** rather than producing a request that never times out — `0`, `NaN`, `"500"` and `Infinity` would each do that with a bare read, and all four are pinned by tests. Given to `invokeAll` as well, against the roadmap's letter: it is the one call that fans out to N windows and so the one most likely to want its own deadline, and the asymmetry would just be a trap. F5a: `handle` **and** `handleAll` warn on replace (the roadmap names only `handleAll`; both have the identical silent failure) — but **not** when the same function re-registers, because React effects re-run and StrictMode double-invokes them in development, and a warning that fires on ordinary remounts is one people learn to ignore. It forwards to native, like the dead-letter warning: a real fault, rare, worth seeing without devtools. `stats()` gains `handlersReplaced`. 25 new jsdom tests. **Not done, and why:** F5b (`alreadyOpen` on the `openInstance` result) and F5c (pool state in `stats()` + runtime `poolTargetSize`) both need new native surface in `JSWindow.pb`, and the pool is exactly what the harnesses cannot reach (Deviations §7) — they would ship compile-verified only, which is the state 2.1 exists to get out of. R10 (activation control) is a three-platform change including a macOS 14 deprecated-API migration, with no way to verify any of it from here. |
 | 2.8 | G3 + G2 — The host contract, written down | [x] | README §2 is now two halves — **2.1 Hosting pbjs (the PureBasic side)** with all five contract points, and **2.2 In the page**. Plus `build.sh` / `build.cmd` at the root: web app then executable, in that order, resolving the compiler through the same `ci/purebasic-home.sh` every other check uses. `./build.sh --run` produces a 611 KB binary and launches it — run, not described. **Every claim in §2.1 was tested rather than asserted, and one came out wrong.** The draft said "`XIncludeFile`, not `IncludeFile` — `X` is what makes the second inclusion a no-op". It is not: `pbjs.pb`'s **own** directive is the `XIncludeFile` that dedupes, so a host's plain `IncludeFile "WindowManager.pb"` compiles fine (verified). The real rule is about **which files** may be pre-included, not which directive: `WindowManager.pb` and `JSSink.pb` are reached with `XIncludeFile` and so skipped; everything else is a plain `IncludeFile` and gets included twice — `OsTheme.pb` in front of `pbjs.pb` fails with `Module already declared: OsTheme` (verified). `XIncludeFile` is still the better habit on the host side, for the host's own sake. Also verified: `JSSink.pb` survives a plain double include (guarded on `Defined(Sink, #PB_Module)`), `WindowManager.pb` does not. The three `JSWindow::Handle*Event` dispatches are documented **with the symptom of omitting each**, and §13 now warns explicitly that the example does not demonstrate them — it uses no templates, so a reader copying it would silently get no pool and broken macOS closes. Wrapper-only APIs are flagged where they appear (§6 `channel`, §8 `waitForReady`/`waitForFSReady`) rather than left to read as bridge API — see Deviations §10. |
-| 2.9 | G6 — Ship the typed wrapper + complete typings | [ ] | Not in this batch. |
+| 2.9 | G6 — Ship the typed wrapper + complete typings | [x] | **Option (b), and the decision that unblocked it was made in the host app, not here:** the wrapper was split there first, so its Vynce-specific half could be lifted out before anything moved. What arrived is `pbjsClient/pbjsClient.ts` with **zero imports** and no host-app name in it — the whole coupling turned out to be one `if` at the end of `openInstance`, now `PbjsHostHooks` + `configureHost()`. Option (a) was not taken: widening `window.pbjs` costs bridge-script size on every window, including the pool spares, for conveniences most pages never call. **Typings:** `pbjsClient/pbjs.d.ts` declares the whole bridge surface, and `reactExample/main-window/src/global.d.ts` — the stale 6-method copy that made Deviations §10 concrete — is deleted. That was **15 of the 16 lint errors** the handover reported for the example; the survivor — an unrelated `react-refresh` finding in `TodoContext.tsx`, which exported the `useTodo` hook alongside the `TodoProvider` component — was fixed by moving the context and the hook to `contexts/useTodo.ts`, and **`ci.yml` now has the blocking Lint step it had been waiting on**. Not `contexts/todoContext.ts`, the obvious name: a sibling differing from `TodoContext.tsx` only in casing wins module resolution on a case-insensitive filesystem (`.ts` is tried before `.tsx`), so `App.tsx`'s import silently landed on the hook file and the program failed with TS1149/TS1261 — caught by `tsc -b --force`, not by eslint, which was already green at that point. **The example proves it:** `App.tsx` imports the client instead of poking `window.pbjs`, and its tsconfig includes `../../pbjsClient`, so the client is typechecked here rather than only in the host. **Portability is a gate, not a promise:** `ci/check-sources.mjs` grew a third check that fails on a host-app name inside `pbjsClient/` — the TypeScript twin of the `UseModule Ptym` check it already ran — and `ci/pre-push` diffs the vendored copy in the host tree, skipping when that checkout is absent. Not done: 3.8's package/versioning story, which (b) will eventually want; the vendored copy is the interim, and it is one-way (canonical here, copy out). |
 | 2.10 | G4 + G5 — De-Vynce the library; fix the doc dead-ends | [x] | **G4:** `VYNCE_DND` → `PBJS_DND`, `VYNCE_DND_DEBUG` → `PBJS_DND_DEBUG`, `$TMPDIR/vynce_dnd_debug.log` → `pbjs_dnd_debug.log`, plus the three comments elsewhere that named them. No compat shim, per the roadmap. Nothing in the host *sets* either variable — the four Vynce-side mentions are comments and docs — so the rename is functionally inert there, but those four are now stale and need a host-side follow-up (see "Left for a human"). **G5:** all 12 dead pointers removed. Not by moving the documents: they total ~4,100 lines of Vynce planning material about Vynce's web mode, and copying them here would create four large duplicates that drift immediately. Instead each pointer was **replaced by the fact it stood in for**, or by a live `README §n` reference — a reader of the library gets the information rather than a path they cannot open. One of the twelve, `iplan/startupREVIEWED.md`, no longer exists in **either** repo, which is the finding in miniature. **Found while doing it, and bigger than G5:** README §7 documented drag & drop as `pbjs.drag.start` / `pbjs.drag.registerTarget` / `pbjs.drag.available` — that is Vynce's wrapper shape, not `window.pbjs`, which exposes flat `pbjs.dndStart` / `dndRegisterTarget` / `dndAvailable`. Rewritten to the real API. See "Deviations" §10: it is the same defect as G6's, and wider than either finding states. |
 
 ### Where Phase 2 stands
 
-**Nine of ten done.** Only 2.9 remains, and it is blocked on a decision rather
-than on effort — see below.
+**Ten of ten done.** 2.9 was the last, and it landed as option (b) — see its row
+above, and "Why 2.9 was open" below for the decision it was waiting on.
 
 2.2–2.5 were held back once as "verifiable only at runtime, on three platforms",
 then implemented on request. That framing was right about the *verification*,
@@ -61,10 +61,13 @@ Doing them also found what a compile could not: **the canonical example had
 never run** (Deviations §14) — it segfaulted on the first `CreateJSWindow`, for
 the same reason Phase 1 already fixed once in that file.
 
-### Why 2.9 is still open
+### Why 2.9 was open
+
+**Resolved: (b).** Kept for the reasoning, which still governs where new surface
+should go — bridge or client.
 
 Deviations §10: the README does not merely have thin typings, it documents methods that are not on
-`window.pbjs` at all. So 2.9 cannot start until someone decides what the shipped
+`window.pbjs` at all. So 2.9 could not start until someone decided what the shipped
 surface *is*:
 
 - **(a) Widen `window.pbjs`** — add the thin wrappers for the natives that are
@@ -283,6 +286,8 @@ G6 (2.9) says the typings cover ~30% of the surface and are stale. The problem
 is wider than typings, and wider than G6 states: **`README.md` documents methods
 that do not exist on `window.pbjs` at all.** They are Vynce's
 `react/shared/services/Pbjs.ts` wrapper, which does not ship here.
+(Resolved by 2.9: that wrapper now ships as `pbjsClient/`, under the same
+filename on both sides.)
 
 | Documented in README | On `window.pbjs`? |
 |---|---|
@@ -510,11 +515,10 @@ it, and the split is worth reading precisely (Deviations §7):
 - **Install the hook**: `ln -sf ../../ci/pre-push .git/hooks/pre-push`.
 - **Install the test deps once**: `cd tests && npm ci`. Without them `ci/pre-push`
   says so and skips the bridge suite rather than failing the push.
-- **Update the four Vynce-side mentions of `VYNCE_DND` / `VYNCE_DND_DEBUG`**
-  (2.10 / G4): `docs/dnd.md`, `main.pb:1367`, `react/shared/global.d.ts` and
-  `react/shared/services/Pbjs.ts`. All four are comments or prose — nothing in
-  the host *sets* either variable — so the rename breaks no behaviour, but those
-  four now name flags that no longer exist. Host repo, separate change.
+- ~~**Update the four Vynce-side mentions of `VYNCE_DND` / `VYNCE_DND_DEBUG`**
+  (2.10 / G4)~~ — **done** with 2.9, in the host repo: `docs/dnd.md` (which also
+  named the pre-rename `vynce_dnd_debug.log`), `main.pb:1367`, and the two client
+  files, which by then had become `pbjsClient/pbjsClient.ts` and its typings.
 - **Register the self-hosted runner** is now what gates the *native* harness too
   (2.1), not only the syntax check: `.github/workflows/purebasic.yml` runs
   `tests/pb/run.sh` and then `git diff --exit-code` on the fixture, so a stale

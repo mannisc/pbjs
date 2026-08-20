@@ -43,13 +43,15 @@ jobs:
         working-directory: reactExample/main-window
         run: npm ci
 
-      # No lint step yet, deliberately. `npm run lint` currently reports 16
-      # pre-existing errors in the example — 15 of them `any` in global.d.ts,
-      # which is what an untyped bridge's hand-written typings look like.
-      # Roadmap 2.9 (G6) replaces those typings wholesale; adding the step now
-      # would mean a workflow that is red on its first run, and making it
-      # non-blocking would be a green check that verifies nothing. Add it with
-      # 2.9, when it can pass.
+      # Added with roadmap 2.9, which is what finally made it able to pass: the
+      # example's hand-written global.d.ts (15 × `any`) is gone, replaced by the
+      # typings pbjsClient ships, and the last react-refresh error is fixed. The
+      # step is blocking on purpose — a non-blocking lint job is a green check
+      # that verifies nothing, and the errors this catches are exactly the ones
+      # that accumulate unnoticed in an example nobody lints by hand.
+      - name: Lint
+        working-directory: reactExample/main-window
+        run: npm run lint
 
       - name: Build
         working-directory: reactExample/main-window

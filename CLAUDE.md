@@ -32,14 +32,21 @@ pbjs.windowName; pbjs.os; pbjs.dndAvailable; pbjs.stats();
 window.pbjsReady;  window.addEventListener("pbjs-ready", …)
 ```
 
-⚠ **Not on `window.pbjs`, whatever the docs used to say:** `pbjs.channel(…)`,
-`pbjs.waitForReady()`, `pbjs.waitForFSReady()`, `pbjs.setWindowTitle()`,
-`pbjs.focusWindow()`, `pbjs.isReady`, and the nested `pbjs.drag.*` shape. Those
-are the **host app's wrapper** (Vynce's `react/shared/services/Pbjs.ts`), which
-does not ship in this repo. `setWindowTitle`/`focusWindow` even have their
-natives bound (`pbjsNativeSetWindowTitle`, `pbjsNativeFocusWindow`) with no JS
-caller. Roadmap 2.9 decides what the shipped surface should be; until then,
-check the bridge script before believing a method exists.
+⚠ **Two surfaces, and mixing them up is the recurring documentation bug.** The
+list above is the **bridge**. `pbjs.channel(…)`, `waitForReady()`,
+`waitForFSReady()`, `setWindowTitle()`, `focusWindow()`, `setWindowState()`,
+`getWindowMetrics()`, `startWindowDrag()`, `isReady` and the nested `pbjs.drag.*`
+shape are the **client** — `pbjsClient/pbjsClient.ts`, which now ships here
+(roadmap 2.9, option (b)). It is optional: the bridge works without it.
+
+Rule of thumb: `window.pbjs.dndStart` is bridge, `pbjs.drag.start` is client;
+raw `invoke` gives you `{ success: value }`, the client's gives you the value.
+`setWindowTitle`/`focusWindow` and friends had their natives bound with **no JS
+caller at all** until the client landed. See `pbjsClient/README.md`.
+
+⚠ **`pbjsClient/` is vendored into the host app and this repo is canonical** —
+edit here, copy out. `ci/pre-push` fails on drift, and `ci/check-sources.mjs`
+fails if a host-app name reappears in it.
 
 ## Must-know rules
 

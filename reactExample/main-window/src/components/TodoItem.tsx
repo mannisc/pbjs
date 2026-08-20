@@ -1,4 +1,4 @@
-import { useTodo } from "../contexts/TodoContext";
+import { useTodo } from "../contexts/useTodo";
 
 interface TodoItemProps {
   id: number;

@@ -181,10 +181,16 @@ because it is a timing value on an untestable platform.
 **2.7 (F5c)** — `pbjs.stats()` exposing pool state pairs naturally with the
 pool fixes in 1.11.
 
-**2.9 (typings)** — `npm run lint` in `reactExample/main-window` currently
-reports **16 errors** (15 × `any` in `global.d.ts`, 1 react-refresh). CI
-deliberately has **no lint step** for that reason; `ci.yml` carries a comment
-saying to add it with 2.9. Do that when it can pass.
+**2.9 (typings)** — ✅ **done.** `npm run lint` in `reactExample/main-window`
+used to report **16 errors** (15 × `any` in `global.d.ts`, 1 react-refresh).
+2.9 deleted that stale `global.d.ts` — the typings live in `pbjsClient/pbjs.d.ts`
+now — which cleared 15; the survivor was `TodoContext.tsx` exporting both the
+`TodoProvider` component and the `useTodo` hook, fixed by moving the context and
+the hook into `contexts/useTodo.ts` so the `.tsx` exports only the component.
+(Not `todoContext.ts`: a sibling differing only in casing resolves to the wrong
+file on a case-insensitive filesystem, and TypeScript then fails the program
+with TS1149/TS1261.) `ci.yml` now has the blocking **Lint** step the old comment
+promised.
 
 **2.10 (G4)** — the `VYNCE_DND` / `VYNCE_DND_DEBUG` rename lives in
 `DndService.pb` around lines 577–583.

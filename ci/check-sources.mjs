@@ -18,6 +18,11 @@
 //
 // Both are resolvable by reading the tree. Neither needs a compiler.
 //
+// The same class of leak reaches the TypeScript client: pbjsClient/ was
+// extracted from the host app it was written inside, and the thing that keeps
+// it portable is that it names no app. Check 3 makes that a gate rather than an
+// intention — see roadmap 2.9.
+//
 // Usage:  node ci/check-sources.mjs
 // ============================================================================
 
@@ -138,11 +143,63 @@ for (const file of sources) {
 }
 
 // ---------------------------------------------------------------------------
+// 3. The TypeScript client names no host app.
+// ---------------------------------------------------------------------------
+// pbjsClient/ is a library: it takes everything app-specific through
+// configureHost() and must not know who is embedding it. A host name that
+// creeps back in is the JS twin of `UseModule Ptym` — it compiles fine here,
+// and is wrong for every other consumer.
+//
+// Deliberately a name check, not a lint rule: the failure is about vocabulary,
+// and it has to fail in a repo that has no TypeScript toolchain of its own.
+const CLIENT_DIR = join(ROOT, "pbjsClient");
+const HOST_TERMS = [
+  /\bvynce\b/i,
+  /\bptym\b/i,
+  /__vynceWebAdapter\b/,
+  /\bVYNCE_[A-Z0-9_]+/,
+  /\b(?:main|agent|execution)-window\b/,
+  /\bAgentStore\b/,
+  /\bagent-list\.json\b/,
+];
+
+let clientFiles = [];
+if (existsSync(CLIENT_DIR)) {
+  clientFiles = readdirSync(CLIENT_DIR)
+    .filter((n) => n.endsWith(".ts"))
+    .map((n) => join(CLIENT_DIR, n))
+    .sort();
+
+  for (const file of clientFiles) {
+    readFileSync(file, "utf8")
+      .split(/\r?\n/)
+      .forEach((text, i) => {
+        for (const re of HOST_TERMS) {
+          const m = text.match(re);
+          if (!m) continue;
+          note(
+            file,
+            i + 1,
+            `"${m[0]}" names a host app. pbjsClient/ must stay portable — ` +
+              `move it behind PbjsHostHooks (configureHost) instead.`
+          );
+          break;
+        }
+      });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 console.log(
   `Checked ${sources.length} PureBasic sources: ` +
     `${includeCount} include directives, ${declared.size} modules declared.`
+);
+console.log(
+  clientFiles.length
+    ? `Checked ${clientFiles.length} client source(s) in pbjsClient/ for host-app names.`
+    : "No pbjsClient/ sources found — skipping the portability check."
 );
 if (unbuiltCount) {
   console.log(
@@ -156,4 +213,4 @@ if (problems.length) {
   for (const p of problems) console.error("  " + p);
   process.exit(1);
 }
-console.log("OK — no unresolved includes, no host-only modules.");
+console.log("OK — no unresolved includes, no host-only modules, no host names in the client.");

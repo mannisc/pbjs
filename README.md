@@ -217,8 +217,9 @@ handler never appears is dead-lettered after a grace (§9).
 > `pbjs.waitForReady` / `waitForFSReady` (§8) are wrapper conveniences over the
 > primitives above, and the wrapper also unwraps `invoke`'s `{ success }`
 > envelope so you get the bare value. Each of those is flagged where it appears.
-> Roadmap step 2.9 ships a supported wrapper and the typings to go with it; until
-> then, write the thin layer yourself or call `window.pbjs` directly.
+> Both now ship as the optional typed client in [`pbjsClient/`](pbjsClient/) —
+> `import { pbjs } from "../pbjsClient/pbjsClient"` — along with the ambient
+> typings for the bridge itself. Use it, or call `window.pbjs` directly.
 
 ---
 
@@ -348,11 +349,11 @@ Multicasts to every other window and resolves when all expected windows reply
 
 ## 6. Pub/sub topics — `channel`
 
-> ⚠ **Wrapper-only.** `channel` is not on `window.pbjs`. It is a small layer over
+> ⚠ **Client-only.** `channel` is not on `window.pbjs`. It is a small layer over
 > `sendAll` + `handleAll` — one reserved message name per topic, a local
 > subscriber set, and the sender filtered out — that every multi-window app ends
-> up writing. Described here because the shape is worth copying; roadmap 2.9
-> ships it.
+> up writing. It ships in [`pbjsClient/`](pbjsClient/); the shape is described
+> here so it is still copyable if you would rather write your own.
 
 A `BroadcastChannel`-like layer over `send`/`sendAll` that **decouples senders
 from concrete window names** and allows **multiple local subscribers per topic**

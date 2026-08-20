@@ -31,6 +31,35 @@ else
   echo "           Install them once:  cd tests && npm ci"
 fi
 
+# pbjsClient/ is vendored into the host app that develops it (pbjs lives inside
+# that checkout as a git-ignored nested repo, and the host's CI does a plain
+# checkout that does not contain pbjs — so the host cannot import from here).
+# Two copies therefore exist, and the direction is one-way: edit here, copy out.
+# This catches the copies parting company while it is still one command to fix.
+#
+# Skips rather than fails when the parent checkout is absent, so pbjs stays
+# pushable on its own — same policy as the compiler check below.
+host_dir=../react/shared/services
+if [ -f "$host_dir/pbjsClient.ts" ]; then
+  drifted=""
+  for f in pbjsClient.ts pbjs.d.ts; do
+    if ! diff -q "pbjsClient/$f" "$host_dir/$f" >/dev/null 2>&1; then
+      drifted="$drifted $f"
+    fi
+  done
+  if [ -n "$drifted" ]; then
+    echo "[pre-push] the vendored copy has drifted:$drifted" >&2
+    echo "           Canonical source is THIS repo. Copy out:" >&2
+    for f in $drifted; do
+      echo "             cp pbjsClient/$f $host_dir/$f" >&2
+    done
+    exit 1
+  fi
+  echo "[pre-push] vendored client copy is in sync with the host"
+else
+  echo "[pre-push] host checkout not found — skipping the vendored-copy check."
+fi
+
 if ci/purebasic-home.sh >/dev/null 2>&1; then
   echo "[pre-push] pbcompiler syntax check"
   ci/check-purebasic.sh
