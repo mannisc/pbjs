@@ -9,6 +9,9 @@ each)** — on Windows the document is served **from RAM, nothing touches the
 disk**. Linux implemented but **never compiled or run** — that is the work this
 folder exists to make easy.
 
+**Wired into pbjs** as an opt-in per-window option (`CreateJSWindow`'s trailing
+`baseUrl`), default off — see "Integrating into pbjs" below.
+
 ---
 
 ## The problem
@@ -228,26 +231,59 @@ breaks on YOUR machine" notes rather than expected failures:
 - **RUN 1 also reports nothing.** Something unrelated to this fix is wrong; the
   harness never got off the ground.
 
-## Integrating into pbjs
+## Integrating into pbjs — done, and how it is wired
 
-The change is confined to one place. In `pbjs/modules/JSWindow.pb`,
-`#Event_Loaded_Html` currently does:
+This is no longer a spike: `JSWindow.pb` calls it, as a **per-window option that
+is off by default**. See the pbjs README §2.1 ("give the document a real
+origin") for the host-side recipe; the shape of it:
 
 ```purebasic
-SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
+IncludeFile "pbjs/webviewBaseUrl/WebViewBaseUrl.pb"   ; BEFORE pbjs.pb
+XIncludeFile "pbjs/pbjs.pb"
+...
+CreateJSWindow(…, webWindow, "http://myapp.localhost/")   ; last parameter
 ```
 
-That becomes a `WebViewBaseUrl::SetHtml(webViewGadget, html, baseUrl$)`, with the
-base URL derived per window (e.g. `http://<appname>.localhost/`). Everything else
-— the bridge script injection, `BindWebViewCallback`, the deferred content-ready
-handshake — is untouched, and on macOS and Windows the bindings are confirmed to
-survive (the harness's RUN 2 reports through `BindWebViewCallback` after the
-alternate load). On Windows it also means a window's HTML no longer appears
-under `%TEMP%` at all.
+Three decisions worth knowing, because each one is load-bearing:
 
-Consider making the base URL a host-app setting rather than hardcoding it, so a
-consumer picks its own origin. `iplan/roadmap.md` step 3.2 (B3) carries the
-wider context and the per-OS route table.
+- **The guard is at the call site.** `#Event_Loaded_Html` runs
+  `SetGadgetItemText(gadget, #PB_WebView_HtmlCode, html)` — the original line,
+  untouched — whenever the window's `BaseUrl` is `""`, and only calls
+  `SetHtml` when it is not. `SetHtml("")` would *also* have worked, but it
+  still walks the view tree and loads through the platform API, which would
+  quietly move every existing consumer onto a new load path.
+- **pbjs does not include this folder itself.** The host does, ahead of
+  `pbjs.pb`, and `JSWindow.pb` reaches it through
+  `CompilerIf Defined(WebViewBaseUrl, #PB_Module)`. Otherwise the Windows COM
+  vtable below would be compiled into every host on Windows, and the Linux
+  branch — which has never been near a compiler — into every host on Linux.
+  `ci/standalone-baseurl-check.pb` compiles the other side of that guard, since
+  nothing else in the repo does.
+- **A failed load falls back to the string load**, so a platform that cannot do
+  it shows the page without an origin rather than a blank window, and
+  `LastError()` is logged.
+
+Everything else — the bridge script injection, `BindWebViewCallback`, the
+deferred content-ready handshake — is untouched, and the bindings survive the
+alternate load (the harness's RUN 2 reports through `BindWebViewCallback`; and
+FiveToDo's `window.fs` bridge, injected at window-ready, still hands over). On
+Windows it also means a window's HTML no longer appears under `%TEMP%` at all.
+
+**Measured through pbjs on macOS** (FiveToDo desktop host, `http://fivetodo.localhost/`):
+
+```
+ENV {"href":"http://fivetodo.localhost/","protocol":"http:",
+     "origin":"http://fivetodo.localhost","baseURI":"http://fivetodo.localhost/",
+     "pathname":"/","secure":true,"localStorage":"OK"}
+```
+
+…the app rendered, storage round-tripped across a restart (same root id), path
+routing replaced the hash fallback, and a same-document `url(#id)` reference
+resolved where a made-up id did not — the `clip-path` control, used because a
+filter reference is invisible to script either way.
+
+`iplan/roadmap.md` step 3.2 (B3) carries the wider context and the per-OS route
+table.
 
 ## What this does NOT fix
 

@@ -193,6 +193,53 @@ apps is never. (That exact bug lived in this repo's own example.)
 `RunEventLoop` returns when no managed window is open any more and
 `ShouldKeepRunning` says so too.
 
+**Optional · give the document a real origin.** Everything above hands the
+WebView an HTML *string*, so the document lands on an **opaque origin**:
+`localStorage`, `sessionStorage` and `indexedDB.open()` throw `SecurityError`,
+`document.cookie` is silently dropped, `crypto.subtle`, `caches`, `clipboard`
+and `storage.estimate()` are absent, `isSecureContext` is false, and a
+same-document `url(#id)` reference — an SVG filter's, say — does not resolve
+(WebKit then paints the element *unfiltered*, which is worse than not painting
+it). None of that announces itself either; the page just quietly loses APIs.
+
+Two steps, and the first is the one that is easy to get wrong:
+
+```purebasic
+IncludeFile "pbjs/webviewBaseUrl/WebViewBaseUrl.pb"   ; BEFORE pbjs.pb
+XIncludeFile "pbjs/pbjs.pb"
+
+*Window = JSWindow::CreateJSWindow("main-window", 100, 100, 900, 600, "My App",
+                                   #PB_Window_SystemMenu, ?MainWindow, ?EndMainWindow,
+                                   0, #JSWindow_Behaviour_CloseWindow, @WindowReady(),
+                                   0, "", #False, "http://myapp.localhost/")
+```
+
+`baseUrl` is `CreateJSWindow`'s **last** parameter (and `RegisterTemplate`'s, so
+pooled instances inherit it), which is why the three slots in front of it have to
+be spelled out to reach it. Default `""` runs the load path pbjs has always run,
+byte for byte — the guard is at the call site, not inside the module.
+
+- **The include must come before `pbjs.pb`.** `JSWindow.pb` reaches the module
+  through `CompilerIf Defined(WebViewBaseUrl, #PB_Module)`; arriving later
+  compiles the do-nothing branch, and the `baseUrl` is then inert (it says so in
+  `Debug`, which a release build strips).
+- **pbjs does not include it for you, on purpose.** On Windows the module
+  compiles a hand-built COM vtable into the binary; its Linux branch has never
+  been near a compiler. Hosts that want an origin ask for it; nobody else pays.
+- **Use a per-app host**, never bare `localhost`: an origin is a global storage
+  namespace, so two apps on `http://localhost` share one `localStorage` and
+  IndexedDB bucket. Anything under `*.localhost` still counts as
+  potentially-trustworthy, so `isSecureContext` stays true.
+- **Degrades rather than blanks.** If the platform load fails, the string load
+  still runs — the page comes up, minus the origin — and `LastError()` says why.
+- **It does not fix packaging.** The document is still one string, so keep
+  everything inlined; a relative subresource now resolves against a real origin
+  that has nothing on it. Service workers still cannot register.
+
+Measured 11/11 APIs repaired on macOS and Windows —
+[`webviewBaseUrl/README.md`](webviewBaseUrl/README.md) has the tables and the
+per-platform mechanisms.
+
 ### 2.2 In the page — the JavaScript side
 
 The bridge script builds `window.pbjs`, sets `window.pbjsReady`, and dispatches a
@@ -609,7 +656,8 @@ pbjs/
 │   ├── OsTheme.pb                 dark-mode detection + window colours
 │   └── DndService.pb / DragBadge.pb   cross-window drag & drop (macOS)
 ├── pbjsFileSystem/                separate window.fs bridge (own handshake)
-├── webviewBaseUrl/                spike: giving the webview a real origin (3.2)
+├── webviewBaseUrl/                opt-in real origin for a window (§2.1) —
+│                                  host includes it, CreateJSWindow(…, baseUrl)
 ├── reactExample/ + pbjsExample.pb  the one canonical example (§13)
 ├── build.sh / build.cmd           build the example end to end
 ├── tests/                         jsdom + native harnesses — tests/README.md

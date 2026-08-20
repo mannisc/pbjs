@@ -37,7 +37,12 @@ DeclareModule JSWindow
   
   ; webWindow: #True = HEADLESS window (web mode) — real invisible PB window,
   ; NO WebViewGadget; the page runs in a browser tab bridged via Sink hooks.
-  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False)
+  ;
+  ; baseUrl: OPT-IN real origin for this window's document, e.g.
+  ; "http://myapp.localhost/". Empty (the default) leaves the load path exactly
+  ; as it has always been — see Structure JSWindow\BaseUrl below for what the
+  ; option buys and what it costs to switch on.
+  Declare CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False, baseUrl.s = "")
   ; Set an opaque JS string to inject before this window's content/React loads.
   ; pbjs injects it verbatim and never interprets it — the app owns its meaning.
   Declare SetPreRenderJS(*Window.AppWindow, js.s)
@@ -81,6 +86,7 @@ DeclareModule JSWindow
     *WindowReadyCallback
     *ResizeCallback.ResizeCallback
     DebugUrl.s
+    BaseUrl.s                   ; passed on to every instance (JSWindow\BaseUrl)
     PoolTargetSize.i
     NextSeq.i
     WebMode.b                   ; #True = instances are headless web windows
@@ -160,6 +166,41 @@ DeclareModule JSWindow
     LastScaleH.i
     LastScaleMax.b
 
+    ; OPT-IN real origin for this window's document ("" = off, the default).
+    ;
+    ; A document handed to the engine as a bare HTML string lands on an OPAQUE
+    ; origin: localStorage/sessionStorage/indexedDB throw SecurityError,
+    ; document.cookie is silently dropped, crypto.subtle/caches/clipboard are
+    ; absent, isSecureContext is false, and same-document URL references — an
+    ; SVG filter's url(#id) among them — do not resolve. Set this to something
+    ; like "http://myapp.localhost/" and the same HTML is loaded with that as
+    ; its base URL instead, which repairs all of the above (measured 11/11 on
+    ; macOS and Windows — webviewBaseUrl/README.md).
+    ;
+    ; Use a PER-APP host, never bare "localhost": an origin is a global storage
+    ; namespace, so two apps on http://localhost would share one bucket.
+    ; Anything under *.localhost stays potentially-trustworthy, so
+    ; isSecureContext is true.
+    ;
+    ; Costs, both of which are why this is opt-in rather than the default:
+    ;   - Relative subresources now resolve against a real origin that has
+    ;     nothing on it, so the document must stay fully inlined (it already
+    ;     has to be — it is one embedded string).
+    ;   - The load goes through webviewBaseUrl/WebViewBaseUrl.pb, which the
+    ;     HOST includes; without that include this field is inert (and says so
+    ;     in Debug). See #Event_Loaded_Html.
+    ;
+    ; Read at LOAD time rather than applied once at creation, so it needs no
+    ; separate handling on the recycle path: CloseJSWindow's ReloadOnRecycle
+    ; branch re-enters StartLoadHtml, which comes back through the same handler
+    ; and finds this field still set — a pooled instance reloads with the same
+    ; origin it was born with.
+    ;
+    ; Not consulted where there is no string load to change: a headless
+    ; (web-mode) window has no gadget, and a #PBJS_DevMode build loads each
+    ; window from its debugUrl, which already carries an origin of its own.
+    BaseUrl.s
+
   EndStructure
   
   Global NewMap JSWindows.JSWindow()
@@ -202,7 +243,7 @@ DeclareModule JSWindow
   ; Multi-instance public API: a template is a window recipe, and OpenInstance
   ; materializes (or focuses) one named instance of it, claiming a pre-warmed
   ; spare from the pool when there is one. README §7.
-  Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1, webMode.b = #False)
+  Declare.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1, webMode.b = #False, baseUrl.s = "")
 
   ; Web mode: browser tab (re)attached / detached for a headless window —
   ; called by the app's proxy layer (WebProxy). Attach replays binds and the
@@ -1733,7 +1774,7 @@ Module JSWindow
     ProcedureReturn #True
   EndProcedure
 
-  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False)
+  Procedure.i CreateJSWindow(windowName.s,x,y,w,h,title.s,flags, *htmlStart,*htmlStop, *Parent.AppWindow = 0, CloseBehaviour= #JSWindow_Behaviour_HideWindow, *WindowReadyCallback=0, *ResizeCallback.ResizeCallback=0, debugUrl.s="", webWindow.b = #False, baseUrl.s = "")
 
     ; WindowManager and OsTheme are both included before this module and cannot
     ; call into it, so the responses are registered from here.
@@ -1909,6 +1950,7 @@ Module JSWindow
       *JSWindow\Ready = #False
       *JSWindow\HtmlStart = *htmlStart
       *JSWindow\HtmlEnd = *htmlStop
+      *JSWindow\BaseUrl = baseUrl
       *JSWindow\WindowReadyProc = *WindowReadyCallback
       *JSWindow\ResizeProc = *ResizeCallback
       *JSWindow\CloseBehaviour = CloseBehaviour
@@ -2172,7 +2214,7 @@ Module JSWindow
   EndProcedure
 
 
-  Procedure.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1, webMode.b = #False)
+  Procedure.i RegisterTemplate(templateName.s, x, y, w, h, title.s, flags, *htmlStart, *htmlStop, *Parent.AppWindow = 0, *WindowReadyCallback = 0, *ResizeCallback.ResizeCallback = 0, debugUrl.s = "", poolTargetSize = 1, webMode.b = #False, baseUrl.s = "")
     AddMapElement(JSTemplates(), templateName)
     Protected *T.JSWindowTemplate = @JSTemplates()
     *T\Name = templateName
@@ -2188,6 +2230,7 @@ Module JSWindow
     *T\WindowReadyCallback = *WindowReadyCallback
     *T\ResizeCallback = *ResizeCallback
     *T\DebugUrl = debugUrl
+    *T\BaseUrl = baseUrl
     *T\PoolTargetSize = poolTargetSize
     *T\NextSeq = 1
     *T\WebMode = webMode
@@ -2204,7 +2247,7 @@ Module JSWindow
 
     Debug "[CreateAndPrepareSpare] Creating '" + instanceName + "'"
 
-    Protected *Window.AppWindow = CreateJSWindow(instanceName, *T\X, *T\Y, *T\W, *T\H, *T\Title, *T\Flags, *T\HtmlStart, *T\HtmlEnd, *T\Parent, #JSWindow_Behaviour_CloseWindow, *T\WindowReadyCallback, *T\ResizeCallback, *T\DebugUrl, *T\WebMode)
+    Protected *Window.AppWindow = CreateJSWindow(instanceName, *T\X, *T\Y, *T\W, *T\H, *T\Title, *T\Flags, *T\HtmlStart, *T\HtmlEnd, *T\Parent, #JSWindow_Behaviour_CloseWindow, *T\WindowReadyCallback, *T\ResizeCallback, *T\DebugUrl, *T\WebMode, *T\BaseUrl)
 
     If *Window = 0 Or *Window = -1
       Debug "[CreateAndPrepareSpare] CreateJSWindow failed for '" + instanceName + "'"
@@ -3316,9 +3359,52 @@ Module JSWindow
 
 
 
-                SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
+                ; ---------------------------------------------------------
+                ; OPT-IN real origin — JSWindow\BaseUrl, "" for every window
+                ; that does not ask (see Structure JSWindow).
+                ; ---------------------------------------------------------
+                ; The guard is HERE, at the call site, and deliberately not
+                ; left to SetHtml's own empty-baseUrl branch: that branch still
+                ; walks the native view tree and loads through the platform API,
+                ; so an unset BaseUrl would quietly move every existing host off
+                ; the load path it has always used. Empty ⇒ the line below runs
+                ; exactly as it did before this option existed.
+                Protected loadedWithBaseUrl.b = #False
+
+                If *JSWindow\BaseUrl <> ""
+                  CompilerIf Defined(WebViewBaseUrl, #PB_Module)
+                    loadedWithBaseUrl = WebViewBaseUrl::SetHtml(webViewGadget, html, *JSWindow\BaseUrl)
+                    If Not loadedWithBaseUrl
+                      ; A platform that cannot do it falls back to the string
+                      ; load: the page still comes up, just without an origin.
+                      ; Never a blank window — which is what this costs on the
+                      ; Linux branch, the one that has never been compiled.
+                      Debug "[JSWindow] " + *JSWindow\Name + ": base-url load failed (" +
+                            WebViewBaseUrl::Backend() + "): " + WebViewBaseUrl::LastError() +
+                            " — falling back to the plain string load"
+                    EndIf
+                  CompilerElse
+                    ; BaseUrl is set but the mechanism was never compiled in.
+                    ; webviewBaseUrl/ is included by the HOST, ahead of pbjs.pb
+                    ; (README §2.1) — it is not pulled in by pbjs.pb, because on
+                    ; Windows it compiles a hand-built COM vtable into the
+                    ; binary and on Linux a branch no compiler has yet seen.
+                    Debug "[JSWindow] " + *JSWindow\Name + ": BaseUrl is set but " +
+                          "webviewBaseUrl/WebViewBaseUrl.pb was not included before " +
+                          "pbjs.pb — loading without an origin"
+                  CompilerEndIf
+                EndIf
+
+                If Not loadedWithBaseUrl
+                  SetGadgetItemText(webViewGadget, #PB_WebView_HtmlCode, html)
+                EndIf
+
                 *JSWindow\LoadedCode = #True
-                PbjsStartupTraceMark("html + bridge script set on webview: " + *JSWindow\Name)
+                If loadedWithBaseUrl
+                  PbjsStartupTraceMark("html + bridge script set on webview (base url " + *JSWindow\BaseUrl + "): " + *JSWindow\Name)
+                Else
+                  PbjsStartupTraceMark("html + bridge script set on webview: " + *JSWindow\Name)
+                EndIf
               EndIf
             CompilerEndIf
           Case #Event_Content_Ready

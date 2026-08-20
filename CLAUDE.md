@@ -85,6 +85,14 @@ event handler — omitting them silently breaks pooling and macOS close, and
 
 `./build.sh --run` builds the example end to end and launches it.
 
+**A real origin is opt-in, per window.** A string-loaded document has an opaque
+origin — no `localStorage`/IndexedDB/cookies/`crypto.subtle`, and `url(#id)`
+references do not resolve. To fix it: `IncludeFile
+"pbjs/webviewBaseUrl/WebViewBaseUrl.pb"` **before** `pbjs.pb` (later is silently
+inert), then pass `CreateJSWindow`'s trailing `baseUrl` — a per-app host like
+`http://myapp.localhost/`, never bare `localhost`. Empty (the default) runs the
+old load path byte for byte. README §2.1.
+
 ## Built-in robustness (README §9)
 
 Readiness cache + native lifecycle push (`pbjsWindowEvent` → orphan-reject on
