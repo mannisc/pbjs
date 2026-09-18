@@ -171,7 +171,13 @@ declare global {
     ) => Promise<PbjsNativeReply>;
     pbjsNativeSetWindowState?: (
       windowName: string,
-      state: "minimize" | "maximize" | "restore" | "toggle" | "close",
+      state:
+      | "minimize"
+      | "maximize"
+      | "restore"
+      | "toggle"
+      | "titlebar-double-click"
+      | "close",
     ) => Promise<PbjsNativeReply>;
     pbjsNativeGetWindowMetrics?: (
       windowName: string,

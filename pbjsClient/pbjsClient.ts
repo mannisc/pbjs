@@ -704,9 +704,22 @@ export class Pbjs {
    * Minimize / maximize / restore / close this window, for the buttons the page
    * draws. `"close"` goes through the same event the OS close button raised, so
    * the app-close confirmation flow still runs — it is not a hard teardown.
+   *
+   * `"titlebar-double-click"` is for a title bar the page draws: it does
+   * whatever a double-click on the OS's own title bar does on this machine.
+   * On macOS that is the user's "Double-click a window's title bar to"
+   * preference (zoom by default, or minimize, or nothing); on Windows and
+   * Linux it toggles maximize. Pair it with `startWindowDrag`, which is the
+   * other half of a title bar's behaviour.
    */
   async setWindowState(
-    state: "minimize" | "maximize" | "restore" | "toggle" | "close",
+    state:
+      | "minimize"
+      | "maximize"
+      | "restore"
+      | "toggle"
+      | "titlebar-double-click"
+      | "close",
   ): Promise<void> {
     if (!this.isReady) await this.waitForReady();
     if (!window.pbjsNativeSetWindowState) return;

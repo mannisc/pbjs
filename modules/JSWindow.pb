@@ -788,9 +788,64 @@ Module JSWindow
     ProcedureReturn Val(trimmed)
   EndProcedure
 
+  ; Maximize a window that is not, restore one that is. The state guard is what
+  ; makes it a toggle on every platform: on macOS SetWindowState(Maximize) is
+  ; Cocoa's zoom:, which is itself a toggle, so an unguarded "maximize" there
+  ; would un-maximize a maximized window.
+  Procedure ToggleWindowMaximize(window.i)
+    If GetWindowState(window) = #PB_Window_Maximize
+      SetWindowState(window, #PB_Window_Normal)
+    Else
+      SetWindowState(window, #PB_Window_Maximize)
+    EndIf
+  EndProcedure
+
+  ; What the OS does when its OWN title bar is double-clicked, for a title bar
+  ; the page draws over #NSWindowStyleMaskFullSizeContentView (the OS never
+  ; sees the click, so the page has to ask for the convention by name).
+  ;
+  ; On macOS the convention is a user preference — System Settings → Desktop &
+  ; Dock → "Double-click a window's title bar to" — kept in the global domain
+  ; as AppleActionOnDoubleClick: "Maximize" (the default: zoom:), "Minimize",
+  ; "Fill" (macOS 15+; it has no public API, and zoom: is the nearest thing to
+  ; it) or "None". A missing key is the default. Reading the global domain is
+  ; permitted inside the App Sandbox, so the store build honours it too.
+  ;
+  ; Windows and Linux are not asked: the caption double-click toggles maximize
+  ; on Windows unconditionally, and GNOME's action-double-click-titlebar is a
+  ; gsettings key whose default is the same toggle.
+  Procedure TitlebarDoubleClick(window.i)
+    CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+      Protected action.s = "Maximize"
+      Protected defaults = CocoaMessage(0, 0, "NSUserDefaults standardUserDefaults")
+      If defaults
+        Protected value = CocoaMessage(0, defaults, "stringForKey:$", @"AppleActionOnDoubleClick")
+        If value
+          Protected ptr = CocoaMessage(0, value, "UTF8String")
+          If ptr
+            action = PeekS(ptr, -1, #PB_UTF8)
+          EndIf
+        EndIf
+      EndIf
+      Debug "[JSWIN-STATE] titlebar double-click, AppleActionOnDoubleClick=" + action
+      Select action
+        Case "Minimize"
+          SetWindowState(window, #PB_Window_Minimize)
+          ProcedureReturn
+        Case "None"
+          ProcedureReturn
+      EndSelect
+    CompilerEndIf
+    ToggleWindowMaximize(window)
+  EndProcedure
+
   ; JS → PB: drive the minimize/maximize/close buttons the page draws. PB's
   ; SetWindowState is cross-platform, so this one implementation serves macOS,
   ; Windows and Linux.
+  ;
+  ; "titlebar-double-click" is the one state that is a CONVENTION rather than a
+  ; target: it does whatever a double-click on the OS's own title bar would do
+  ; on this machine (TitlebarDoubleClick above), for a page that draws its own.
   ;
   ; "close" deliberately POSTS #PB_Event_CloseWindow rather than calling
   ; CloseJSWindow directly (which is what pbjsNativeCloseWindow does): posting
@@ -799,7 +854,8 @@ Module JSWindow
   ; the per-window hide-vs-close behaviour all still apply. Calling
   ; CloseJSWindow here would tear the window down behind all of that.
   ;
-  ; Parameters: [windowName, "minimize"|"maximize"|"restore"|"toggle"|"close"]
+  ; Parameters: [windowName, "minimize"|"maximize"|"restore"|"toggle"|
+  ;                          "titlebar-double-click"|"close"]
   Procedure JSSetWindowState(JsonParameters.s)
     Dim Parameters.s(0)
 
@@ -819,11 +875,9 @@ Module JSWindow
             Case "restore"
               SetWindowState(window, #PB_Window_Normal)
             Case "toggle"
-              If GetWindowState(window) = #PB_Window_Maximize
-                SetWindowState(window, #PB_Window_Normal)
-              Else
-                SetWindowState(window, #PB_Window_Maximize)
-              EndIf
+              ToggleWindowMaximize(window)
+            Case "titlebar-double-click"
+              TitlebarDoubleClick(window)
             Case "close"
               PostEvent(#PB_Event_CloseWindow, window, 0)
             Default
