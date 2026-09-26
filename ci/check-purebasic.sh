@@ -51,10 +51,14 @@ echo "PureBasic: $PBC"
 "$PBC" --version || true
 echo
 
+# Every check passes --thread. It is the mode every host has to build in
+# (README §2.1), and JSWindow.pb refuses to compile without it — so a check
+# run without it stops at that guard and checks nothing past it.
+
 fail=0
 
 echo "== 1/3  standalone (pbjs with no host in scope) =="
-if "$PBC" ci/standalone-check.pb --check; then
+if "$PBC" ci/standalone-check.pb --check --thread; then
   echo "   OK"
 else
   echo "   FAILED — pbjs does not compile on its own." >&2
@@ -66,7 +70,7 @@ echo "== 2/3  standalone + webviewBaseUrl (the opt-in origin) =="
 if [ "$(uname -s)" = "Linux" ]; then
   echo "   SKIPPED — webviewBaseUrl's WebKitGTK branch has never been compiled."
   echo "   See webviewBaseUrl/README.md for the likely failures, in order."
-elif "$PBC" ci/standalone-baseurl-check.pb --check; then
+elif "$PBC" ci/standalone-baseurl-check.pb --check --thread; then
   echo "   OK"
 else
   echo "   FAILED — pbjs does not compile with webviewBaseUrl in scope." >&2
@@ -76,7 +80,7 @@ echo
 
 echo "== 3/3  example (pbjsExample.pb) =="
 if [ -f "${root}/reactExample/main-window/dist/index.html" ]; then
-  if "$PBC" pbjsExample.pb --check; then
+  if "$PBC" pbjsExample.pb --check --thread; then
     echo "   OK"
   else
     echo "   FAILED" >&2

@@ -17,7 +17,7 @@
 ; lists the likely failures) — failing the whole gate there would block a
 ; push over an optional module the host may not even include.
 ;
-;     PUREBASIC_HOME=... pbcompiler ci/standalone-baseurl-check.pb --check
+;     PUREBASIC_HOME=... pbcompiler ci/standalone-baseurl-check.pb --check --thread
 ; ============================================================================
 
 IncludeFile "../webviewBaseUrl/WebViewBaseUrl.pb"

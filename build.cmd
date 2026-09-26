@@ -63,7 +63,11 @@ if not exist "%PUREBASIC_HOME%\compilers\pbcompiler.exe" (
   exit /b 1
 )
 
-"%PUREBASIC_HOME%\compilers\pbcompiler.exe" pbjsExample.pb --output "%OUT%" --quiet
+rem --thread is not optional: pbjs decodes the embedded page on a worker thread
+rem that builds a PureBasic string, and outside thread-safe mode that races every
+rem string the main thread builds meanwhile. JSWindow.pb refuses to compile
+rem without it; README section 2.1 has what it looks like when nothing refuses.
+"%PUREBASIC_HOME%\compilers\pbcompiler.exe" pbjsExample.pb --thread --output "%OUT%" --quiet
 if errorlevel 1 exit /b 1
 echo    OK  %OUT%
 

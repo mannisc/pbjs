@@ -3,6 +3,26 @@
 ;- JS WINDOW
 ; =============================================================================
 
+; ⚠ THREAD-SAFE BUILDS ONLY, and this is where that stops being advice.
+; StartLoadHtml hands the embedded page to a worker thread, LoadHtml, which
+; decodes it into a PureBasic string (megabytes of it, which is why it is
+; threaded). Outside thread-safe mode PureBasic's string handling is not safe
+; to use from two threads at once (the Thread library's own overview: even a
+; local string access is dangerous), so whatever string the main thread is
+; building while the decode runs can come out as the page's HTML. Nothing
+; fails where it happens. Observed on PB 6.21 / macOS 26.5, in a host built
+; without --thread that logged right after CreateJSWindow: the log line's text
+; replaced by the page's HTML, a page that never reported ready, and the event
+; loop exiting about five seconds later. The same program built with --thread
+; was correct.
+;
+; So a build that is not thread-safe is refused here rather than left to fail
+; like that. #PB_Compiler_Thread is 1 under --thread / -t (/THREAD on Windows)
+; and under the IDE's "Create thread-safe executable" (README §2.1, step 1).
+CompilerIf #PB_Compiler_Thread = 0
+  CompilerError "pbjs needs a thread-safe build: pass --thread (-t) to pbcompiler, or tick Compiler Options > 'Create thread-safe executable' in the IDE. pbjs decodes the page on a worker thread; README section 2.1 has the rest."
+CompilerEndIf
+
 DeclareModule JSWindow
   UseModule WindowManager
 

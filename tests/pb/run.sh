@@ -40,7 +40,10 @@ cd "$here"
 echo "== router harness =="
 # --console: the harness reports through PrintN, and without a console-format
 # executable that output has nowhere to go on macOS and Windows.
-"$PBC" router-harness.pb --output "${out}/router-harness" --console --quiet
+# --thread: JSWindow.pb refuses to compile without it (README §2.1). The
+# harness's windows are headless and never start the loader thread, but the
+# router under test should be the one hosts ship, and they ship thread-safe.
+"$PBC" router-harness.pb --output "${out}/router-harness" --console --thread --quiet
 if "${out}/router-harness"; then
   echo "   OK"
 else

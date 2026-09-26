@@ -145,6 +145,7 @@ EndDataSection
 ; CursorPosition = 122
 ; FirstLine = 91
 ; Folding = --
+; EnableThread
 ; EnableXP
 ; DPIAware
 ; Executable = ..\..\main.exe
