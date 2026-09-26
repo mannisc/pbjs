@@ -80,6 +80,27 @@ DeclareModule JSWindow
   ; after #PBJS_DeferredReadyFallbackMs, and the window is revealed regardless
   ; after #PBJS_DeferredRevealWatchdogMs. Call before the window is opened.
   Declare SetDeferContentReady(*Window.AppWindow, defer.b = #True)
+
+  ; macOS: may WebKit SUSPEND a page whose window has been hidden for a while
+  ; (minimised, behind other windows, on another Space, under a locked screen)?
+  ; #True, WebKit's default, is what pbjs has always done. After the view has
+  ; been hidden for "View was recently visible" — 480 s on macOS 26.5, 10 s
+  ; under memory pressure — WebKit suspends the page's process and DETACHES ITS
+  ; LAYERS, and a window coming back shows no page for a few hundred ms while
+  ; the process resumes and re-renders (312 ms, measured in a pbjs host), which
+  ; with the webview transparent is the themed window colour.
+  ;
+  ; #False keeps the process running instead
+  ; (WKPreferences.inactiveSchedulingPolicy = None, macOS 14+). The page cannot
+  ; tell: it is still hidden — visibilitychange fires, rAF stops, timers are
+  ; throttled — it is only never frozen, so it is still painted when the window
+  ; returns. The cost is whatever the page keeps doing while hidden.
+  ;
+  ; Process-wide, and read when a window is CREATED: WebKit takes it once, at
+  ; the page's first load, and later changes do nothing. So call it before the
+  ; first CreateJSWindow / RegisterTemplate; it then covers every window after
+  ; it, pool spares included. No-op before macOS 14 and on other platforms.
+  Declare SetSuspendHiddenPages(suspend.b)
   Declare RegisterWindowClosingObserver(*callback)
   Declare PrepareJSWindow(*Window.AppWindow)
   Declare OpenJSWindow(*Window.AppWindow )    
@@ -1411,6 +1432,35 @@ Module JSWindow
       EndIf
     EndProcedure
 
+    ; SetSuspendHiddenPages(#False): WKPreferences.inactiveSchedulingPolicy =
+    ; None. Of its three values only None helps — Throttle still sends the
+    ; process PrepareToSuspend and still detaches the page's layers.
+    ;
+    ; It has to happen before the page's FIRST LOAD, and CreateJSWindow calls
+    ; this before it starts one. WebKit decides once per process, when the page
+    ; joins it (WebProcessProxy::addExistingWebPage / didFinishLaunching): it
+    ; drops the process's lifetime activity if the page's preferences allow
+    ; RunningBoard throttling, and nothing takes that back. The preferences
+    ; reached through `configuration` are the page's own: the configuration is
+    ; a copy, but copies share their WKPreferences.
+    #WKInactiveSchedulingPolicyNone = 2
+
+    Procedure MacKeepHiddenPageRunning(gadget)
+      Protected wk.i = FindWKWebView(gadget)
+      If wk = 0
+        ProcedureReturn
+      EndIf
+      Protected preferences.i = CocoaMessage(0, CocoaMessage(0, wk, "configuration"), "preferences")
+      If preferences = 0
+        ProcedureReturn
+      EndIf
+      ; macOS 14+. An unrecognised selector is an exception, not a no-op.
+      If CocoaMessage(0, preferences, "respondsToSelector:", sel_registerName_("setInactiveSchedulingPolicy:")) = 0
+        ProcedureReturn
+      EndIf
+      CocoaMessage(0, preferences, "setInactiveSchedulingPolicy:", #WKInactiveSchedulingPolicyNone)
+    EndProcedure
+
     ; ---------------------------------------------------------------------
     ; FIRST REVEAL (macOS)
     ; ---------------------------------------------------------------------
@@ -1794,6 +1844,13 @@ Module JSWindow
     EndIf
   EndProcedure
 
+  ; Public, process-wide (see the declaration). Read by CreateJSWindow.
+  Global SuspendHiddenPages.b = #True
+
+  Procedure SetSuspendHiddenPages(suspend.b)
+    SuspendHiddenPages = suspend
+  EndProcedure
+
   ; Public: hand the content-ready decision to the page (see the declaration).
   Procedure SetDeferContentReady(*Window.AppWindow, defer.b = #True)
     If *Window And IsWindow(*Window\Window)
@@ -1979,6 +2036,11 @@ Module JSWindow
           ; and not the light line its container draws round the edge.
           MacClearWebViewBox(webViewGadget)
           MacClearWebViewBackdrop(webViewGadget)
+          ; Here, before StartLoadHtml below and dev mode's debugUrl load — the
+          ; first load is the only moment WebKit reads it.
+          If Not SuspendHiddenPages
+            MacKeepHiddenPageRunning(webViewGadget)
+          EndIf
         EndIf
         ; Disable window show/hide animation (NSWindowAnimationBehaviorNone = 2).
         ; Without this, every makeKeyAndOrderFront: call adds ~150-200ms of zoom animation.

@@ -274,6 +274,37 @@ Measured 11/11 APIs repaired on macOS and Windows —
 [`webviewBaseUrl/README.md`](webviewBaseUrl/README.md) has the tables and the
 per-platform mechanisms.
 
+**Optional · keep a hidden window's page from being suspended (macOS).** A window
+left minimised, behind other windows, on another Space or under a locked screen
+for a while comes back empty for a moment: the window's own colour where the
+page should be, for a few hundred milliseconds. That is WebKit, on purpose. Once
+the view has been hidden for longer than "View was recently visible" (480 s on
+macOS 26.5, 10 s under memory pressure) it suspends the page's process and
+detaches its layers, and attaches them again only once the resumed process has
+rendered a frame.
+
+```purebasic
+JSWindow::SetSuspendHiddenPages(#False)   ; BEFORE the first CreateJSWindow
+```
+
+- **Call it before creating windows.** WebKit reads the policy once, at a page's
+  first load, so the switch covers every window created after it — pool spares
+  included — and none created before.
+- **The page cannot tell.** It is still hidden: `visibilitychange` fires,
+  `requestAnimationFrame` stops, timers are throttled. Its process is just never
+  frozen, and whatever the page keeps doing while hidden is the cost.
+- **macOS 14+** (`WKPreferences.inactiveSchedulingPolicy = None`), a no-op on
+  older macOS and on Windows and Linux. `#True`, the default, is WebKit's own
+  behaviour and what pbjs has always done.
+
+Measured with WebKit's suspension delay cut to 5 s (`defaults write <executable
+name> DebugWebProcessSuspensionDelay -int 5`, read at launch): by default
+`PrepareToSuspend` goes out 5 s after the window is minimised, the WKWebView's
+layer tree collapses to 2 layers (from 32 for the test page), and the restored
+window shows its own colour until the resumed process has rendered a frame. With
+the switch the timer still expires, nothing is suspended, and the page is there
+from the first frame the window is back.
+
 ### 2.2 In the page — the JavaScript side
 
 The bridge script builds `window.pbjs`, sets `window.pbjsReady`, and dispatches a
