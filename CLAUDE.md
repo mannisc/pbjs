@@ -77,7 +77,11 @@ fails if a host-app name reappears in it.
 
 ## Hosting it
 
-Five load-bearing steps, each with the symptom of getting it wrong: README §2.1.
+Six load-bearing steps, each with the symptom of getting it wrong: README §2.1.
+**Every compile needs `--thread`**, `--check` included (IDE: "Create thread-safe
+executable"): pbjs decodes the page into a string on a worker thread, and
+`JSWindow.pb` refuses to compile without it rather than let that thread race
+the main thread's strings.
 The one most often missed is dispatching `JSWindow::HandlePoolRefillEvent` /
 `HandleDeferredCloseEvent` / `HandleDeferredReleaseEvent` from the host's main
 event handler — omitting them silently breaks pooling and macOS close, and

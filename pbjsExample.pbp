@@ -24,7 +24,7 @@
       <inputfile value="pbjsExample.pb"/>
       <outputfile value="..\main.exe"/>
       <executable value="..\..\main.exe"/>
-      <options xpskin="1" dpiaware="1" optimizer="0"/>
+      <options thread="1" xpskin="1" dpiaware="1" optimizer="0"/>
     </target>
   </section>
 </project>

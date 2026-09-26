@@ -60,8 +60,10 @@ keeps its **own** readiness — compose them at the app level, don't unify
 (see §8).
 
 The native host runs everything on the **main UI thread**, so the bridge is as
-fast as the loop is free. Worker threads exist only for HTML load, content
-visibility, and pool prep.
+fast as the loop is free. Worker threads exist only to decode each window's
+embedded HTML and, on macOS, to wait out a fullscreen transition before the
+webview is shown again — few, but enough that a host must be compiled
+thread-safe (§2.1).
 
 > **Why not a dedicated routing thread?** It wouldn't help. The WebView
 > inject/callback APIs are UI-thread-pinned (so the costly `WebViewExecuteScript`
@@ -88,10 +90,42 @@ web app in the first window, and the buttons open and resize the second.
 
 ### 2.1 Hosting pbjs — the PureBasic side
 
-Five things, all of them load-bearing. Nothing here is optional, and the ways
-each one fails are given because none of them announces itself.
+Six things, all of them load-bearing. Nothing here is optional, and the ways
+each one fails are given because only the first announces itself — and that
+one only because pbjs refuses to compile without it.
 
-**1 · Include it.** `pbjs.pb` pulls in everything in the right order:
+**1 · Compile it thread-safe.** `--thread` (or `-t`; `/THREAD` also works on
+Windows) on the command line, or **Compiler Options → Create thread-safe
+executable** in the IDE, which writes `; EnableThread` into the source's IDE
+footer or `thread="1"` into a project's target:
+
+```bash
+pbcompiler main.pb --thread --output myapp
+```
+
+pbjs decodes each window's embedded page on a worker thread (`LoadHtml` in
+`modules/JSWindow.pb`), and the decode builds a PureBasic string — megabytes of
+it, which is why it is off the main thread. Outside thread-safe mode
+PureBasic's string handling is not safe from two threads at once, so a string
+the main thread builds while the decode runs can come out wrong, and nothing
+fails where it happens. Observed on PureBasic 6.21 / macOS 26.5, in a host
+built without `--thread` that logged right after `CreateJSWindow`: the log
+line's text had been replaced by the page's HTML, the page never reported
+ready, and the event loop exited about five seconds later. The same program
+built with `--thread` was correct.
+
+So `JSWindow.pb` checks `#PB_Compiler_Thread` and stops the compile instead:
+
+```
+pbjs needs a thread-safe build: pass --thread (-t) to pbcompiler, or tick
+Compiler Options > 'Create thread-safe executable' in the IDE. …
+```
+
+That includes `--check`, so a syntax-check command line needs the flag too.
+Don't work around the guard: what it prevents is the failure above, which shows
+up in whichever string lost the race, nowhere near pbjs.
+
+**2 · Include it.** `pbjs.pb` pulls in everything in the right order:
 
 ```purebasic
 XIncludeFile "pbjs/pbjs.pb"
@@ -125,14 +159,14 @@ works too. What does **not** work is writing `#PBJS_DevMode = 0` at the top leve
 of your `main.pb`: PureBasic modules cannot see top-level constants at all, so it
 is silently ignored — no error, no warning, no effect.
 
-**2 · Initialise before creating any window.**
+**3 · Initialise before creating any window.**
 
 ```purebasic
 OsTheme::InitOsTheme()
 WindowManager::InitWindowManager()
 ```
 
-**3 · Create windows, and give them content from a `DataSection`.** The page is
+**4 · Create windows, and give them content from a `DataSection`.** The page is
 embedded in the executable, not read from disk:
 
 ```purebasic
@@ -153,7 +187,7 @@ bridge script into the `<body>` tag. A single-file build is the point — one HT
 document with the CSS and JS inlined (the example uses
 `vite-plugin-singlefile`), because there is no server and no second request.
 
-**4 · Dispatch pbjs's own events from your main event handler.** This is the
+**5 · Dispatch pbjs's own events from your main event handler.** This is the
 step that is easy to miss and silent when missed:
 
 ```purebasic
@@ -177,7 +211,7 @@ theirs, so dispatching them unconditionally is correct.
 never needed the first, and it is small enough to have got away without the
 other two. Do not read the example as the contract here; read this.
 
-**5 · Run the loop, then clean up.**
+**6 · Run the loop, then clean up.**
 
 ```purebasic
 WindowManager::RunEventLoop(@HandleMainEvent(), 0, @KeepRunning())
@@ -690,7 +724,7 @@ By hand, if you would rather:
 
 ```bash
 cd reactExample/main-window && npm ci && npm run build   # -> dist/index.html
-cd ../.. && pbcompiler pbjsExample.pb --output pbjsExample
+cd ../.. && pbcompiler pbjsExample.pb --thread --output pbjsExample   # §2.1, step 1
 ```
 
 ⚠ Read the example for the *shape* of a host, not for the contract: it uses no

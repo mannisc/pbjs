@@ -14,9 +14,10 @@
 ;     ci/check-purebasic.sh
 ;
 ; Or directly — note the flag is -k / --check. (`-c` is --commented, which
-; dumps the generated C instead; a different tool for a different job.)
+; dumps the generated C instead; a different tool for a different job.) And
+; --thread, even for a syntax check: JSWindow.pb refuses to compile without it.
 ;
-;     PUREBASIC_HOME=... pbcompiler ci/standalone-check.pb --check
+;     PUREBASIC_HOME=... pbcompiler ci/standalone-check.pb --check --thread
 ;
 ; ⚠ Needs a LICENSED PureBasic: the free version caps each source file at 800
 ; lines and modules/JSWindow.pb is ~3,500. See .github/workflows/ci.yml for

@@ -65,7 +65,11 @@ PBC=$(ci/purebasic-home.sh)
 PUREBASIC_HOME=$(dirname "$(dirname "$PBC")")
 export PUREBASIC_HOME
 
-"$PBC" pbjsExample.pb --output "$out" --quiet
+# --thread is not optional: pbjs decodes the embedded page on a worker thread
+# that builds a PureBasic string, and outside thread-safe mode that races every
+# string the main thread builds meanwhile. JSWindow.pb refuses to compile
+# without it; README §2.1 has what it looks like when nothing refuses.
+"$PBC" pbjsExample.pb --thread --output "$out" --quiet
 echo "   OK  $out"
 
 if [ "$run" = "1" ]; then

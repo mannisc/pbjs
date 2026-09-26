@@ -25,8 +25,8 @@
 ; 1. PER BUILD — a compiler command-line constant. It DOES reach module scope
 ;    and is seen by the Defined() guards below:
 ;
-;      pbcompiler main.pb -co PBJS_EnableDevTools=1
-;      pbcompiler main.pb --constant PBJS_DevMode=0
+;      pbcompiler main.pb --thread -co PBJS_EnableDevTools=1
+;      pbcompiler main.pb --thread --constant PBJS_DevMode=0
 ;
 ;    This is the one to use from a build script (dev.js / build.js already
 ;    invoke pbcompiler directly).
