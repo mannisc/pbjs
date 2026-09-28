@@ -97,6 +97,13 @@ inert), then pass `CreateJSWindow`'s trailing `baseUrl` — a per-app host like
 `http://myapp.localhost/`, never bare `localhost`. Empty (the default) runs the
 old load path byte for byte. README §2.1.
 
+**Not suspending hidden pages is opt-in, process-wide (macOS 14+).** WebKit
+suspends a page whose window has been hidden for a while and detaches its
+layers, so the window comes back empty for a moment.
+`JSWindow::SetSuspendHiddenPages(#False)` prevents it, but only for windows
+created **after** the call: WebKit reads it once, at the page's first load.
+README §2.1.
+
 ## Built-in robustness (README §9)
 
 Readiness cache + native lifecycle push (`pbjsWindowEvent` → orphan-reject on

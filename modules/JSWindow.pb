@@ -80,6 +80,27 @@ DeclareModule JSWindow
   ; after #PBJS_DeferredReadyFallbackMs, and the window is revealed regardless
   ; after #PBJS_DeferredRevealWatchdogMs. Call before the window is opened.
   Declare SetDeferContentReady(*Window.AppWindow, defer.b = #True)
+
+  ; macOS: may WebKit SUSPEND a page whose window has been hidden for a while
+  ; (minimised, behind other windows, on another Space, under a locked screen)?
+  ; #True, WebKit's default, is what pbjs has always done. After the view has
+  ; been hidden for "View was recently visible" — 480 s on macOS 26.5, 10 s
+  ; under memory pressure — WebKit suspends the page's process and DETACHES ITS
+  ; LAYERS, and a window coming back shows no page for a few hundred ms while
+  ; the process resumes and re-renders (312 ms, measured in a pbjs host), which
+  ; with the webview transparent is the themed window colour.
+  ;
+  ; #False keeps the process running instead
+  ; (WKPreferences.inactiveSchedulingPolicy = None, macOS 14+). The page cannot
+  ; tell: it is still hidden — visibilitychange fires, rAF stops, timers are
+  ; throttled — it is only never frozen, so it is still painted when the window
+  ; returns. The cost is whatever the page keeps doing while hidden.
+  ;
+  ; Process-wide, and read when a window is CREATED: WebKit takes it once, at
+  ; the page's first load, and later changes do nothing. So call it before the
+  ; first CreateJSWindow / RegisterTemplate; it then covers every window after
+  ; it, pool spares included. No-op before macOS 14 and on other platforms.
+  Declare SetSuspendHiddenPages(suspend.b)
   Declare RegisterWindowClosingObserver(*callback)
   Declare PrepareJSWindow(*Window.AppWindow)
   Declare OpenJSWindow(*Window.AppWindow )    
@@ -1314,10 +1335,93 @@ Module JSWindow
       ProcedureReturn 0
     EndProcedure
 
+    ; ---------------------------------------------------------------------
+    ; THE WEBVIEW'S CONTAINER draws a line, and no NSBox setting stops it
+    ; ---------------------------------------------------------------------
+    ; GadgetID() of a WebViewGadget is PureBasic's PBWebViewBox2, an NSBox
+    ; subclass the WKWebView sits inside. PureBasic overrides its drawRect:, and
+    ; the whole override is (read from the PureBasic 6.21 runtime's code):
+    ;
+    ;   [[NSColor colorWithCalibratedRed:0.85 green:0.85 blue:0.85 alpha:1] set];
+    ;   NSFrameRect([self bounds]);
+    ;
+    ; — a 1 pt opaque grey line round the box, (230,230,230) on screen. It never
+    ; reaches NSBox's own drawing, so none of NSBox's settings reach it:
+    ; setTransparent: YES, Apple's documented "draw nothing", left the line
+    ; exactly where it was in the window's own pixels (CGWindowListCreateImage,
+    ; macOS 26.5), and borderType, borderWidth and borderColor do no better.
+    ;
+    ; The box is MaxDesktopWidth x MaxDesktopHeight from the window's top-left
+    ; corner and the content view reaches over the titlebar, so the line runs
+    ; along the window's top and left edges. The page is painted over it, so it
+    ; shows whenever the webview is transparent and the page is not there:
+    ; before the first frame, and when WebKit detaches a suspended page's layers
+    ; after its window was hidden for a while. The webview is transparent
+    ; because MacClearWebViewBackdrop (below) makes it so, and that is when the
+    ; line appeared — until then the opaque webview had covered it.
+    ;
+    ; So pbjs's own boxes get a drawRect: that draws nothing: the instance's
+    ; class is swapped for PBJSWebViewBox, a subclass of PBWebViewBox2 that
+    ; overrides that one method — the same trick KVO plays on the WKWebView
+    ; inside it. Every other method is inherited, and PureBasic never compares
+    ; the box's class (its only uses of it are the alloc and two [super …]
+    ; calls). A WebViewGadget the host makes itself keeps PureBasic's line.
+    ;
+    ; The other two calls are about NSBox itself, not the line:
+    ;
+    ;   setBorderType: NSNoBorder — LAYOUT. Deprecated, and it changes nothing
+    ;     about the drawing, but it moves the content view — and the webview in
+    ;     it — from a 1 pt inset to the whole box, so the page reaches the
+    ;     window's edge. Nothing else here does that.
+    ;   setTransparent: YES — moot for PBWebViewBox2, whose drawing never asks.
+    ;     It is what stops a container pbjs does not recognise from drawing
+    ;     NSBox's own custom border, a 1 pt line of its own.
+    ImportC ""
+      object_getClass(obj.i)
+      object_setClass(obj.i, cls.i)
+    EndImport
+
+    ProcedureC MacWebViewBoxDrawRect(*self, sel)
+      ; Nothing. The NSRect argument is never read, which keeps this callable
+      ; the same way on arm64 (registers) and x86-64 (stack).
+    EndProcedure
+
+    Procedure MacClearWebViewBox(gadget)
+      Protected box.i = GadgetID(gadget)
+      If box = 0
+        ProcedureReturn
+      EndIf
+      If CocoaMessage(0, box, "isKindOfClass:", objc_getClass_("NSBox")) = 0
+        ProcedureReturn
+      EndIf
+      CocoaMessage(0, box, "setBorderType:", 0)
+      CocoaMessage(0, box, "setTransparent:", #True)
+
+      ; Only the exact class this was measured against. A different one — a
+      ; future PureBasic's, or a KVO subclass already in place — is left alone.
+      Protected pbBox.i = objc_getClass_("PBWebViewBox2")
+      If pbBox = 0 Or object_getClass(box) <> pbBox
+        ProcedureReturn
+      EndIf
+      ; Class names are process-global: allocate once, fetch after that.
+      Protected quietBox.i = objc_allocateClassPair_(pbBox, "PBJSWebViewBox", 0)
+      If quietBox
+        class_addMethod_(quietBox, sel_registerName_("drawRect:"), @MacWebViewBoxDrawRect(),
+                         "v@:{CGRect={CGPoint=dd}{CGSize=dd}}")
+        objc_registerClassPair_(quietBox)
+      Else
+        quietBox = objc_getClass_("PBJSWebViewBox")
+      EndIf
+      If quietBox
+        object_setClass(box, quietBox)
+      EndIf
+    EndProcedure
+
     ; Stop the WKWebView drawing its own opaque white backdrop. Until the web
     ; process commits a first frame there is nothing to composite, and that
     ; default backdrop IS the startup flash. With it off, the NSWindow's
-    ; themeBackgroundColor shows through instead; the moment the page paints, the
+    ; themeBackgroundColor shows through instead (MacClearWebViewBox above keeps
+    ; the webview's container out of the way); the moment the page paints, the
     ; injected `html { background }` (PreparePbjsBasicScript) makes the surface
     ; opaque again, so the transparent phase costs nothing after startup.
     Procedure MacClearWebViewBackdrop(gadget)
@@ -1326,6 +1430,35 @@ Module JSWindow
         CocoaMessage(0, wk, "setValue:", CocoaMessage(0, 0, "NSNumber numberWithBool:", #False),
                              "forKey:$", @"drawsBackground")
       EndIf
+    EndProcedure
+
+    ; SetSuspendHiddenPages(#False): WKPreferences.inactiveSchedulingPolicy =
+    ; None. Of its three values only None helps — Throttle still sends the
+    ; process PrepareToSuspend and still detaches the page's layers.
+    ;
+    ; It has to happen before the page's FIRST LOAD, and CreateJSWindow calls
+    ; this before it starts one. WebKit decides once per process, when the page
+    ; joins it (WebProcessProxy::addExistingWebPage / didFinishLaunching): it
+    ; drops the process's lifetime activity if the page's preferences allow
+    ; RunningBoard throttling, and nothing takes that back. The preferences
+    ; reached through `configuration` are the page's own: the configuration is
+    ; a copy, but copies share their WKPreferences.
+    #WKInactiveSchedulingPolicyNone = 2
+
+    Procedure MacKeepHiddenPageRunning(gadget)
+      Protected wk.i = FindWKWebView(gadget)
+      If wk = 0
+        ProcedureReturn
+      EndIf
+      Protected preferences.i = CocoaMessage(0, CocoaMessage(0, wk, "configuration"), "preferences")
+      If preferences = 0
+        ProcedureReturn
+      EndIf
+      ; macOS 14+. An unrecognised selector is an exception, not a no-op.
+      If CocoaMessage(0, preferences, "respondsToSelector:", sel_registerName_("setInactiveSchedulingPolicy:")) = 0
+        ProcedureReturn
+      EndIf
+      CocoaMessage(0, preferences, "setInactiveSchedulingPolicy:", #WKInactiveSchedulingPolicyNone)
     EndProcedure
 
     ; ---------------------------------------------------------------------
@@ -1711,6 +1844,13 @@ Module JSWindow
     EndIf
   EndProcedure
 
+  ; Public, process-wide (see the declaration). Read by CreateJSWindow.
+  Global SuspendHiddenPages.b = #True
+
+  Procedure SetSuspendHiddenPages(suspend.b)
+    SuspendHiddenPages = suspend
+  EndProcedure
+
   ; Public: hand the content-ready decision to the page (see the declaration).
   Procedure SetDeferContentReady(*Window.AppWindow, defer.b = #True)
     If *Window And IsWindow(*Window\Window)
@@ -1891,10 +2031,16 @@ Module JSWindow
 
       CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
         If Not webWindow
-          CocoaMessage(0, GadgetID(webViewGadget), "setBorderType:", 0)
           ; Before the first web-process frame the webview has nothing to show —
-          ; let the themed window colour show through instead of WebKit's white.
+          ; let the themed window colour show through instead of WebKit's white,
+          ; and not the light line its container draws round the edge.
+          MacClearWebViewBox(webViewGadget)
           MacClearWebViewBackdrop(webViewGadget)
+          ; Here, before StartLoadHtml below and dev mode's debugUrl load — the
+          ; first load is the only moment WebKit reads it.
+          If Not SuspendHiddenPages
+            MacKeepHiddenPageRunning(webViewGadget)
+          EndIf
         EndIf
         ; Disable window show/hide animation (NSWindowAnimationBehaviorNone = 2).
         ; Without this, every makeKeyAndOrderFront: call adds ~150-200ms of zoom animation.
