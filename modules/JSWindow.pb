@@ -1006,6 +1006,27 @@ Module JSWindow
     EndImport
   CompilerEndIf
 
+  CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
+    Structure JSWinPoint   ; NSPoint / CGPoint
+      x.d
+      y.d
+    EndStructure
+
+    ; +[NSEvent mouseEventWithType:location:modifierFlags:timestamp:
+    ; windowNumber:context:eventNumber:clickCount:pressure:] takes more
+    ; arguments than CocoaMessage() accepts, so it is called through a typed
+    ; objc_msgSend. The NSPoint goes as two doubles: a {double,double} struct
+    ; travels in two FP registers on both arm64 (HFA) and x86_64 (SSE class),
+    ; exactly like two separate double arguments.
+    PrototypeC.i JSWinMouseEventMsgSend(cls.i, sel.i, type.i, x.d, y.d, flags.i,
+                                         timestamp.d, windowNumber.i, context.i,
+                                         eventNumber.i, clickCount.i, pressure.f)
+    ImportC ""
+      JSWinDlsym.i(handle.i, symbol.p-ascii) As "_dlsym"   ; Mach-O symbol names carry the leading underscore
+    EndImport
+    #JSWin_RTLD_DEFAULT = -2
+  CompilerEndIf
+
   ; JS → PB: start a native window drag from the page's own title bar.
   ; With the content view spanning the full frame the OS no longer receives a
   ; caption mousedown, so DefaultWindowComponent forwards it here. Each platform
@@ -1038,15 +1059,61 @@ Module JSWindow
 
       If IsWindow(window)
         CompilerIf #PB_Compiler_OS = #PB_OS_MacOS
-          ; currentEvent is still the mousedown AppKit is dispatching when the
-          ; script message lands, which is exactly what this selector wants.
+          ; performWindowDragWithEvent: anchors the drag at the event's
+          ; locationInWindow, so the event decides where the window starts from.
+          ; The script message is NOT delivered while AppKit dispatches the
+          ; mousedown: WebKit handles the press in its web-content process and
+          ; the message comes back over IPC, a run-loop turn or more later. By
+          ; then currentEvent is whatever was dispatched last — often the
+          ; mousedown or a mouseDragged of this window (fine), but just as often
+          ; a PB application-defined wake-up, a mouseMoved, or an event of
+          ; another window, whose location is nothing to do with this press.
+          ; Anchoring there is what made the window jump on grab. So the current
+          ; event is used only when it is a left press/drag of THIS window;
+          ; otherwise a mousedown is synthesized at the cursor's position now.
+          #NSEventTypeLeftMouseDown = 1
+          #NSEventTypeLeftMouseDragged = 6
+          Protected nsWin.i = WindowID(window)
+
+          ; The press already ended (a quick click whose message arrived after
+          ; the mouseup): starting a drag now would grab a released mouse.
+          If (CocoaMessage(0, 0, "NSEvent pressedMouseButtons") & 1) = 0
+            ProcedureReturn UTF8(~"{\"error\":\"mouse already released\"}")
+          EndIf
+
           Protected ev.i = CocoaMessage(0, CocoaMessage(0, 0, "NSApplication sharedApplication"), "currentEvent")
+          Protected evType.i = -1, synthesized.b
           If ev
-            Debug "[JSWIN-DRAG] performWindowDragWithEvent: eventType=" + Str(CocoaMessage(0, ev, "type"))
-            CocoaMessage(0, WindowID(window), "performWindowDragWithEvent:", ev)
+            evType = CocoaMessage(0, ev, "type")
+            If (evType <> #NSEventTypeLeftMouseDown And evType <> #NSEventTypeLeftMouseDragged) Or
+               CocoaMessage(0, ev, "window") <> nsWin
+              ev = 0
+            EndIf
+          EndIf
+
+          If Not ev
+            Protected screenPt.JSWinPoint, winPt.JSWinPoint
+            Protected timestamp.d
+            CocoaMessage(@screenPt, 0, "NSEvent mouseLocation")
+            CocoaMessage(@winPt, nsWin, "convertPointFromScreen:@", @screenPt)
+            CocoaMessage(@timestamp, CocoaMessage(0, 0, "NSProcessInfo processInfo"), "systemUptime")
+            Protected mouseEvent.JSWinMouseEventMsgSend = JSWinDlsym(#JSWin_RTLD_DEFAULT, "objc_msgSend")
+            If mouseEvent
+              ev = mouseEvent(objc_getClass_("NSEvent"),
+                              sel_registerName_("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"),
+                              #NSEventTypeLeftMouseDown, winPt\x, winPt\y, 0, timestamp,
+                              CocoaMessage(0, nsWin, "windowNumber"), 0, 0, 1, 1.0)
+            EndIf
+            synthesized = Bool(ev <> 0)
+          EndIf
+
+          If ev
+            Debug "[JSWIN-DRAG] performWindowDragWithEvent: currentEventType=" + Str(evType) +
+                  " synthesized=" + Str(synthesized)
+            CocoaMessage(0, nsWin, "performWindowDragWithEvent:", ev)
             ProcedureReturn UTF8(~"{\"success\":true}")
           EndIf
-          ProcedureReturn UTF8(~"{\"error\":\"no current event\"}")
+          ProcedureReturn UTF8(~"{\"error\":\"no drag event\"}")
 
         CompilerElseIf #PB_Compiler_OS = #PB_OS_Windows
           ; Hand the press to the window manager as if it had landed on the
