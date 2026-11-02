@@ -941,7 +941,9 @@
               reloadParam,
               callerName,
               atX,
-              atY
+              atY,
+              // Always: the window focus returns to when the instance closes.
+              String(window.pbjs.windowName || "")
             )
             .then((result) => {
               if (!result) {

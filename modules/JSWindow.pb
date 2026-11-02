@@ -190,6 +190,11 @@ DeclareModule JSWindow
     *OwningTemplate.JSWindowTemplate
     IsPoolSpare.b
     InstanceKey.s              ; opaque caller string; "" for spares
+    ; Runtime name of the window that opened (or last re-focused) this
+    ; instance. When the instance closes while it is the key window, focus
+    ; goes back here — macOS does not hand key status to another window when
+    ; one is ordered out, so without this the opener needs a click first.
+    OpenerName.s
 
     ; Recycle-to-pool flags (see CloseJSWindow / OpenInstance)
     NeedsReload.b     ; #True = recycled without reload; invisible to reloadOnReuse=True callers
@@ -295,12 +300,15 @@ DeclareModule JSWindow
   ; atScreenX/atScreenY: explicit position for the new instance in desktop
   ; coordinates (DnD drop-point placement). #JSWindow_NoPosition = unset.
   #JSWindow_NoPosition = -2147483647
-  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "", atScreenX.i = #JSWindow_NoPosition, atScreenY.i = #JSWindow_NoPosition)
+  Declare.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "", atScreenX.i = #JSWindow_NoPosition, atScreenY.i = #JSWindow_NoPosition, openerName.s = "")
   Declare RefillPoolAsync(*Template.JSWindowTemplate)
   Declare HandlePoolRefillEvent(Event.i)
   Declare HandleDeferredCloseEvent(Event.i)
   Declare HandleDeferredReleaseEvent(Event.i)
   Declare FocusInstance(*Window.AppWindow)
+  Declare.b IsKeyJSWindow(window.i)
+  Declare.s ActiveJSWindowName()
+  Declare ActivateOpener(openerName.s, *Parent.AppWindow = 0)
 
   ; Register a hook called repeatedly *during* an OS modal resize/move loop
   ; (Windows). pbjs owns the window proc — the only callback Windows invokes
@@ -2703,12 +2711,18 @@ Module JSWindow
   CompilerEndIf
 
 
-  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "", atScreenX.i = #JSWindow_NoPosition, atScreenY.i = #JSWindow_NoPosition)
+  Procedure.i OpenInstance(templateName.s, instanceKey.s, paramsJson.s, reloadOnReuse.b = #False, callerWindowName.s = "", atScreenX.i = #JSWindow_NoPosition, atScreenY.i = #JSWindow_NoPosition, openerName.s = "")
     If Not FindMapElement(JSTemplates(), templateName)
       Debug "[OpenInstance] Unknown template: " + templateName
       ProcedureReturn 0
     EndIf
     Protected *T.JSWindowTemplate = @JSTemplates()
+
+    ; A native caller names no opener: the window the user is in is the best
+    ; guess for the one to return to.
+    If openerName = ""
+      openerName = ActiveJSWindowName()
+    EndIf
 
     ; --- 1. Dedupe by caller-supplied opaque key. Empty key disables dedupe. ---
     Protected lookupKey.s = templateName + ":" + instanceKey
@@ -2721,6 +2735,9 @@ Module JSWindow
           If paramsJson <> ""
             JSBridge::SendParameters(@JSWindows(), paramsJson)
           EndIf
+          ; Re-focused from somewhere else: that window is now the one to
+          ; return to.
+          JSWindows()\OpenerName = openerName
           FocusInstance(*Existing)
           ProcedureReturn existingHandle
         EndIf
@@ -2770,6 +2787,7 @@ Module JSWindow
       *JS\IsPoolSpare     = #False
       *JS\InstanceKey     = instanceKey
       *JS\ReloadOnRecycle = reloadOnReuse  ; store preference for use at close/recycle time
+      *JS\OpenerName      = openerName
     EndIf
     If instanceKey <> ""
       TemplateInstances(lookupKey) = *Window\Window
@@ -2925,7 +2943,12 @@ Module JSWindow
       atScreenY = Val(Parameters(6))
     EndIf
 
-    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson, reloadOnReuse, callerWindowName, atScreenX, atScreenY)
+    ; The calling window, always sent (unlike callerWindowName, which only
+    ; opts into smart positioning): the window focus returns to on close.
+    Protected openerName.s = ""
+    If ArraySize(Parameters()) >= 7 : openerName = Parameters(7) : EndIf
+
+    Protected handle.i = OpenInstance(templateName, instanceKey, paramsJson, reloadOnReuse, callerWindowName, atScreenX, atScreenY, openerName)
     If handle = 0
       ProcedureReturn UTF8(~"{\"error\":\"OpenInstance failed\"}")
     EndIf
@@ -2938,18 +2961,64 @@ Module JSWindow
   EndProcedure
 
 
+  ; Is this the window keyboard input goes to right now?
+  Procedure.b IsKeyJSWindow(window.i)
+    If Not IsWindow(window)
+      ProcedureReturn #False
+    EndIf
+    CompilerSelect #PB_Compiler_OS
+      CompilerCase #PB_OS_MacOS
+        ProcedureReturn Bool(CocoaMessage(0, WindowID(window), "isKeyWindow"))
+      CompilerCase #PB_OS_Windows
+        ProcedureReturn Bool(GetForegroundWindow_() = WindowID(window))
+      CompilerDefault
+        ProcedureReturn Bool(GetActiveWindow() = window)
+    CompilerEndSelect
+  EndProcedure
+
+  ; Runtime name of the JSWindow the user is in, "" if none.
+  Procedure.s ActiveJSWindowName()
+    Protected active.i = GetActiveWindow()
+    If active <> -1 And FindMapElement(JSWindows(), Str(active))
+      ProcedureReturn JSWindows()\Name
+    EndIf
+    ProcedureReturn ""
+  EndProcedure
+
+  ; Give focus back to the window that opened a closing one: the opener by
+  ; name when it is still on screen, else the static template parent. By NAME,
+  ; never a stored handle — PB reuses window numbers, and a recycled spare may
+  ; carry the old one. A hidden, minimized or headless opener is left alone:
+  ; FocusInstance would SHOW it, which is a reopen, not a return.
+  Procedure ActivateOpener(openerName.s, *Parent.AppWindow = 0)
+    Protected target.i = -1
+    If openerName <> "" And FindMapElement(WindowsByName(), openerName)
+      target = WindowsByName()
+    ElseIf *Parent
+      target = *Parent\Window
+    EndIf
+    If target = -1 Or Not IsWindow(target) Or Not FindMapElement(JSWindows(), Str(target))
+      ProcedureReturn
+    EndIf
+    If Not JSWindows()\Open Or JSWindows()\Headless Or GetWindowState(target) = #PB_Window_Minimize
+      ProcedureReturn
+    EndIf
+    Protected *Target.AppWindow = GetManagedWindowFromWindowHandle(WindowID(target))
+    If *Target
+      FocusInstance(*Target)
+    EndIf
+  EndProcedure
+
+
   Procedure HideJSWindow(*Window.AppWindow, FromManagedWindow)
     If IsWindow(*Window\Window)
       Protected *JSWindow.JSWindow = JSWindows(Str(*Window\Window))
+      Protected wasKey.b = IsKeyJSWindow(*Window\Window)
 
       HideWindow(*Window\Window,#True)
       
-      If *Window\Open
-        If *JSWindow\Parent
-          If IsWindow(*JSWindow\Parent\Window)
-            SetActiveWindow(*JSWindow\Parent\Window)
-          EndIf
-        EndIf
+      If *Window\Open And wasKey
+        ActivateOpener(*JSWindow\OpenerName, *JSWindow\Parent)
       EndIf 
       
       If Not FromManagedWindow
@@ -2975,6 +3044,8 @@ Module JSWindow
     Protected *T.JSWindowTemplate = 0
     Protected instanceKey.s = ""
     Protected *Parent.AppWindow = 0
+    Protected openerName.s = ""
+    Protected wasKey.b = #False
     Protected lookupKey.s = ""
     If *Window <> 0 And IsWindow(*Window\Window)
       *JSWindow = JSWindows(Str(*Window\Window))
@@ -2982,7 +3053,11 @@ Module JSWindow
         *T          = *JSWindow\OwningTemplate
         instanceKey = *JSWindow\InstanceKey
         *Parent     = *JSWindow\Parent  ; capture before DeleteMapElement frees *JSWindow
+        openerName  = *JSWindow\OpenerName
       EndIf
+      ; Only a window the user was in hands focus back — closing one in the
+      ; background must not pull the opener over what they are doing.
+      wasKey = IsKeyJSWindow(*Window\Window)
 
       ; ---- RECYCLE PATH: active template instance → hide and return to pool ----
       ; Instead of tearing the window down, recycle it as a warm pool spare.
@@ -3018,6 +3093,7 @@ Module JSWindow
           EndIf
           *JSWindow\IsPoolSpare = #True
           *JSWindow\InstanceKey = ""
+          *JSWindow\OpenerName = ""
           *JSWindow\Open = #False
         EndIf
         HideWindow(*Window\Window, #True)
@@ -3030,8 +3106,8 @@ Module JSWindow
         AddElement(*T\PoolHandles())
         *T\PoolHandles() = *Window\Window
         Debug "[CloseJSWindow] Recycled '" + instanceKey + "' → pool (size=" + Str(ListSize(*T\PoolHandles())) + ")"
-        If *Parent And IsWindow(*Parent\Window)
-          SetActiveWindow(*Parent\Window)
+        If wasKey
+          ActivateOpener(openerName, *Parent)
         EndIf
         ProcedureReturn
       EndIf
@@ -3141,8 +3217,8 @@ Module JSWindow
         CompilerEndIf
       EndIf
 
-      If *Parent And IsWindow(*Parent\Window)
-        SetActiveWindow(*Parent\Window)
+      If wasKey
+        ActivateOpener(openerName, *Parent)
       EndIf
     EndIf
 
